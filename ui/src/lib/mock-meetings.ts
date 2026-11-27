@@ -54,6 +54,7 @@ import type {
   VoiceprintInfo,
 } from './types'
 import type { MeetingOfferAnswer, MeetingOfferPayload } from './api'
+import { mockRaiseChange } from './mock-jobs'
 import { mockTemplate, mockTemplates } from './mock-templates'
 
 // ── Small local helpers, independent of mock.ts's own ──────────────────
@@ -970,67 +971,102 @@ export function mockMeetingStop(discard: boolean): void {
   runPipeline(r)
 }
 
+/**
+ * The line a call's draft note carries until its summary lands -- what the
+ * pipeline writes as a placeholder body the moment the call ends.
+ */
+const DRAFT_LINE = 'The summary is being written.'
+
 /** Walk a recording through the rest of the pipeline, a second or so a stage. */
 function runPipeline(r: Recording) {
   const STAGE_MS = 900
+  // The mock has no event stream of its own, so the pipeline raises the
+  // changes a real one would: the router then refreshes what is on screen
+  // exactly as it does for the real service.
+  const raise = (
+    kind: 'recording' | 'note' | 'transcript',
+    op: 'created' | 'updated',
+    id: string,
+  ) => mockRaiseChange({ kind, op, id, origin: 'mock-meetings' })
   const advance = (next: Stage) => {
     const live = recordings.find((x) => x.id === r.id)
     if (!live) return
     live.stage = next
     live.updatedAt = new Date().toISOString()
+    raise('recording', 'updated', live.id)
   }
   setTimeout(() => {
+    // Transcription ended: the draft note exists now, with the transcript and
+    // a placeholder body, and the recording points at it.
+    const live = recordings.find((x) => x.id === r.id)
+    if (!live) return
+    const noteId = newId('n-meeting')
+    const now = new Date().toISOString()
+    transcripts.set(noteId, {
+      id: newId('tr'),
+      noteId,
+      recordingId: live.id,
+      language: 'en',
+      backend: 'local',
+      speakers: [
+        { key: 0, label: 'You', how: { type: 'owner' } },
+        { key: 1, label: 'Others', how: { type: 'unknown' } },
+      ],
+      segments: [
+        { startMs: 0, endMs: 3000, speaker: 1, text: 'Right, shall we get started?' },
+        { startMs: 3100, endMs: 7000, speaker: 0, text: "Yes — let's go through the agenda." },
+      ],
+      createdAt: now,
+      updatedAt: now,
+    })
+    const note: Note = {
+      id: noteId,
+      title: live.title,
+      body: { type: 'doc', content: para(DRAFT_LINE) },
+      tags: ['meeting'],
+      pinned: false,
+      attachments: [],
+      origin: 'meeting',
+      createdAt: now,
+      updatedAt: now,
+    }
+    sink?.addNote(note)
+    live.noteId = noteId
     advance({ type: 'identifying' })
+    raise('note', 'created', noteId)
+    raise('transcript', 'created', noteId)
     setTimeout(() => {
       advance({ type: 'summarising' })
       setTimeout(() => {
-        const live = recordings.find((x) => x.id === r.id)
-        if (!live) return
-        const noteId = newId('n-meeting')
-        const speakers: Speaker[] = [
-          { key: 0, label: 'You', how: { type: 'owner' } },
-          { key: 1, label: 'Unknown 1', how: { type: 'unknown' } },
-        ]
-        const segments: Segment[] = [
-          { startMs: 0, endMs: 3000, speaker: 1, text: 'Right, shall we get started?' },
-          { startMs: 3100, endMs: 7000, speaker: 0, text: "Yes — let's go through the agenda." },
-        ]
-        transcripts.set(noteId, {
-          id: newId('tr'),
-          noteId,
-          recordingId: live.id,
-          language: 'en',
-          backend: 'local',
-          speakers,
-          segments,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        })
-        const note: Note = {
-          id: noteId,
-          title: live.title,
-          body: {
-            type: 'doc',
-            content: [
-              {
-                type: 'heading',
-                attrs: { level: 2 },
-                content: [{ type: 'text', text: 'Summary' }],
-              },
-              ...para('Written from the recording just finished.'),
-            ],
-          },
-          tags: ['meeting'],
-          pinned: false,
-          attachments: [],
-          origin: 'meeting',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
+        const finished = recordings.find((x) => x.id === r.id)
+        if (!finished) return
+        const t = transcripts.get(noteId)
+        if (t) {
+          t.speakers = [
+            { key: 0, label: 'You', how: { type: 'owner' } },
+            { key: 1, label: 'Unknown 1', how: { type: 'unknown' } },
+          ]
+          t.updatedAt = new Date().toISOString()
+          raise('transcript', 'updated', noteId)
         }
-        sink?.addNote(note)
-        live.noteId = noteId
-        live.stage = { type: 'done' }
-        live.updatedAt = new Date().toISOString()
+        // The summary replaces the placeholder in place, as the pipeline
+        // does: the same note, a newer `updatedAt`.
+        note.body = {
+          type: 'doc',
+          content: [
+            {
+              type: 'heading',
+              attrs: { level: 2 },
+              content: [{ type: 'text', text: 'Summary' }],
+            },
+            ...para('Written from the recording just finished.'),
+          ],
+        }
+        note.updatedAt = new Date().toISOString()
+        raise('note', 'updated', noteId)
+        finished.stage = { type: 'done' }
+        finished.updatedAt = new Date().toISOString()
+        raise('recording', 'updated', finished.id)
       }, STAGE_MS)
     }, STAGE_MS)
   }, STAGE_MS)

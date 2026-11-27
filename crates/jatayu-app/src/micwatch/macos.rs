@@ -350,7 +350,10 @@ fn pick_users_naming(processes: &[Process], own_pid: u32, safari: bool) -> Vec<(
             let pid = u32::try_from(p.pid).ok();
             let app = app_name(&p.bundle_id)
                 .or_else(|| (safari && is_webkit(&p.bundle_id)).then(|| "Safari".to_owned()));
-            (p.object, MicUser { app, pid })
+            // The object is CoreAudio's per *process*, not per stream: two
+            // calls in one browser share it, so only a change of process
+            // reads as a handover (see [`MicUser::id`]).
+            (p.object, MicUser { app, pid, id: Some(p.object) })
         })
         .collect();
     users.sort_by_key(|(object, _)| *object);
@@ -420,7 +423,7 @@ fn read(app: &AppHandle, own_pid: u32) -> Option<Vec<(u32, MicUser)>> {
         }
         None => match default_input_running() {
             Some(true) if own_recording(app) => None,
-            Some(true) => Some(vec![(0, MicUser { app: None, pid: None })]),
+            Some(true) => Some(vec![(0, MicUser { app: None, pid: None, id: None })]),
             _ => Some(Vec::new()),
         },
     }
@@ -473,7 +476,10 @@ mod tests {
         let users = pick_users(&[proc(7, OWN as i32, "app.example.Other")], OWN);
         assert!(users.is_empty());
         let users = pick_users(&[proc(7, 99, "us.zoom.xos")], OWN);
-        assert_eq!(users, vec![(7, MicUser { app: Some("Zoom".into()), pid: Some(99) })]);
+        assert_eq!(
+            users,
+            vec![(7, MicUser { app: Some("Zoom".into()), pid: Some(99), id: Some(7) })]
+        );
     }
 
     #[test]
@@ -516,7 +522,7 @@ mod tests {
     #[test]
     fn an_unknown_program_still_counts_but_has_no_name() {
         let users = pick_users(&[proc(5, 50, "com.example.NewCallApp")], OWN);
-        assert_eq!(users, vec![(5, MicUser { app: None, pid: Some(50) })]);
+        assert_eq!(users, vec![(5, MicUser { app: None, pid: Some(50), id: Some(5) })]);
     }
 
     #[test]
@@ -542,7 +548,7 @@ mod tests {
     #[test]
     fn a_process_with_no_valid_pid_is_kept_without_one() {
         let users = pick_users(&[proc(5, -1, "us.zoom.xos")], OWN);
-        assert_eq!(users, vec![(5, MicUser { app: Some("Zoom".into()), pid: None })]);
+        assert_eq!(users, vec![(5, MicUser { app: Some("Zoom".into()), pid: None, id: Some(5) })]);
     }
 
     /// Reads CoreAudio once, for a person to look at: `cargo test ... --

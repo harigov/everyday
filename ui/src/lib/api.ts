@@ -463,6 +463,12 @@ export interface MeetingOfferPayload {
   /** The corner card and the countdown, instead of a system notification. */
   autoRecord: boolean
   recordingId?: string | null
+  /**
+   * The recording of this same meeting that ended moments ago, when this is
+   * a rejoin: the new recording carries on from it and its note is the one
+   * written into.
+   */
+  continues?: RecordingId | null
 }
 
 /** How an offer was answered. `never`: for a calendar offer, never for this
@@ -1207,6 +1213,8 @@ export const api = {
     eventId?: string | null
     title?: string | null
     templateId?: string | null
+    /** The recording this one carries on, after leaving and rejoining. */
+    continues?: RecordingId | null
   }) => invoke<Recording>('meeting_start', opts),
   meetingStop: (discard: boolean) => invoke<void>('meeting_stop', { discard }),
   meetingStatus: () => invoke<CaptureStatus | null>('meeting_status'),

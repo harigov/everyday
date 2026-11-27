@@ -23,6 +23,7 @@ pub mod echo;
 pub mod filing;
 pub mod hallucination;
 pub mod identify;
+pub mod linking;
 pub mod merge;
 pub mod people;
 pub mod prompt;
@@ -179,6 +180,13 @@ impl Stage {
 /// How long a failed recording's audio is kept before it is discarded.
 pub const FAILED_SPOOL_DAYS: i64 = 7;
 
+/// How soon after one recording of a meeting ends that a new one, of the
+/// same meeting, carries it on rather than starting a note of its own: the
+/// person left the call and came back (a microphone that failed, a browser
+/// that had to restart). Ten minutes, in milliseconds. Past it, a second
+/// recording of the same meeting is a second sitting, with its own note.
+pub const REJOIN_WINDOW_MS: i64 = 10 * 60 * 1000;
+
 /// One spooled chunk of one track.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -233,7 +241,10 @@ pub struct Recording {
     /// not pay twice. Emptied at `Done`, when the transcript record has them.
     #[serde(default)]
     pub partial: Vec<TrackSegment>,
-    /// Set at `Done`. Cleared if the note is deleted.
+    /// The note this recording's words are written into. Set as soon as the
+    /// call ends, when the pipeline writes the draft (title, details and the
+    /// transcript, with the summary still to come), and kept at `Done`.
+    /// Cleared if the note is deleted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note_id: Option<NoteId>,
     /// What the person wrote down themself while it was recorded (the
@@ -241,6 +252,25 @@ pub struct Recording {
     /// with them, and keeps them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<RecordingNote>,
+    /// The earlier recording of the same meeting this one carries on, when
+    /// the person left the call and came back within [`REJOIN_WINDOW_MS`]
+    /// (or the shell rolled one call into the next by mistake and this was
+    /// put back together): its note is the one this recording's words are
+    /// added to, rather than a note of this recording's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continues: Option<RecordingId>,
+    /// Whether the pipeline has already looked for the calendar meeting a
+    /// recording begun without one belongs to -- so a retry does not ask
+    /// the model twice. Never set on a recording begun with its meeting.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub link_checked: bool,
+    /// `updated_at` of the note as the pipeline last wrote it (the draft
+    /// written when the call ended, or the finished notes). A note whose
+    /// `updated_at` still matches was not touched by the person since, so
+    /// the next write may replace it outright; one that moved has their
+    /// edits in it, which a later write keeps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note_written_at: Option<Timestamp>,
     pub updated_at: Timestamp,
 }
 
@@ -329,6 +359,9 @@ impl Recording {
             partial: Vec::new(),
             note_id: None,
             notes: Vec::new(),
+            continues: None,
+            link_checked: false,
+            note_written_at: None,
             updated_at: now,
         }
     }
@@ -471,6 +504,130 @@ pub struct Transcript {
 impl Transcript {
     pub fn speaker(&self, key: u16) -> Option<&Speaker> {
         self.speakers.iter().find(|s| s.key == key)
+    }
+
+    /// Take back out whatever a later part put in: every segment starting at
+    /// or after `offset_ms` on this transcript's clock (the earlier parts all
+    /// end before the later one starts), and the speakers no segment refers
+    /// to any more. The owner is always kept.
+    ///
+    /// What makes writing a part idempotent -- a draft, a refresh and the
+    /// final write all put the same recording's words in, and a retry puts
+    /// them in again -- see [`Transcript::replace_part`].
+    pub fn truncate_from(&mut self, offset_ms: u64) {
+        let before = self.segments.len();
+        self.segments.retain(|s| s.start_ms < offset_ms);
+        let kept: std::collections::HashSet<u16> =
+            self.segments.iter().map(|s| s.speaker).collect();
+        let speakers = self.speakers.len();
+        self.speakers.retain(|s| kept.contains(&s.key) || matches!(s.how, Attribution::Owner));
+        if self.segments.len() != before || self.speakers.len() != speakers {
+            self.updated_at = Timestamp::now();
+        }
+    }
+
+    /// Put a later part in as [`Transcript::append_part`] does, after taking
+    /// out whatever the same recording put in before
+    /// ([`Transcript::truncate_from`]), so the part is there once however
+    /// many times it is written.
+    pub fn replace_part(
+        &mut self,
+        part_speakers: &[Speaker],
+        part_segments: &[Segment],
+        offset_ms: u64,
+    ) {
+        self.truncate_from(offset_ms);
+        self.append_part(part_speakers, part_segments, offset_ms);
+    }
+
+    /// Carry this transcript on with a later part of the same meeting -- the
+    /// person left the call and came back: `part`'s segments, `offset_ms`
+    /// later than this transcript's own clock (how long after this one's
+    /// recording started the later one did), under this transcript's
+    /// speakers where they are the same person (the owner, and anyone named
+    /// the same), and under new keys where they are not. Unknown voices are
+    /// never assumed to be the same voice across the two parts.
+    pub fn append_part(
+        &mut self,
+        part_speakers: &[Speaker],
+        part_segments: &[Segment],
+        offset_ms: u64,
+    ) {
+        use std::collections::HashMap;
+
+        // "Unknown 3" -> 3: where the later part's unnamed voices carry on
+        // counting from, so no two voices in the joined transcript share a
+        // label.
+        let unknown_number = |label: &str| -> Option<u32> {
+            label.strip_prefix("Unknown ").and_then(|n| n.trim().parse().ok())
+        };
+        let mut next_unknown =
+            self.speakers.iter().filter_map(|s| unknown_number(&s.label)).max().unwrap_or(0) + 1;
+        let mut next_key =
+            self.speakers.iter().map(|s| s.key).max().map_or(0, |k| k.saturating_add(1));
+
+        let mut keys: HashMap<u16, u16> = HashMap::new();
+        for part in part_speakers {
+            let named = !matches!(part.how, Attribution::Unknown | Attribution::Owner)
+                && part.label != people::OTHERS
+                && unknown_number(&part.label).is_none();
+            let existing = if matches!(part.how, Attribution::Owner) {
+                self.speakers.iter().find(|s| matches!(s.how, Attribution::Owner))
+            } else if named {
+                self.speakers.iter().find(|s| {
+                    !matches!(s.how, Attribution::Unknown)
+                        && s.label != people::OTHERS
+                        && s.label.eq_ignore_ascii_case(&part.label)
+                })
+            } else if part.label == people::OTHERS {
+                // The bucket for voices nobody could tell apart is one
+                // bucket, whichever part it came from.
+                self.speakers.iter().find(|s| s.label == people::OTHERS)
+            } else {
+                None
+            };
+            if let Some(existing) = existing {
+                keys.insert(part.key, existing.key);
+                continue;
+            }
+            let mut fresh = part.clone();
+            fresh.key = next_key;
+            next_key = next_key.saturating_add(1);
+            if matches!(fresh.how, Attribution::Unknown) && fresh.label != people::OTHERS {
+                // An unknown voice is never assumed to be one heard before.
+                fresh.label = format!("Unknown {next_unknown}");
+                next_unknown += 1;
+            }
+            keys.insert(part.key, fresh.key);
+            self.speakers.push(fresh);
+        }
+
+        for seg in part_segments {
+            let speaker = *keys.entry(seg.speaker).or_insert_with(|| {
+                // A line whose speaker the part did not list: kept, under a
+                // voice of its own.
+                let key = next_key;
+                next_key = next_key.saturating_add(1);
+                self.speakers.push(Speaker {
+                    key,
+                    label: format!("Unknown {next_unknown}"),
+                    email: None,
+                    voiceprint_id: None,
+                    how: Attribution::Unknown,
+                    centroid: Vec::new(),
+                    embedding_model: String::new(),
+                });
+                next_unknown += 1;
+                key
+            });
+            self.segments.push(Segment {
+                start_ms: seg.start_ms.saturating_add(offset_ms),
+                end_ms: seg.end_ms.saturating_add(offset_ms),
+                speaker,
+                text: seg.text.clone(),
+            });
+        }
+        self.updated_at = Timestamp::now();
     }
 
     /// One turn of dialogue: `[mm:ss] Name: text`, or `[h:mm:ss] Name: text`
@@ -807,6 +964,156 @@ mod tests {
         let old = serde_json::json!({ "calendarIds": [], "roleIds": [id] });
         let filter: CalendarFilter = serde_json::from_value(old).expect("the old spelling reads");
         assert_eq!(filter.area_ids, vec![id]);
+    }
+
+    fn who(key: u16, label: &str, how: Attribution) -> Speaker {
+        Speaker {
+            key,
+            label: label.into(),
+            email: None,
+            voiceprint_id: None,
+            how,
+            centroid: Vec::new(),
+            embedding_model: String::new(),
+        }
+    }
+
+    fn said(start_ms: u64, speaker: u16, text: &str) -> Segment {
+        Segment { start_ms, end_ms: start_ms + 1_000, speaker, text: text.into() }
+    }
+
+    fn joined_transcript() -> Transcript {
+        let now = Timestamp::now();
+        Transcript {
+            id: TranscriptId::new(),
+            note_id: NoteId::new(),
+            recording_id: None,
+            language: None,
+            backend: String::new(),
+            speakers: vec![
+                who(1, "Hari", Attribution::Owner),
+                who(2, "Priya Raman", Attribution::Named),
+                who(3, "Unknown 1", Attribution::Unknown),
+            ],
+            segments: vec![said(0, 1, "hello"), said(2_000, 2, "hi"), said(4_000, 3, "um")],
+            room: false,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn a_later_part_is_shifted_and_appended_in_order() {
+        let mut t = joined_transcript();
+        let part = [who(1, "Hari", Attribution::Owner)];
+        t.append_part(&part, &[said(500, 1, "back again"), said(3_000, 1, "so")], 60_000);
+        let starts: Vec<u64> = t.segments.iter().map(|s| s.start_ms).collect();
+        assert_eq!(starts, vec![0, 2_000, 4_000, 60_500, 63_000]);
+        assert_eq!(t.segments[3].end_ms, 61_500);
+    }
+
+    #[test]
+    fn truncating_from_an_offset_drops_the_later_words_and_the_voices_only_they_used() {
+        let mut t = joined_transcript();
+        let part = [who(1, "Hari", Attribution::Owner), who(2, "Sam", Attribution::Named)];
+        t.append_part(&part, &[said(0, 1, "back"), said(1_000, 2, "me too")], 60_000);
+        assert_eq!(t.segments.len(), 5);
+        assert!(t.speakers.iter().any(|s| s.label == "Sam"));
+
+        t.truncate_from(60_000);
+        assert_eq!(t.segments.len(), 3, "the first part is untouched");
+        assert!(t.speakers.iter().all(|s| s.label != "Sam"), "a voice only the part used goes");
+        assert_eq!(t.speakers.len(), 3);
+
+        // The owner stays even when no line is theirs.
+        t.truncate_from(0);
+        assert!(t.segments.is_empty());
+        assert_eq!(t.speakers.len(), 1);
+        assert!(matches!(t.speakers[0].how, Attribution::Owner));
+    }
+
+    #[test]
+    fn a_part_replaced_is_there_once_however_often_it_is_written() {
+        let mut t = joined_transcript();
+        let part = [who(1, "Hari", Attribution::Owner), who(5, "Sam", Attribution::Named)];
+        let lines = [said(0, 1, "back"), said(1_000, 5, "me too")];
+        for _ in 0..3 {
+            t.replace_part(&part, &lines, 60_000);
+        }
+        let count = |text: &str| t.segments.iter().filter(|s| s.text == text).count();
+        assert_eq!(count("back"), 1);
+        assert_eq!(count("me too"), 1);
+        assert_eq!(count("hello"), 1);
+        assert_eq!(t.speakers.iter().filter(|s| s.label == "Sam").count(), 1);
+    }
+
+    #[test]
+    fn the_owner_and_anyone_named_the_same_keep_their_speaker() {
+        let mut t = joined_transcript();
+        let part = [
+            who(7, "Someone Else Entirely", Attribution::Owner),
+            who(8, "priya raman", Attribution::Matched { score: 0.8 }),
+        ];
+        t.append_part(&part, &[said(0, 7, "mine"), said(1_000, 8, "hers")], 10_000);
+        assert_eq!(t.speakers.len(), 3, "nobody new: {:?}", t.speakers);
+        assert_eq!(t.segments[3].speaker, 1);
+        assert_eq!(t.segments[4].speaker, 2);
+    }
+
+    #[test]
+    fn an_owner_the_first_part_lacked_is_added() {
+        let mut t = joined_transcript();
+        t.speakers.retain(|s| s.key != 1);
+        t.segments.retain(|s| s.speaker != 1);
+        t.append_part(&[who(1, "Hari", Attribution::Owner)], &[said(0, 1, "hi")], 5_000);
+        let owner = t.owner().expect("the owner is there now");
+        assert_eq!(t.segments.last().unwrap().speaker, owner.key);
+    }
+
+    #[test]
+    fn unknown_voices_are_never_taken_for_ones_heard_before() {
+        let mut t = joined_transcript();
+        let part = [
+            who(1, "Unknown 1", Attribution::Unknown),
+            who(2, "Unknown 2", Attribution::Unknown),
+            who(3, "Dev Patel", Attribution::Named),
+        ];
+        t.append_part(&part, &[said(0, 1, "a"), said(1_000, 2, "b"), said(2_000, 3, "c")], 9_000);
+        let labels: Vec<&str> = t.speakers.iter().map(|s| s.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            vec!["Hari", "Priya Raman", "Unknown 1", "Unknown 2", "Unknown 3", "Dev Patel"]
+        );
+        let keys: Vec<u16> = t.speakers.iter().map(|s| s.key).collect();
+        let mut unique = keys.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), keys.len(), "keys stay unique: {keys:?}");
+        // The new lines point at the new voices.
+        assert_eq!(t.speaker(t.segments[3].speaker).unwrap().label, "Unknown 2");
+        assert_eq!(t.speaker(t.segments[4].speaker).unwrap().label, "Unknown 3");
+        assert_eq!(t.speaker(t.segments[5].speaker).unwrap().label, "Dev Patel");
+    }
+
+    #[test]
+    fn the_others_bucket_stays_one_bucket() {
+        let mut t = joined_transcript();
+        t.speakers.push(who(4, people::OTHERS, Attribution::Unknown));
+        t.append_part(
+            &[who(2, people::OTHERS, Attribution::Unknown)],
+            &[said(0, 2, "crowd")],
+            1_000,
+        );
+        assert_eq!(t.speakers.iter().filter(|s| s.label == people::OTHERS).count(), 1);
+        assert_eq!(t.segments.last().unwrap().speaker, 4);
+    }
+
+    #[test]
+    fn a_line_from_a_speaker_the_part_did_not_list_is_kept() {
+        let mut t = joined_transcript();
+        t.append_part(&[], &[said(0, 9, "who said this")], 1_000);
+        let last = t.segments.last().unwrap();
+        assert_eq!(t.speaker(last.speaker).unwrap().label, "Unknown 2");
     }
 
     fn seg(track: Track, text: &str) -> TrackSegment {

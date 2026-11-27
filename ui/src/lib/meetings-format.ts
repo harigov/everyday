@@ -8,7 +8,16 @@
 
 import { DEFAULT_COLORS } from './colors'
 import { pad2 } from './time'
-import type { Attribution, LocalModel, SpeechConfig, Stage } from './types'
+import type {
+  Attribution,
+  LocalModel,
+  NoteId,
+  Recording,
+  Segment,
+  SpeechConfig,
+  Speaker,
+  Stage,
+} from './types'
 
 /** What a recording's stage says in a list row or a card. */
 export function stageLabel(stage: Stage): string {
@@ -26,6 +35,50 @@ export function stageLabel(stage: Stage): string {
     case 'failed':
       return 'Failed'
   }
+}
+
+/**
+ * What a note says while the call behind it is still being worked on -- the
+ * draft exists from the moment the call ends, so this is the line above its
+ * body: "Transcribing the call", "Working out who spoke", "Writing the
+ * summary". `null` for a stage with nothing left to say (recording is still
+ * the call itself, done is a finished note).
+ */
+export function draftStageLabel(stage: Stage): string | null {
+  switch (stage.type) {
+    case 'transcribing':
+      return 'Transcribing the call'
+    case 'identifying':
+      return 'Working out who spoke'
+    case 'summarising':
+      return 'Writing the summary'
+    default:
+      return null
+  }
+}
+
+/**
+ * The recording whose pipeline is still writing into this note, if any: the
+ * one that names it as its note and has not finished. A failed one counts,
+ * because the draft stays as it is and the person is owed the reason and a
+ * way to try again. Takes the list the store already holds, so it is a
+ * lookup and not a fetch.
+ */
+export function recordingWritingNote(
+  recordings: readonly Recording[],
+  noteId: NoteId | null | undefined,
+): Recording | null {
+  if (!noteId) return null
+  return (
+    recordings.find(
+      (r) =>
+        r.noteId === noteId &&
+        (r.stage.type === 'transcribing' ||
+          r.stage.type === 'identifying' ||
+          r.stage.type === 'summarising' ||
+          r.stage.type === 'failed'),
+    ) ?? null
+  )
 }
 
 /** Is this stage still moving -- worth a card in the notes list and a poll? */
@@ -149,4 +202,43 @@ function hostOf(url: string): string | null {
   } catch {
     return null
   }
+}
+
+/** Below this many words, an unnamed voice is "quieter" and tucked away. */
+export const QUIET_WORDS = 25
+/** Or below this share of everything said. */
+export const QUIET_SHARE = 0.02
+
+/** How many words each speaker said, by speaker key. */
+export function wordsBySpeaker(segments: readonly Segment[]): Map<number, number> {
+  const words = new Map<number, number>()
+  for (const seg of segments) {
+    const n = seg.text.split(/\s+/).filter(Boolean).length
+    words.set(seg.speaker, (words.get(seg.speaker) ?? 0) + n)
+  }
+  return words
+}
+
+/**
+ * Which speakers are too quiet to deserve a chip of their own. A call with
+ * two people in it can still come back with dozens of voices, nearly all of
+ * them a few words long; a wall of "Who is this?" buttons hides the two who
+ * matter. Only voices nobody has put a name to qualify -- the owner, anyone
+ * named or matched to a voiceprint stay where they are -- and only when they
+ * said under `QUIET_WORDS` words or under `QUIET_SHARE` of the call.
+ */
+export function quietSpeakers(
+  speakers: readonly Speaker[],
+  segments: readonly Segment[],
+): Set<number> {
+  const words = wordsBySpeaker(segments)
+  let total = 0
+  for (const n of words.values()) total += n
+  const quiet = new Set<number>()
+  for (const s of speakers) {
+    if (s.how.type !== 'unknown' && s.how.type !== 'inferred') continue
+    const n = words.get(s.key) ?? 0
+    if (n < QUIET_WORDS || n < total * QUIET_SHARE) quiet.add(s.key)
+  }
+  return quiet
 }

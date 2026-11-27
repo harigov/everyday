@@ -141,6 +141,11 @@ fn watch_once(shared: &Arc<Shared>) -> Result<(), pipewire::Error> {
                     let running = info.as_raw().state == PW_NODE_STATE_RUNNING;
                     match (&*judged.borrow(), running) {
                         (Some(user), true) => {
+                            // The node id tells streams apart for a handover.
+                            // PipeWire allocates ids upwards and reuses one
+                            // only after wrap-around or freeing, so a reused
+                            // id could, rarely, hide a handover.
+                            let user = MicUser { id: Some(id), ..user.clone() };
                             if users.users().insert(id, user.clone()).is_none() {
                                 tracing::debug!(id, ?user, "micwatch: a stream is capturing");
                             }

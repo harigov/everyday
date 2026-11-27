@@ -1653,3 +1653,562 @@ async fn finish_landing_while_the_early_attempt_is_still_running_still_reaches_d
     assert_eq!(recording.stage, Stage::Done);
     assert!(recording.note_id.is_some());
 }
+
+// ---- the draft note, and a meeting put back together ---------------------
+
+/// Keeps every change and every notice, so a test can say what was announced
+/// and in which order.
+#[derive(Default)]
+struct Seen {
+    changes: Mutex<Vec<String>>,
+    notices: Mutex<Vec<crate::events::Notification>>,
+}
+
+impl Seen {
+    fn changes(&self) -> Vec<String> {
+        self.changes.lock().unwrap().clone()
+    }
+
+    fn count(&self, what: &str) -> usize {
+        self.changes().iter().filter(|c| c.starts_with(what)).count()
+    }
+}
+
+impl crate::events::EventSink for Seen {
+    fn notify(&self, notification: crate::events::Notification) {
+        self.notices.lock().unwrap().push(notification);
+    }
+
+    fn changed(&self, change: crate::events::Change) {
+        self.changes.lock().unwrap().push(format!(
+            "{:?}/{:?}/{}",
+            change.kind,
+            change.op,
+            change.id.unwrap_or_default()
+        ));
+    }
+}
+
+/// Run the whole pipeline over `id` with `summariser`.
+async fn run_all(
+    vault: &Arc<Vault>,
+    audio: &Arc<FakeAudio>,
+    id: RecordingId,
+    summariser: Arc<dyn Summariser>,
+    seen: &Arc<Seen>,
+) -> CommandResult<()> {
+    let source: Arc<dyn AudioSource> = audio.clone();
+    let events: Arc<dyn crate::events::EventSink> = seen.clone();
+    run_recording(vault.clone(), source, id, Some(summariser), events).await
+}
+
+/// The person types into the note: their text added at the end, and a title
+/// of their own, saved the way the editor saves.
+fn edit_note(vault: &Vault, note_id: jatayu_core::NoteId, title: &str, added: &str) {
+    let mut note = vault.note(note_id).unwrap();
+    let read = note.updated_at;
+    note.title = title.into();
+    note.body =
+        jatayu_core::RichDoc::from_markdown(&format!("{}\n\n{added}", note.body.to_markdown()));
+    note.updated_at = Timestamp::now();
+    vault.save_note(&note, Some(read)).unwrap();
+}
+
+#[tokio::test]
+async fn a_draft_appears_the_moment_the_call_ends_and_is_made_once() {
+    let (_dir, vault) = test_vault();
+    let audio = Arc::new(FakeAudio::new());
+    let id = seed_identifying(&vault, &audio);
+    let seen = Seen::default();
+
+    super::draft::ensure_draft(&vault, id, &seen).await.unwrap();
+
+    let recording = vault.recording(id).unwrap();
+    assert_eq!(recording.stage, Stage::Identifying, "the pipeline has not moved on");
+    let note_id = recording.note_id.expect("the note exists while the work is still to do");
+    let note = vault.note(note_id).unwrap();
+    let body = note.body.to_markdown();
+    assert_eq!(note.title, "Design sync");
+    assert_eq!(note.tags, vec!["meeting".to_string()]);
+    assert!(body.contains("**When:**"), "{body}");
+    assert!(super::draft::has_marker(&body), "{body}");
+    assert_eq!(recording.note_written_at, Some(note.updated_at));
+
+    let transcript = vault.transcript_for_note(note_id).unwrap().expect("and its transcript");
+    let lines = transcript.as_lines();
+    assert!(lines.contains("You: hello there"), "{lines}");
+    assert!(lines.contains("Others: the launch is in May"), "{lines}");
+
+    assert_eq!(seen.count("Note/Created"), 1);
+    assert_eq!(seen.count("Transcript/Updated"), 1);
+    assert_eq!(seen.count("Recording/Updated"), 1);
+
+    // Asked again, nothing is made a second time.
+    super::draft::ensure_draft(&vault, id, &seen).await.unwrap();
+    assert_eq!(vault.recording(id).unwrap().note_id, Some(note_id));
+    assert_eq!(seen.count("Note/Created"), 1);
+    assert_eq!(vault.transcript_for_note(note_id).unwrap().unwrap().id, transcript.id);
+}
+
+#[tokio::test]
+async fn the_final_write_fills_in_the_same_note_and_keeps_its_one_transcript() {
+    let (_dir, vault) = test_vault();
+    let audio = Arc::new(FakeAudio::new());
+    let id = seed_identifying(&vault, &audio);
+    let seen = Arc::new(Seen::default());
+
+    super::draft::ensure_draft(&vault, id, seen.as_ref()).await.unwrap();
+    let draft = vault.recording(id).unwrap().note_id.unwrap();
+    let draft_transcript = vault.transcript_for_note(draft).unwrap().unwrap().id;
+
+    run_all(&vault, &audio, id, Arc::new(FakeSummariser), &seen).await.unwrap();
+
+    let recording = vault.recording(id).unwrap();
+    assert_eq!(recording.stage, Stage::Done);
+    assert_eq!(recording.note_id, Some(draft), "the draft was filled in, not replaced");
+    let note = vault.note(draft).unwrap();
+    let body = note.body.to_markdown();
+    assert!(body.contains("## Summary"), "{body}");
+    assert!(!super::draft::has_marker(&body), "{body}");
+    assert_eq!(recording.note_written_at, Some(note.updated_at));
+    let transcript = vault.transcript_for_note(draft).unwrap().unwrap();
+    assert_eq!(transcript.id, draft_transcript, "one transcript to the note");
+    assert!(!transcript.speakers.is_empty());
+
+    assert_eq!(seen.count("Note/Created"), 1, "{:?}", seen.changes());
+    assert!(seen.count("Note/Updated") >= 1, "{:?}", seen.changes());
+    let notices = seen.notices.lock().unwrap();
+    let ready = notices.iter().filter(|n| n.title.starts_with("Notes from")).count();
+    assert_eq!(ready, 1);
+}
+
+#[tokio::test]
+async fn a_draft_the_person_wrote_in_keeps_their_title_and_their_words() {
+    let (_dir, vault) = test_vault();
+    let audio = Arc::new(FakeAudio::new());
+    let id = seed_identifying(&vault, &audio);
+    let seen = Arc::new(Seen::default());
+    super::draft::ensure_draft(&vault, id, seen.as_ref()).await.unwrap();
+    let draft = vault.recording(id).unwrap().note_id.unwrap();
+    edit_note(&vault, draft, "My own title", "Ask Priya about the launch date");
+    let spoken = vault.recording(id).unwrap().partial;
+
+    run_all(&vault, &audio, id, Arc::new(FakeSummariser), &seen).await.unwrap();
+
+    let note = vault.note(draft).unwrap();
+    let body = note.body.to_markdown();
+    assert_eq!(note.title, "My own title");
+    assert!(body.contains("Ask Priya about the launch date"), "{body}");
+    assert!(!super::draft::has_marker(&body), "{body}");
+    let summary = body.find("## Summary").expect(&body);
+    let rule = body.find("\n---\n").expect(&body);
+    let theirs = body.find("Ask Priya").unwrap();
+    assert!(summary < rule && rule < theirs, "summary, a rule, then their text: {body}");
+    assert_eq!(vault.recording(id).unwrap().note_id, Some(draft));
+
+    // Written a second time -- a transient error sends the stage round again
+    // -- nothing is added, and nothing of theirs is lost.
+    let source: Arc<dyn AudioSource> = audio.clone();
+    let mut recording = vault.recording(id).unwrap();
+    recording.stage = Stage::Summarising;
+    recording.partial = spoken;
+    vault.save_recording(&recording).unwrap();
+    do_summarise_and_write(&vault, &source, id, &FakeSummariser, seen.as_ref()).await.unwrap();
+    let again = vault.note(draft).unwrap().body.to_markdown();
+    assert_eq!(again.matches("## Summary").count(), 1, "{again}");
+    assert_eq!(again.matches("Ask Priya about the launch date").count(), 1, "{again}");
+}
+
+#[tokio::test]
+async fn a_note_deleted_while_the_summary_was_written_is_made_again() {
+    let (_dir, vault) = test_vault();
+    let audio = Arc::new(FakeAudio::new());
+    let id = seed_identifying(&vault, &audio);
+    let seen = Arc::new(Seen::default());
+    super::draft::ensure_draft(&vault, id, seen.as_ref()).await.unwrap();
+    let draft = vault.recording(id).unwrap().note_id.unwrap();
+    vault.delete_note(draft).unwrap();
+    // The recording is still at Identifying: a draft's pointer goes with it
+    // at any stage, not only at Done.
+    let after = vault.recording(id).unwrap();
+    assert_eq!(after.stage, Stage::Identifying);
+    assert_eq!(after.note_id, None, "the pointer went with it");
+    assert_eq!(after.note_written_at, None);
+
+    run_all(&vault, &audio, id, Arc::new(FakeSummariser), &seen).await.unwrap();
+
+    let recording = vault.recording(id).unwrap();
+    let note_id = recording.note_id.expect("a note was written");
+    assert_ne!(note_id, draft);
+    assert!(vault.note(note_id).unwrap().body.to_markdown().contains("## Summary"));
+    assert!(vault.transcript_for_note(note_id).unwrap().is_some());
+}
+
+#[tokio::test]
+async fn a_failure_leaves_the_draft_saying_so_in_place_of_the_marker() {
+    let (_dir, vault) = test_vault();
+    let audio = Arc::new(FakeAudio::new());
+    let id = seed_identifying(&vault, &audio);
+    let seen = Arc::new(Seen::default());
+
+    let err = run_all(&vault, &audio, id, Arc::new(FailingSummariser), &seen).await.unwrap_err();
+    assert!(!err.message.is_empty());
+
+    let recording = vault.recording(id).unwrap();
+    assert!(matches!(recording.stage, Stage::Failed { .. }), "{:?}", recording.stage);
+    let note_id = recording.note_id.expect("the draft is kept");
+    let note = vault.note(note_id).unwrap();
+    let body = note.body.to_markdown();
+    assert!(body.contains("The summary could not be written:"), "{body}");
+    assert!(body.contains("Retry it from the recording"), "{body}");
+    assert!(!super::draft::has_marker(&body), "{body}");
+    assert_eq!(recording.note_written_at, Some(note.updated_at), "still the pipeline's own");
+    let transcript = vault.transcript_for_note(note_id).unwrap().expect("the transcript stays");
+    assert!(transcript.as_lines().contains("the launch is in May"));
+    assert!(!recording.partial.is_empty(), "a retry still has what it needs");
+
+    // A retry puts the marker back and fills the same note in.
+    crate::meeting::spool::mutate_recording(&vault, id, |r| {
+        r.stage = Stage::Summarising;
+        Ok(())
+    })
+    .unwrap();
+    run_all(&vault, &audio, id, Arc::new(FakeSummariser), &seen).await.unwrap();
+    let recording = vault.recording(id).unwrap();
+    assert_eq!(recording.stage, Stage::Done);
+    assert_eq!(recording.note_id, Some(note_id));
+    let body = vault.note(note_id).unwrap().body.to_markdown();
+    assert!(body.contains("## Summary") && !body.contains("could not be written"), "{body}");
+}
+
+#[tokio::test]
+async fn a_failure_never_touches_a_note_the_person_has_written_in() {
+    let (_dir, vault) = test_vault();
+    let audio = Arc::new(FakeAudio::new());
+    let id = seed_identifying(&vault, &audio);
+    let seen = Seen::default();
+    super::draft::ensure_draft(&vault, id, &seen).await.unwrap();
+    let note_id = vault.recording(id).unwrap().note_id.unwrap();
+    edit_note(&vault, note_id, "Mine", "A thought of mine");
+    let before = vault.note(note_id).unwrap();
+
+    let e = CommandError::new(codes::AGENT, "the assistant is not usable");
+    fail(&vault, id, Stage::Summarising, &e, &seen).await.unwrap();
+
+    assert_eq!(vault.note(note_id).unwrap(), before);
+}
+
+#[tokio::test]
+async fn the_assistant_being_off_still_leaves_the_draft_and_its_transcript() {
+    let (_dir, vault) = test_vault();
+    let audio = Arc::new(FakeAudio::new());
+    let id = seed_identifying(&vault, &audio);
+    let source: Arc<dyn AudioSource> = audio.clone();
+    let events: Arc<dyn crate::events::EventSink> = Arc::new(crate::events::Silent);
+
+    let err = run_recording(vault.clone(), source, id, None, events).await.unwrap_err();
+    assert_eq!(err.code, codes::AGENT);
+
+    let note_id = vault.recording(id).unwrap().note_id.expect("a draft was written");
+    let body = vault.note(note_id).unwrap().body.to_markdown();
+    assert!(body.contains("the assistant is not configured"), "{body}");
+    assert!(vault.transcript_for_note(note_id).unwrap().is_some());
+}
+
+#[tokio::test]
+async fn a_step_given_to_nobody_who_was_there_is_unassigned() {
+    let (_dir, vault) = test_vault();
+    let audio = Arc::new(FakeAudio::new());
+    let id = seed_identifying(&vault, &audio);
+    let seen = Arc::new(Seen::default());
+    let summariser = Arc::new(Recorder {
+        answer: "## Next steps\n- **Zed Zane:** book the room\n- **Priya:** send the deck\n".into(),
+        asked: Mutex::new(Vec::new()),
+    });
+
+    run_all(&vault, &audio, id, summariser, &seen).await.unwrap();
+
+    let note_id = vault.recording(id).unwrap().note_id.unwrap();
+    let body = vault.note(note_id).unwrap().body.to_markdown();
+    assert!(
+        body.contains("Unassigned: book the room") || body.contains("**Unassigned:**"),
+        "{body}"
+    );
+    assert!(!body.contains("Zed Zane"), "{body}");
+    assert!(body.contains("Priya"), "an invitee keeps their step: {body}");
+}
+
+/// Two recordings of one meeting: the second, `later_by` after the first
+/// began, carries it on.
+fn seed_rejoin(vault: &Vault, audio: &FakeAudio, later_by: Duration) -> (RecordingId, RecordingId) {
+    let first = seed_identifying(vault, audio);
+    let second = seed_identifying(vault, audio);
+    let started = vault.recording(first).unwrap().started_at;
+    crate::meeting::spool::mutate_recording(vault, second, |r| {
+        r.started_at = started + later_by;
+        r.continues = Some(first);
+        r.partial[0].text = "sorry my microphone died".into();
+        Ok(())
+    })
+    .unwrap();
+    (first, second)
+}
+
+#[tokio::test]
+async fn a_rejoin_waits_for_the_part_before_it_and_then_writes_into_its_note() {
+    let (_dir, vault) = test_vault();
+    let audio = Arc::new(FakeAudio::new());
+    let (first, second) = seed_rejoin(&vault, &audio, Duration::from_secs(20 * 60));
+    let seen = Arc::new(Seen::default());
+
+    // The later part reaches its summary first, and waits: the earlier one
+    // is still at work.
+    run_all(&vault, &audio, second, Arc::new(FakeSummariser), &seen).await.unwrap();
+    let waiting = vault.recording(second).unwrap();
+    assert_eq!(waiting.stage, Stage::Summarising, "parked, not done");
+    assert!(waiting.note_id.is_some(), "it has its draft meanwhile");
+    assert_eq!(super::combine::followers_of(&vault, first), vec![second]);
+    assert!(super::combine::followers_of(&vault, second).is_empty());
+    let own_draft = waiting.note_id.unwrap();
+
+    run_all(&vault, &audio, first, Arc::new(FakeSummariser), &seen).await.unwrap();
+    assert_eq!(vault.recording(first).unwrap().stage, Stage::Done);
+    // The earlier part's note is the meeting's; the later one is still owed.
+    assert_eq!(vault.recording(second).unwrap().stage, Stage::Summarising);
+
+    run_all(&vault, &audio, second, Arc::new(FakeSummariser), &seen).await.unwrap();
+
+    let first = vault.recording(first).unwrap();
+    let second = vault.recording(second).unwrap();
+    assert_eq!(second.stage, Stage::Done);
+    assert_eq!(second.note_id, first.note_id, "one meeting, one note");
+    let note_id = first.note_id.unwrap();
+    assert!(vault.note(own_draft).is_err() || own_draft == note_id, "the spare draft is gone");
+    let body = vault.note(note_id).unwrap().body.to_markdown();
+    assert!(body.contains("## Summary") && !super::draft::has_marker(&body), "{body}");
+
+    let transcript = vault.transcript_for_note(note_id).unwrap().unwrap();
+    let lines = transcript.as_lines();
+    assert!(lines.contains("hello there"), "{lines}");
+    assert!(lines.contains("sorry my microphone died"), "both parts: {lines}");
+    // The draft put the later part in, and the final write did too: once.
+    let once = |t: &jatayu_core::meeting::Transcript, text: &str| {
+        t.segments.iter().filter(|s| s.text.contains(text)).count()
+    };
+    assert_eq!(once(&transcript, "sorry my microphone died"), 1, "{lines}");
+    assert_eq!(once(&transcript, "hello there"), 1, "{lines}");
+    // The later part is on the same clock, twenty minutes in.
+    let late = transcript.segments.iter().find(|s| s.text.contains("microphone died")).unwrap();
+    assert!(late.start_ms >= 20 * 60_000, "{}", late.start_ms);
+    assert_eq!(
+        transcript.speakers.iter().filter(|s| matches!(s.how, Attribution::Owner)).count(),
+        1,
+        "the owner is one speaker across the parts: {:?}",
+        transcript.speakers
+    );
+    assert_eq!(second.note_written_at, vault.note(note_id).unwrap().updated_at.into());
+}
+
+#[tokio::test]
+async fn running_a_rejoins_final_write_again_does_not_double_its_words() {
+    let (_dir, vault) = test_vault();
+    let audio = Arc::new(FakeAudio::new());
+    let (first, second) = seed_rejoin(&vault, &audio, Duration::from_secs(20 * 60));
+    let seen = Arc::new(Seen::default());
+    let partial = vault.recording(second).unwrap().partial;
+
+    run_all(&vault, &audio, second, Arc::new(FakeSummariser), &seen).await.unwrap();
+    run_all(&vault, &audio, first, Arc::new(FakeSummariser), &seen).await.unwrap();
+    run_all(&vault, &audio, second, Arc::new(FakeSummariser), &seen).await.unwrap();
+    let note_id = vault.recording(second).unwrap().note_id.unwrap();
+    let before = vault.transcript_for_note(note_id).unwrap().unwrap().segments.len();
+
+    // A transient failure ran the stage round again: the later part is owed
+    // its summary once more.
+    crate::meeting::spool::mutate_recording(&vault, second, |r| {
+        r.stage = Stage::Summarising;
+        r.partial = partial.clone();
+        Ok(())
+    })
+    .unwrap();
+    run_all(&vault, &audio, second, Arc::new(FakeSummariser), &seen).await.unwrap();
+
+    let transcript = vault.transcript_for_note(note_id).unwrap().unwrap();
+    assert_eq!(transcript.segments.len(), before, "{}", transcript.as_lines());
+    let heard = transcript.segments.iter().filter(|s| s.text.contains("microphone died")).count();
+    assert_eq!(heard, 1);
+}
+
+fn blank_part(id: RecordingId) -> jatayu_core::meeting::Transcript {
+    let now = Timestamp::now();
+    jatayu_core::meeting::Transcript {
+        id: jatayu_core::id::TranscriptId::new(),
+        note_id: jatayu_core::NoteId::new(),
+        recording_id: Some(id),
+        language: None,
+        backend: String::new(),
+        speakers: Vec::new(),
+        segments: Vec::new(),
+        room: false,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+#[tokio::test]
+async fn a_pipeline_racing_a_discard_does_not_bring_the_note_back() {
+    let (_dir, vault) = test_vault();
+    let audio = Arc::new(FakeAudio::new());
+    let id = seed_identifying(&vault, &audio);
+    let fill = super::draft::Fill {
+        title: "T".into(),
+        body: "## Summary\n\nx".into(),
+        tags: Vec::new(),
+        purpose: None,
+    };
+    let before = vault.all_notes().unwrap().len();
+    vault.delete_recording(id).unwrap();
+
+    let Err(err) = super::draft::commit(&vault, id, None, &fill, blank_part(id)) else {
+        panic!("the note was written for a recording that is gone");
+    };
+    assert_eq!(err.code, codes::NOT_FOUND);
+    assert_eq!(vault.all_notes().unwrap().len(), before, "no note was made");
+}
+
+#[tokio::test]
+async fn a_rejoin_after_a_failed_part_takes_its_words_and_finishes_it() {
+    let (_dir, vault) = test_vault();
+    let audio = Arc::new(FakeAudio::new());
+    let (first, second) = seed_rejoin(&vault, &audio, Duration::from_secs(5 * 60));
+    let seen = Arc::new(Seen::default());
+
+    let err = run_all(&vault, &audio, first, Arc::new(FailingSummariser), &seen).await.unwrap_err();
+    assert!(!err.message.is_empty());
+    assert!(matches!(vault.recording(first).unwrap().stage, Stage::Failed { .. }));
+
+    run_all(&vault, &audio, second, Arc::new(FakeSummariser), &seen).await.unwrap();
+
+    let first = vault.recording(first).unwrap();
+    let second = vault.recording(second).unwrap();
+    assert_eq!(second.stage, Stage::Done);
+    assert_eq!(first.stage, Stage::Done, "its words are in the note now");
+    assert_eq!(first.note_id, second.note_id);
+    assert!(first.partial.is_empty() && first.chunks.is_empty());
+    assert!(audio.removed.lock().unwrap().contains(&first.id));
+    let body = vault.note(second.note_id.unwrap()).unwrap().body.to_markdown();
+    assert!(body.contains("## Summary") && !body.contains("could not be written"), "{body}");
+}
+
+#[tokio::test]
+async fn a_rejoin_whose_earlier_note_was_deleted_is_written_up_alone() {
+    let (_dir, vault) = test_vault();
+    let audio = Arc::new(FakeAudio::new());
+    let (first, second) = seed_rejoin(&vault, &audio, Duration::from_secs(5 * 60));
+    let seen = Arc::new(Seen::default());
+    run_all(&vault, &audio, first, Arc::new(FakeSummariser), &seen).await.unwrap();
+    let gone = vault.recording(first).unwrap().note_id.unwrap();
+    vault.delete_note(gone).unwrap();
+
+    run_all(&vault, &audio, second, Arc::new(FakeSummariser), &seen).await.unwrap();
+
+    let second = vault.recording(second).unwrap();
+    assert_eq!(second.stage, Stage::Done);
+    let note_id = second.note_id.expect("a note of its own");
+    assert_ne!(note_id, gone);
+    let lines = vault.transcript_for_note(note_id).unwrap().unwrap().as_lines();
+    assert!(
+        lines.contains("sorry my microphone died") && !lines.contains("hello there"),
+        "{lines}"
+    );
+}
+
+#[tokio::test]
+async fn a_draft_the_person_wrote_in_is_not_folded_into_the_earlier_note() {
+    let (_dir, vault) = test_vault();
+    let audio = Arc::new(FakeAudio::new());
+    let (first, second) = seed_rejoin(&vault, &audio, Duration::from_secs(5 * 60));
+    let seen = Arc::new(Seen::default());
+    run_all(&vault, &audio, first, Arc::new(FakeSummariser), &seen).await.unwrap();
+    // The later part made a draft of its own before it was known to carry
+    // on the earlier one; the person wrote in it.
+    crate::meeting::spool::mutate_recording(&vault, second, |r| {
+        r.continues = None;
+        Ok(())
+    })
+    .unwrap();
+    super::draft::ensure_draft(&vault, second, seen.as_ref()).await.unwrap();
+    let own = vault.recording(second).unwrap().note_id.unwrap();
+    edit_note(&vault, own, "Mine", "My own paragraph");
+    crate::meeting::spool::mutate_recording(&vault, second, |r| {
+        r.continues = Some(first);
+        Ok(())
+    })
+    .unwrap();
+
+    run_all(&vault, &audio, second, Arc::new(FakeSummariser), &seen).await.unwrap();
+
+    let second = vault.recording(second).unwrap();
+    assert_eq!(second.continues, None, "it stands alone now");
+    assert_eq!(second.note_id, Some(own));
+    assert_ne!(second.note_id, vault.recording(first).unwrap().note_id);
+    assert!(vault.note(own).unwrap().body.to_markdown().contains("My own paragraph"));
+}
+
+#[tokio::test]
+async fn a_rejoin_settles_a_failed_earlier_part_even_with_audio_never_transcribed() {
+    let (_dir, vault) = test_vault();
+    let audio = Arc::new(FakeAudio::new());
+    let (first, second) = seed_rejoin(&vault, &audio, Duration::from_secs(5 * 60));
+    let seen = Arc::new(Seen::default());
+    run_all(&vault, &audio, first, Arc::new(FailingSummariser), &seen).await.unwrap_err();
+    crate::meeting::spool::mutate_recording(&vault, first, |r| {
+        r.chunks.push(meta(Track::System, 99, 0, 1_000));
+        Ok(())
+    })
+    .unwrap();
+
+    run_all(&vault, &audio, second, Arc::new(FakeSummariser), &seen).await.unwrap();
+
+    let first = vault.recording(first).unwrap();
+    assert_eq!(first.stage, Stage::Done, "no banner with a Retry that always errors");
+    assert!(first.chunks.is_empty() && first.partial.is_empty());
+    assert!(audio.removed.lock().unwrap().contains(&first.id));
+}
+
+#[tokio::test]
+async fn releasing_a_later_part_takes_its_lines_and_marker_out_of_the_earlier_ones_note() {
+    let (_dir, vault) = test_vault();
+    let audio = Arc::new(FakeAudio::new());
+    let (first, second) = seed_rejoin(&vault, &audio, Duration::from_secs(20 * 60));
+    let seen = Arc::new(Seen::default());
+    run_all(&vault, &audio, first, Arc::new(FakeSummariser), &seen).await.unwrap();
+    let note_id = vault.recording(first).unwrap().note_id.unwrap();
+    let finished = vault.note(note_id).unwrap().body.to_markdown();
+    assert!(!super::draft::has_marker(&finished), "{finished}");
+
+    // The later part is drafted into the finished note, marker and all.
+    super::draft::ensure_draft(&vault, second, seen.as_ref()).await.unwrap();
+    let adopted = vault.recording(second).unwrap();
+    assert_eq!(adopted.note_id, Some(note_id));
+    assert!(super::draft::has_marker(&vault.note(note_id).unwrap().body.to_markdown()));
+    let lines = vault.transcript_for_note(note_id).unwrap().unwrap().as_lines();
+    assert!(lines.contains("sorry my microphone died"), "{lines}");
+
+    let changes = super::draft::release_note(&vault, &adopted).unwrap();
+
+    let body = vault.note(note_id).unwrap().body.to_markdown();
+    assert!(!super::draft::has_marker(&body), "{body}");
+    assert!(body.contains("## Summary"), "{body}");
+    let lines = vault.transcript_for_note(note_id).unwrap().unwrap().as_lines();
+    assert!(!lines.contains("sorry my microphone died"), "{lines}");
+    assert!(lines.contains("hello there"), "{lines}");
+    assert!(changes.iter().any(|c| matches!(c.kind, crate::events::Kind::Note)), "{changes:?}");
+    assert!(
+        changes.iter().any(|c| matches!(c.kind, crate::events::Kind::Transcript)),
+        "{changes:?}"
+    );
+    // The earlier part still sees the note as the pipeline's own.
+    let note = vault.note(note_id).unwrap();
+    assert_eq!(vault.recording(first).unwrap().note_written_at, Some(note.updated_at));
+}

@@ -42,13 +42,23 @@ pub fn enqueue(svc: &Arc<Service>, id: RecordingId) {
             None
         };
     let events = svc.events();
+    // Weak: the supervisor keeps this closure, and the service owns the
+    // supervisor.
+    let service = Arc::downgrade(svc);
     svc.supervisor().ensure(task_key(id), move |_stop| {
         let vault = vault.clone();
         let source = source.clone();
         let summariser = summariser.clone();
         let events = events.clone();
+        let service = service.clone();
         Box::pin(async move {
-            match run_recording(vault, source, id, summariser, events).await {
+            let outcome = run_recording(vault.clone(), source, id, summariser, events).await;
+            // Whatever this one came to, a later part of the same meeting
+            // may have been waiting for it -- see `combine`.
+            if let Some(svc) = service.upgrade() {
+                super::combine::wake_followers(&svc, &vault, id);
+            }
+            match outcome {
                 Ok(()) => Ok(Outcome::Done),
                 Err(e) => {
                     Err(Box::new(std::io::Error::other(e.message)) as crate::supervisor::TaskError)

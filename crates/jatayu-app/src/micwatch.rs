@@ -116,6 +116,17 @@ pub const SETTLE: Duration = Duration::from_secs(4);
 /// the module docs.
 pub const RELEASE_GRACE: Duration = Duration::from_secs(45);
 
+/// How long the microphone must be free of other programs, inside a call,
+/// for its return to count as the call's stream having been replaced -- a
+/// rejoin after trouble with the headset -- rather than a hiccup in one
+/// reading.
+pub const BLIP: Duration = Duration::from_secs(2);
+
+/// The least time between two [`MicEvent::Restarted`]. A call that
+/// reconnects stutters: the stream goes away and comes back several times
+/// in a few seconds, and the first of them is the news.
+pub const RESTART_DEBOUNCE: Duration = Duration::from_secs(10);
+
 /// How often the policy thread reads the list and asks the tracker.
 const TICK: Duration = Duration::from_secs(1);
 
@@ -127,6 +138,20 @@ pub struct MicUser {
     pub app: Option<String>,
     /// Its process id, when it said.
     pub pid: Option<u32>,
+    /// What tells this stream from every other, for as long as it lives: the
+    /// PipeWire node id on Linux, the CoreAudio process object on macOS.
+    /// `None` where the backend cannot say. Two readings that share no id
+    /// are two different streams even when the same program owns both,
+    /// which is how leaving one call and joining the next shows.
+    ///
+    /// Two limits follow from what the ids are. On macOS the object is per
+    /// process, not per stream, so a handover between two calls inside one
+    /// browser never shows there and only a change of process counts; the
+    /// rollover into the next meeting does not happen between two meetings
+    /// in the same browser. On Linux PipeWire allocates ids upwards and
+    /// reuses one only after the counter wraps or the id is freed, so a
+    /// reused id can, rarely, hide a handover.
+    pub id: Option<u32>,
 }
 
 /// What a reading of the microphone's users, over time, adds up to.
@@ -137,6 +162,20 @@ pub enum MicEvent {
     Started { app: Option<String> },
     /// The microphone has been free of other programs for [`RELEASE_GRACE`].
     Ended,
+    /// Inside a call, the microphone stream it was using has been replaced:
+    /// either the streams of the previous reading are all gone and others
+    /// are there (one call left, another joined, or a huddle handed over to
+    /// a Meet), or the microphone was free for at least [`BLIP`] and came
+    /// back before [`RELEASE_GRACE`] ended the session. `app` names the
+    /// oldest named user now. At most one per [`RESTART_DEBOUNCE`].
+    ///
+    /// `handover` is true only when the ids after the change share none with
+    /// those before it (for a blip, those before the gap against those after
+    /// it): another call, not the same one reconnecting. It is false when
+    /// the ids are unknown or unchanged -- an app that pauses its capture on
+    /// mute keeps its id -- and only a handover is a reason to move on to
+    /// the next meeting.
+    Restarted { app: Option<String>, handover: bool },
 }
 
 /// Where [`MicTracker`] is in one call's life.
@@ -149,8 +188,10 @@ enum Phase {
     Settling { since: Instant },
     /// `Started` has been reported. `free_since` is when the last reading
     /// with nobody on the microphone began, if the latest reading is such a
-    /// one.
-    Active { free_since: Option<Instant> },
+    /// one. `ids` are the stream ids of the latest reading that had any user
+    /// (empty when none of them carried an id), and `last_restart` is when
+    /// [`MicEvent::Restarted`] was last reported.
+    Active { free_since: Option<Instant>, ids: Vec<u32>, last_restart: Option<Instant> },
 }
 
 /// The policy: turns a once-a-second reading of who has the microphone into
@@ -195,7 +236,11 @@ impl MicTracker {
                     self.phase = Phase::Idle;
                     None
                 } else if now.saturating_duration_since(since) >= SETTLE {
-                    self.phase = Phase::Active { free_since: None };
+                    self.phase = Phase::Active {
+                        free_since: None,
+                        ids: stream_ids(users),
+                        last_restart: None,
+                    };
                     // The oldest user is the one that was there first, which
                     // is the call application rather than something that
                     // joined it; the first that has a name stands in when it
@@ -205,23 +250,54 @@ impl MicTracker {
                     None
                 }
             }
-            Phase::Active { free_since } => {
-                if !users.is_empty() {
-                    self.phase = Phase::Active { free_since: None };
-                    None
-                } else {
+            Phase::Active { free_since, ref ids, last_restart } => {
+                if users.is_empty() {
                     let since = free_since.unwrap_or(now);
                     if now.saturating_duration_since(since) >= RELEASE_GRACE {
                         self.phase = Phase::Idle;
                         Some(MicEvent::Ended)
                     } else {
-                        self.phase = Phase::Active { free_since: Some(since) };
+                        self.phase = Phase::Active {
+                            free_since: Some(since),
+                            ids: ids.clone(),
+                            last_restart,
+                        };
                         None
                     }
+                } else {
+                    let now_ids = stream_ids(users);
+                    let blip = free_since
+                        .is_some_and(|since| now.saturating_duration_since(since) >= BLIP);
+                    let handover = is_handover(ids, &now_ids);
+                    let debounced = last_restart
+                        .is_some_and(|at| now.saturating_duration_since(at) < RESTART_DEBOUNCE);
+                    let restarted = (blip || handover) && !debounced;
+                    self.phase = Phase::Active {
+                        free_since: None,
+                        ids: now_ids,
+                        last_restart: if restarted { Some(now) } else { last_restart },
+                    };
+                    restarted.then(|| MicEvent::Restarted {
+                        app: users.iter().find_map(|u| u.app.clone()),
+                        handover,
+                    })
                 }
             }
         }
     }
+}
+
+/// The stream ids in one reading, those that have one.
+fn stream_ids(users: &[MicUser]) -> Vec<u32> {
+    users.iter().filter_map(|u| u.id).collect()
+}
+
+/// Whether `now` is a different set of streams from `before`: both have
+/// ids, and not one of them is shared. A reading without ids cannot tell,
+/// so it never is. One stream staying while others come and go is the same
+/// call with a screen recorder or a second app joining it, not a new call.
+fn is_handover(before: &[u32], now: &[u32]) -> bool {
+    !before.is_empty() && !now.is_empty() && !now.iter().any(|id| before.contains(id))
 }
 
 /// Programs that open the microphone to show a level or to route audio, not
@@ -301,7 +377,7 @@ pub fn mic_user(props: &dyn Fn(&str) -> Option<String>, own_pid: u32) -> Option<
     let app = named("application.name")
         .or_else(|| named("application.process.binary"))
         .or_else(|| named("node.name"));
-    Some(MicUser { app, pid })
+    Some(MicUser { app, pid, id: None })
 }
 
 /// What the backend thread and the policy thread share.
@@ -403,6 +479,10 @@ fn spawn_policy(app: AppHandle, shared: Arc<Shared>) {
                         shared.active.store(true, Ordering::Relaxed);
                         crate::offers::on_mic_started(&app, name);
                     }
+                    Some(MicEvent::Restarted { app: name, handover }) => {
+                        tracing::info!(app = ?name, handover, "micwatch: the call's microphone stream was replaced");
+                        crate::offers::on_mic_restarted(&app, name, handover);
+                    }
                     Some(MicEvent::Ended) => {
                         tracing::info!("micwatch: the microphone is free again");
                         shared.active.store(false, Ordering::Relaxed);
@@ -422,7 +502,7 @@ mod tests {
     use super::*;
 
     fn user(app: &str) -> MicUser {
-        MicUser { app: Some(app.into()), pid: Some(100) }
+        MicUser { app: Some(app.into()), pid: Some(100), id: None }
     }
 
     /// A tracker, a clock starting at an arbitrary instant, and a way to
@@ -475,18 +555,122 @@ mod tests {
     fn a_gap_shorter_than_the_grace_keeps_the_session() {
         let (mut t, c) = (MicTracker::default(), Clock::new());
         let app = [user("teams")];
+        let restarted = Some(MicEvent::Restarted { app: Some("teams".into()), handover: false });
         t.observe(c.at(0), &app);
         assert!(t.observe(c.at(4), &app).is_some());
-        // The app reopens its stream: 30 s with nothing, then it is back.
+        // The app reopens its stream: 30 s with nothing, then it is back --
+        // the same session, with its stream reported as replaced.
         assert_eq!(t.observe(c.at(10), &[]), None);
         assert_eq!(t.observe(c.at(40), &[]), None);
-        assert_eq!(t.observe(c.at(41), &app), None);
+        assert_eq!(t.observe(c.at(41), &app), restarted);
         // The gap's clock starts over: another 44 s of nothing is still short.
         assert_eq!(t.observe(c.at(42), &[]), None);
         assert_eq!(t.observe(c.at(86), &[]), None);
         // And no second Started when it comes back.
-        assert_eq!(t.observe(c.at(87), &app), None);
+        assert_eq!(t.observe(c.at(87), &app), restarted);
         assert_eq!(t.observe(c.at(120), &app), None);
+    }
+
+    fn stream(app: &str, id: u32) -> MicUser {
+        MicUser { id: Some(id), ..user(app) }
+    }
+
+    /// A tracker already Active on `users`, started at `c.at(4)`.
+    fn active_on(c: &Clock, users: &[MicUser]) -> MicTracker {
+        let mut t = MicTracker::default();
+        t.observe(c.at(0), users);
+        assert!(matches!(t.observe(c.at(4), users), Some(MicEvent::Started { .. })));
+        t
+    }
+
+    #[test]
+    fn a_handover_to_other_streams_is_a_restart() {
+        let c = Clock::new();
+        let mut t = active_on(&c, &[stream("Google Chrome input", 1)]);
+        assert_eq!(t.observe(c.at(5), &[stream("Google Chrome input", 1)]), None);
+        // Leaving one Meet and joining the next: stream 1 gone, 2 there.
+        assert_eq!(
+            t.observe(c.at(6), &[stream("Google Chrome input", 2)]),
+            Some(MicEvent::Restarted { app: Some("Google Chrome input".into()), handover: true })
+        );
+        // Stream 2 staying is nothing new.
+        assert_eq!(t.observe(c.at(7), &[stream("Google Chrome input", 2)]), None);
+    }
+
+    #[test]
+    fn a_blip_in_the_same_stream_is_not_a_handover_but_one_that_returns_as_another_is() {
+        let c = Clock::new();
+        let mut t = active_on(&c, &[stream("meet", 1)]);
+        assert_eq!(t.observe(c.at(5), &[]), None);
+        assert_eq!(
+            t.observe(c.at(8), &[stream("meet", 1)]),
+            Some(MicEvent::Restarted { app: Some("meet".into()), handover: false })
+        );
+        assert_eq!(t.observe(c.at(20), &[]), None);
+        assert_eq!(
+            t.observe(c.at(23), &[stream("meet", 2)]),
+            Some(MicEvent::Restarted { app: Some("meet".into()), handover: true })
+        );
+    }
+
+    #[test]
+    fn a_second_program_joining_is_not_a_restart() {
+        let c = Clock::new();
+        let mut t = active_on(&c, &[stream("zoom", 1)]);
+        assert_eq!(t.observe(c.at(5), &[stream("zoom", 1), stream("obs", 2)]), None);
+        // The first leaving while the second stays: still a stream in common
+        // with the reading before.
+        assert_eq!(t.observe(c.at(6), &[stream("obs", 2)]), None);
+    }
+
+    #[test]
+    fn a_blip_of_two_seconds_is_a_restart_and_a_shorter_one_is_not() {
+        let c = Clock::new();
+        let mut t = active_on(&c, &[user("meet")]);
+        assert_eq!(t.observe(c.at(5), &[]), None);
+        assert_eq!(t.observe(c.at(6), &[user("meet")]), None);
+        assert_eq!(t.observe(c.at(7), &[]), None);
+        assert_eq!(
+            t.observe(c.at(9), &[user("meet")]),
+            Some(MicEvent::Restarted { app: Some("meet".into()), handover: false })
+        );
+    }
+
+    #[test]
+    fn readings_without_ids_never_hand_over() {
+        let c = Clock::new();
+        let mut t = active_on(&c, &[user("meet")]);
+        assert_eq!(t.observe(c.at(5), &[user("slack")]), None);
+        // Nor does going from ids to none, or from none to ids.
+        assert_eq!(t.observe(c.at(6), &[stream("slack", 3)]), None);
+        assert_eq!(t.observe(c.at(7), &[user("slack")]), None);
+        assert_eq!(t.observe(c.at(8), &[stream("slack", 4)]), None);
+    }
+
+    #[test]
+    fn restarts_are_debounced() {
+        let c = Clock::new();
+        let mut t = active_on(&c, &[stream("meet", 1)]);
+        assert!(matches!(
+            t.observe(c.at(5), &[stream("meet", 2)]),
+            Some(MicEvent::Restarted { .. })
+        ));
+        assert_eq!(t.observe(c.at(8), &[stream("meet", 3)]), None);
+        assert_eq!(t.observe(c.at(14), &[stream("meet", 4)]), None);
+        // Ten seconds after the reported one, the next counts.
+        assert!(matches!(
+            t.observe(c.at(16), &[stream("meet", 5)]),
+            Some(MicEvent::Restarted { .. })
+        ));
+    }
+
+    #[test]
+    fn a_return_after_the_grace_is_a_new_session_not_a_restart() {
+        let c = Clock::new();
+        let mut t = active_on(&c, &[stream("meet", 1)]);
+        t.observe(c.at(10), &[]);
+        assert_eq!(t.observe(c.at(55), &[]), Some(MicEvent::Ended));
+        assert_eq!(t.observe(c.at(56), &[stream("meet", 2)]), None);
     }
 
     #[test]
@@ -543,7 +727,7 @@ mod tests {
     #[test]
     fn a_nameless_oldest_user_gives_way_to_a_named_one() {
         let (mut t, c) = (MicTracker::default(), Clock::new());
-        let users = [MicUser { app: None, pid: None }, user("zoom")];
+        let users = [MicUser { app: None, pid: None, id: None }, user("zoom")];
         t.observe(c.at(0), &users);
         assert_eq!(
             t.observe(c.at(4), &users),
@@ -551,7 +735,7 @@ mod tests {
         );
         // And a call with no names at all is still a call.
         let mut t = MicTracker::default();
-        let nameless = [MicUser { app: None, pid: None }];
+        let nameless = [MicUser { app: None, pid: None, id: None }];
         t.observe(c.at(0), &nameless);
         assert_eq!(t.observe(c.at(5), &nameless), Some(MicEvent::Started { app: None }));
     }
@@ -587,7 +771,7 @@ mod tests {
         ]);
         assert_eq!(
             mic_user(&p, OWN),
-            Some(MicUser { app: Some("Firefox".into()), pid: Some(9001) })
+            Some(MicUser { app: Some("Firefox".into()), pid: Some(9001), id: None })
         );
     }
 
@@ -602,7 +786,7 @@ mod tests {
         let p = props(&[("media.class", "Stream/Input/Audio"), ("node.name", "ZOOM VoiceEngine")]);
         assert_eq!(mic_user(&p, OWN).unwrap().app.as_deref(), Some("ZOOM VoiceEngine"));
         let p = props(&[("media.class", "Stream/Input/Audio")]);
-        assert_eq!(mic_user(&p, OWN), Some(MicUser { app: None, pid: None }));
+        assert_eq!(mic_user(&p, OWN), Some(MicUser { app: None, pid: None, id: None }));
     }
 
     #[test]
@@ -708,7 +892,10 @@ mod tests {
             ("application.name", "Weird"),
             ("application.process.id", "not-a-number"),
         ]);
-        assert_eq!(mic_user(&p, OWN), Some(MicUser { app: Some("Weird".into()), pid: None }));
+        assert_eq!(
+            mic_user(&p, OWN),
+            Some(MicUser { app: Some("Weird".into()), pid: None, id: None })
+        );
     }
 
     // --- the state ------------------------------------------------------

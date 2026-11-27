@@ -452,14 +452,11 @@ export const RELOADS: Record<ChangeKind, ReloadTarget | null> = {
   // comment on why the two kinds are not told apart.
   recording: 'meetings',
   voiceprint: 'meetings',
-  // What was said in a call. Not routed: the one place it is shown,
-  // `TranscriptPanel.svelte`, already reloads on its own whenever the note
-  // it sits under changes (`$effect(() => void load(noteId))`), and a
-  // transcript is never read anywhere a list is drawn from. A speaker
-  // renamed in another window while this one has the same transcript open
-  // is not disruptive enough to interrupt for -- the same call `conversation`
-  // and `memory` above make.
-  transcript: null,
+  // What was said in a call. The note a call becomes exists as a draft from
+  // the moment it ends, and its transcript is written, then its speakers
+  // worked out, while it may be open: the same `meetings` target, whose
+  // refresh tells the open `TranscriptPanel` to read it again.
+  transcript: 'meetings',
   // What somebody follows, and what it brought. A background refresh raises
   // one `story` change with no id for the whole pass -- "reload the list", as
   // a mail sync does -- so there is nothing to patch in place and no applier.

@@ -68,6 +68,12 @@ class MeetingsState {
    * disabled rather than as a race that resolves into a confusing refusal.
    */
   starting = $state(false)
+  /**
+   * Counts the live changes to recordings and transcripts. `TranscriptPanel`
+   * refetches its transcript when it moves, so a draft note's transcript
+   * shows as soon as it exists, and its speakers as soon as they are named.
+   */
+  transcriptRevision = $state(0)
   /** Set while the "still on the call?" prompt should be showing. */
   stillOn = $state<RecordingId | null>(null)
   /**
@@ -272,6 +278,9 @@ class MeetingsState {
    * telling the two kinds apart would save anything worth the extra code.
    */
   async liveRefresh() {
+    // A call's transcript is written while its note is open. The open panel
+    // watches this to read it again.
+    this.transcriptRevision++
     await Promise.all([this.refreshRecordings(), this.loadVoiceprints()])
   }
 
@@ -334,6 +343,7 @@ class MeetingsState {
     eventId?: string | null
     title?: string | null
     templateId?: string | null
+    continues?: RecordingId | null
   }): Promise<Recording> {
     this.starting = true
     try {

@@ -1034,17 +1034,41 @@ fn marker_path(dir: &Path) -> PathBuf {
     dir.join(".installed.json")
 }
 
+/// Files their publisher has since replaced in place, by `dest` and the
+/// size of the copy published before: a copy downloaded and verified then
+/// is still a good copy, and is still installed. Without this, sherpa-onnx
+/// re-publishing the speaker-embedding model one byte larger (Nov 2026)
+/// made every speech kit downloaded before it "not installed" -- and with
+/// it meeting notes, voice typing and voice mode, all refused until the kit
+/// was fetched again.
+const EARLIER_RELEASES: &[(&str, u64)] = &[("speaker-embedding.onnx", 26_485_263)];
+
+/// Whether a file of `bytes` is `file` as published now, or as published
+/// before (see [`EARLIER_RELEASES`]).
+fn published_size(file: &ModelFile, bytes: u64) -> bool {
+    bytes == file.bytes || EARLIER_RELEASES.iter().any(|&(dest, b)| dest == file.dest && b == bytes)
+}
+
 fn is_installed(spec: &ModelSpec) -> bool {
-    let dir = spec.dir();
-    let Ok(text) = std::fs::read_to_string(marker_path(&dir)) else { return false };
+    installed_in(spec, &spec.dir())
+}
+
+/// [`is_installed`] for the model's files in `dir`: the marker the download
+/// left lists every file, each at a size its publisher put out, and each
+/// file on disk is the size the marker recorded.
+fn installed_in(spec: &ModelSpec, dir: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(marker_path(dir)) else { return false };
     let Ok(marker) = serde_json::from_str::<Marker>(&text) else { return false };
     let expected = spec.files();
     if marker.files.len() != expected.len() {
         return false;
     }
     expected.iter().all(|file| {
-        marker.files.iter().any(|(dest, bytes)| dest == file.dest && *bytes == file.bytes)
-            && std::fs::metadata(dir.join(file.dest)).is_ok_and(|m| m.len() == file.bytes)
+        marker.files.iter().any(|(dest, bytes)| {
+            dest == file.dest
+                && published_size(file, *bytes)
+                && std::fs::metadata(dir.join(file.dest)).is_ok_and(|m| m.len() == *bytes)
+        })
     })
 }
 
@@ -1874,16 +1898,36 @@ mod tests {
     /// tests do not have to share a process-wide environment variable to
     /// redirect it.
     fn is_installed_at(spec: &ModelSpec, dir: &Path) -> bool {
-        let Ok(text) = std::fs::read_to_string(marker_path(dir)) else { return false };
-        let Ok(marker) = serde_json::from_str::<Marker>(&text) else { return false };
-        let expected = spec.files();
-        if marker.files.len() != expected.len() {
-            return false;
-        }
-        expected.iter().all(|file| {
-            marker.files.iter().any(|(dest, bytes)| dest == file.dest && *bytes == file.bytes)
-                && std::fs::metadata(dir.join(file.dest)).is_ok_and(|m| m.len() == file.bytes)
-        })
+        installed_in(spec, dir)
+    }
+
+    #[test]
+    fn a_copy_of_a_file_since_republished_is_still_installed() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = ModelSpec {
+            id: "test-kit",
+            kind: ModelKind::Speech,
+            name: "Test",
+            description: "",
+            languages: "",
+            sources: &[Source::File {
+                url: "https://example.invalid/speaker-embedding.onnx",
+                file: ModelFile { dest: "speaker-embedding.onnx", sha256: "0", bytes: 26_485_264 },
+            }],
+        };
+        let old = 26_485_263u64;
+        let file = std::fs::File::create(dir.path().join("speaker-embedding.onnx")).unwrap();
+        file.set_len(old).unwrap();
+        let marker = Marker { files: vec![("speaker-embedding.onnx".to_string(), old)] };
+        std::fs::write(marker_path(dir.path()), serde_json::to_string(&marker).unwrap()).unwrap();
+        assert!(is_installed_at(&spec, dir.path()), "the copy published before still counts");
+
+        // Any other size is still not installed, whatever the marker says.
+        file.set_len(old - 1).unwrap();
+        assert!(!is_installed_at(&spec, dir.path()));
+        let marker = Marker { files: vec![("speaker-embedding.onnx".to_string(), old - 1)] };
+        std::fs::write(marker_path(dir.path()), serde_json::to_string(&marker).unwrap()).unwrap();
+        assert!(!is_installed_at(&spec, dir.path()));
     }
 
     /// A [`Download`] in the shape [`extract_members_blocking`] and

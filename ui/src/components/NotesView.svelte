@@ -10,6 +10,8 @@
   import { onDestroy } from 'svelte'
   import { app, handle } from '../lib/state.svelte'
   import { notes } from '../lib/notes.svelte'
+  import { meetings } from '../lib/meetings.svelte'
+  import { draftStageLabel, recordingWritingNote } from '../lib/meetings-format'
   import { insertFilled, templates } from '../lib/templates.svelte'
   import { details, phone } from '../lib/phone.svelte'
   import { plural, relativeTime } from '../lib/format'
@@ -44,6 +46,25 @@
   let confirmingDelete = $state(false)
 
   const note = $derived(notes.open)
+
+  // A call's note exists as a draft from the moment the call ends. While its
+  // recording is still being worked on -- or has failed -- say so above it.
+  const writing = $derived(recordingWritingNote(meetings.recordings, note?.id))
+  const drafting = $derived(writing !== null)
+  const draftFailed = $derived(writing?.stage.type === 'failed')
+  const draftReason = $derived(writing?.stage.type === 'failed' ? writing.stage.reason : null)
+  const draftStage = $derived(writing ? (draftStageLabel(writing.stage) ?? 'Working on it') : '')
+  let retrying = $state(false)
+
+  async function retryDraft() {
+    if (!writing) return
+    retrying = true
+    try {
+      await meetings.retryRecording(writing.id)
+    } finally {
+      retrying = false
+    }
+  }
 
   // ── On a phone ───────────────────────────────────────────────────────
   //
@@ -469,6 +490,23 @@
           {/if}
         </header>
 
+        {#if drafting}
+          <div class="draft" class:failed={draftFailed} role="status">
+            {#if draftFailed}
+              <Icon name="alert" size={14} />
+              <span class="draft-text">
+                The summary could not be written{draftReason ? `: ${draftReason}` : '.'}
+              </span>
+              <button class="btn" disabled={retrying} onclick={() => void retryDraft()}>
+                Retry
+              </button>
+            {:else}
+              <span class="spinner" aria-hidden="true"></span>
+              <span class="draft-text">{draftStage}…</span>
+            {/if}
+          </div>
+        {/if}
+
         <RichText
           oneditor={(ed: TipTapEditor | null) => (editor = ed)}
           docId={note.id}
@@ -667,6 +705,46 @@
     background: color-mix(in oklab, var(--accent) 12%, var(--bg-raised));
     color: var(--fg);
     font-size: var(--text-sm);
+  }
+
+  /* The slim line above a call's note while the pipeline is still filling
+     it in -- the same spinner and failed colouring `RecordingCard` has. */
+  .draft {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-3);
+    padding: var(--sp-2) var(--sp-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-raised);
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+  }
+  .draft.failed {
+    border-color: color-mix(in oklab, var(--danger) 30%, var(--border));
+    background: color-mix(in oklab, var(--danger) 6%, var(--bg));
+    color: var(--danger);
+  }
+  .draft-text {
+    flex: 1;
+    min-width: 12rem;
+    color: var(--fg-muted);
+  }
+  .spinner {
+    flex: none;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    border: 1.5px solid var(--fg-faint);
+    border-top-color: var(--accent);
+    animation: ky-spin 0.8s linear infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .spinner {
+      animation: none;
+    }
   }
 
   .conflict span {

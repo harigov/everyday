@@ -73,7 +73,7 @@ use jatayu_core::id::{CalendarId, EventId, RecordingId, TaskId};
 use jatayu_core::meeting::Recording;
 use jatayu_core::meeting::brief::{MeetingBrief, join_service};
 use jatayu_service::Ctx;
-use jatayu_service::domains::meetings::MeetingNow;
+use jatayu_service::domains::meetings::{MeetingNow, ResumeHint};
 use jatayu_service::error::{CommandError, CommandResult};
 use jatayu_service::events::MeetingOffer;
 use jiff::tz::TimeZone;
@@ -109,6 +109,175 @@ const CALL_ENDED_KEY: &str = "call-ended";
 /// How long after a recording starts a call that begins can still be the
 /// call it is recording -- see [`on_mic_started`].
 const LINK_WINDOW: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// How close to the end of the meeting being recorded a call's microphone
+/// stream can be replaced before the replacement may be the next meeting.
+/// People join the next call a few minutes before the last one is over.
+const ROLLOVER_LEAD: jiff::SignedDuration = jiff::SignedDuration::from_secs(5 * 60);
+
+/// How close the next meeting must be, for a recording that is tied to no
+/// meeting to be rolled over to it. Shorter than [`ROLLOVER_LEAD`]: there is
+/// no meeting of this recording's own to be nearly over.
+const ROLLOVER_NO_MEETING_LEAD: jiff::SignedDuration = jiff::SignedDuration::from_secs(2 * 60);
+
+/// What the title of an offer to carry on an earlier recording starts with.
+/// The recording itself keeps the earlier title; see [`continued_title`].
+const CONTINUE_PREFIX: &str = "Continue notes for ";
+
+/// The key of the notice that says notes carry on or move to the next
+/// meeting. Raised after a recording starts, and taken down with the next
+/// stop like the other notices about the running recording.
+const CONTINUE_KEY: &str = "continue-notes";
+
+/// Why a recording stopped, as far as the offers hub is concerned: whether a
+/// call that is rejoined moments later carries on the same note by itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StopCause {
+    /// The call application let go of the microphone ([`on_mic_ended`]).
+    CallEnded,
+    /// A person stopped it: the command, the tray, the card, a notice.
+    Manual,
+    /// The capture thread ended it by itself: past the event's end and
+    /// quiet, or the audio could not be kept going.
+    Automatic,
+    /// Stopped to begin the next meeting's recording ([`on_mic_restarted`]).
+    /// Nothing is carried on from it.
+    Rollover,
+}
+
+/// The recording that is running, as far as the hub needs to know it.
+#[derive(Debug, Clone)]
+struct Running {
+    id: RecordingId,
+    title: String,
+    /// The calendar event it is tied to, as [`event_key`] spells it.
+    key: Option<String>,
+    /// When that event starts.
+    event_start: Option<jiff::Timestamp>,
+    /// When that event ends.
+    end: Option<jiff::Timestamp>,
+    /// When this recording began: a meeting that started before it is not
+    /// the next one.
+    started: jiff::Timestamp,
+    /// The application whose call it is being taken on, when the platform
+    /// named one: what tells a rejoin of this call from some other call.
+    app: Option<String>,
+}
+
+/// The recording that stopped last, kept for [`REJOIN_WINDOW_MS`] so a call
+/// that is rejoined can carry it on.
+#[derive(Debug, Clone)]
+struct LastStop {
+    id: RecordingId,
+    at: std::time::Instant,
+    cause: StopCause,
+    /// The calendar event it was tied to, as [`event_key`] spells it.
+    key: Option<String>,
+    /// The call application it was taken on, if one was named.
+    app: Option<String>,
+}
+
+/// What to do about a call that starts while a recording of the same
+/// meeting stopped moments ago.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Rejoin {
+    /// Nothing to carry on: the ordinary offer.
+    No,
+    /// The call ended and is back: carry on without asking.
+    Continue,
+    /// A person stopped it: ask, and carry on if they say take.
+    Ask,
+}
+
+/// Decide a [`Rejoin`] from what the hub remembers of the last stop and what
+/// the service says a call starting now would carry on. Both must name the
+/// same recording, and the stop must be within [`REJOIN_WINDOW_MS`] -- the
+/// service has its own clock and this the hub's, so each is checked.
+///
+/// The service's hint only says a recording ended lately, not that this is
+/// its call: any application taking the microphone within the window would
+/// otherwise be folded into the earlier note. So carrying on without asking
+/// needs the call to have ended by itself, the new session to be of the same
+/// application (both named, compared without regard to case), the speech
+/// models to be ready, and the meeting chosen now, if one is, to be the one
+/// that was recorded. When only the application or only the meeting
+/// matches it asks; when neither does the hint is ignored.
+fn rejoin_for(
+    last: Option<&LastStop>,
+    resume: Option<&ResumeHint>,
+    elapsed: std::time::Duration,
+    app: Option<&str>,
+    event: Option<&str>,
+    ready: bool,
+) -> Rejoin {
+    let (Some(last), Some(resume)) = (last, resume) else { return Rejoin::No };
+    let within = i64::try_from(elapsed.as_millis())
+        .is_ok_and(|ms| ms <= jatayu_core::meeting::REJOIN_WINDOW_MS);
+    if last.id != resume.recording_id || !within || last.cause == StopCause::Rollover {
+        return Rejoin::No;
+    }
+    let same_app = matches!((last.app.as_deref(), app),
+        (Some(a), Some(b)) if a.to_lowercase() == b.to_lowercase());
+    let same_event = event.is_some() && event == last.key.as_deref();
+    let event_fits = event.is_none() || same_event;
+    if last.cause == StopCause::CallEnded && same_app && ready && event_fits {
+        Rejoin::Continue
+    } else if same_app || same_event {
+        Rejoin::Ask
+    } else {
+        Rejoin::No
+    }
+}
+
+/// The title the recording that continues is given: an offer's own title
+/// without the words that say it continues.
+fn continued_title(offer_title: &str) -> &str {
+    offer_title.strip_prefix(CONTINUE_PREFIX).unwrap_or(offer_title)
+}
+
+/// Whether the call's microphone stream being replaced means the next
+/// meeting has begun, and so the running recording should end and another
+/// begin. `current_key` and `current_end` are the running recording's
+/// calendar event, if it has one; `next_key` and `next_start` are the
+/// meeting the service says is on now; `recorded` is that the service
+/// found a recording of that same meeting that ended lately -- it was just
+/// recorded and stopped, and is not to be recorded again over this one.
+///
+/// A different meeting is not enough, since a meeting that overlaps this
+/// one is not this one ending: the recording rolls over when the current
+/// meeting is over or within [`ROLLOVER_LEAD`] of being so. One with no
+/// meeting of its own rolls over only when the next has started or is
+/// within [`ROLLOVER_NO_MEETING_LEAD`] of it, so a stream that blips in
+/// an ad hoc call does not cut it off for a meeting that is minutes away.
+/// The same rule Screenpipe uses -- split only when the microphone is taken
+/// again after the bound event ended and the calendar selects another.
+///
+/// The next meeting must also start after the running recording did, and
+/// after the current event's start when there is one. The service can name
+/// a long meeting that is on now but began earlier (an all-day-ish
+/// "Offsite"), and near the current meeting's end any restart would
+/// otherwise roll into it.
+fn should_roll_over(
+    current: &Running,
+    next_key: &str,
+    next_start: jiff::Timestamp,
+    recorded: bool,
+    now: jiff::Timestamp,
+) -> bool {
+    let (current_key, current_end) = (current.key.as_deref(), current.end);
+    if recorded || current_key == Some(next_key) {
+        return false;
+    }
+    if next_start <= current.started || current.event_start.is_some_and(|s| next_start <= s) {
+        return false;
+    }
+    match (current_key, current_end) {
+        (Some(_), Some(end)) => end.checked_sub(ROLLOVER_LEAD).is_ok_and(|from| now >= from),
+        // Tied to a meeting whose end is not known: leave it be.
+        (Some(_), None) => false,
+        (None, _) => next_start.checked_sub(ROLLOVER_NO_MEETING_LEAD).is_ok_and(|from| now >= from),
+    }
+}
 
 /// Where an offer came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -148,6 +317,11 @@ pub struct OfferPayload {
     pub auto_record: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recording_id: Option<RecordingId>,
+    /// An earlier recording of this same meeting, which taking notes now
+    /// carries on instead of starting a second note: the person stopped
+    /// notes by hand and is back in the call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub continues: Option<RecordingId>,
 }
 
 /// The corner card, when one is up: whose it is and which face it wears.
@@ -218,6 +392,7 @@ fn calendar_payload(
         automatic: starts_automatically(offer),
         auto_record: offer.auto_record,
         recording_id: None,
+        continues: None,
     }
 }
 
@@ -244,6 +419,7 @@ fn mic_payload(n: u64, app_name: Option<String>, ready: bool) -> OfferPayload {
         automatic: false,
         auto_record: false,
         recording_id: None,
+        continues: None,
     }
 }
 
@@ -402,6 +578,24 @@ fn call_ended_text(title: &str, app_name: Option<&str>) -> NoticeText {
     }
 }
 
+/// What to tell somebody whose rejoined call went into the same note.
+fn continuing_text(title: &str) -> NoticeText {
+    NoticeText {
+        summary: format!("Continuing notes for {title}"),
+        body: "You are back in the call; this goes into the same note.".to_string(),
+        actions: vec![("stop", "Stop recording")],
+    }
+}
+
+/// What to tell somebody whose recording moved on to the next meeting.
+fn rollover_text(from: &str, to: &str) -> NoticeText {
+    NoticeText {
+        summary: format!("Taking notes for {to}"),
+        body: format!("Notes from {from} are being written. Now taking notes for {to}."),
+        actions: vec![("stop", "Stop recording")],
+    }
+}
+
 // ---- the bookkeeping --------------------------------------------------------
 
 /// An offer waiting for an answer.
@@ -525,6 +719,14 @@ impl Book {
     }
 }
 
+impl Inner {
+    /// How long ago the last stop was; zero when there was none, which
+    /// [`rejoin_for`] never looks at.
+    fn last_stop_elapsed(&self) -> std::time::Duration {
+        self.last_stop.as_ref().map(|l| l.at.elapsed()).unwrap_or_default()
+    }
+}
+
 #[derive(Default)]
 struct Inner {
     book: Book,
@@ -537,6 +739,11 @@ struct Inner {
     mic_app: Option<String>,
     /// When the running recording started, if one is running.
     recording_started: Option<std::time::Instant>,
+    /// The running recording's id, title and meeting.
+    running: Option<Running>,
+    /// The recording that stopped last, until it is carried on or the rejoin
+    /// window passes.
+    last_stop: Option<LastStop>,
     /// Keys of notifications raised that are not pending offers -- "Taking
     /// notes for ... (Stop)" and "Call ended" -- so they can be taken down
     /// when they stop being true, and when the vault locks.
@@ -1481,6 +1688,111 @@ pub fn on_mic_started(app: &AppHandle, app_name: Option<String>) {
     tauri::async_runtime::spawn(async move { mic_started(&app, app_name).await });
 }
 
+/// The microphone stream of the call being recorded was replaced -- one
+/// call left and the next joined, or the stream dropped and came back. Called
+/// by [`crate::micwatch`].
+///
+/// `handover` is whether the streams before and after share none (see
+/// [`crate::micwatch::MicEvent::Restarted`]); without one this does nothing.
+///
+/// Only the call's own recording is concerned. When the service says another
+/// meeting is on now and [`should_roll_over`] agrees, the recording is
+/// stopped, never discarded, and the next meeting's begun at once: the
+/// person already chose to take notes on this call, so the second meeting
+/// does not ask again. Anything else -- the same meeting, or none -- is a
+/// rejoin, and the recording simply carries on.
+pub fn on_mic_restarted(app: &AppHandle, app_name: Option<String>, handover: bool) {
+    // A stream that dropped and came back as itself, or a program that
+    // paused its capture, is the same call running over, not the next
+    // one: with settings that ask first, rolling over would stop the
+    // recording and lose the rest of it.
+    if !handover {
+        return;
+    }
+    let linked = offers(app).with(|o| o.mic_linked && o.running.is_some());
+    if !linked || !crate::meeting::state_already_recording(app) {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move { mic_restarted(&app, app_name).await });
+}
+
+async fn mic_restarted(app: &AppHandle, _app_name: Option<String>) {
+    let session = app.state::<AppState>().session().as_session();
+    let now: MeetingNow = match session.call(Ctx::local(), "meeting_now", json!({})).await {
+        Ok(value) => match serde_json::from_value(value) {
+            Ok(now) => now,
+            Err(e) => {
+                tracing::debug!(error = %e, "meeting_now answered oddly");
+                return;
+            }
+        },
+        Err(e) => {
+            tracing::debug!(error = %e, "the next meeting could not be looked for");
+            return;
+        }
+    };
+    if !now.offers {
+        return;
+    }
+    let Some(next) = now.event else { return };
+    if !now.ready {
+        return;
+    }
+    let Some(current) = offers(app).with(|o| o.running.clone()) else { return };
+    let next_key = event_key(next.calendar_id, &next.uid);
+    // A resume hint beside a chosen meeting names a recording of that same
+    // meeting: it was recorded and stopped lately, and is not begun again.
+    if !should_roll_over(
+        &current,
+        &next_key,
+        next.start,
+        now.resume.is_some(),
+        jiff::Timestamp::now(),
+    ) {
+        return;
+    }
+    // No titles in the journal: a meeting's name is the person's business.
+    tracing::info!(from = %current.id, "ending the recording for the next meeting");
+    if let Err(e) = crate::meeting::stop_because(app, false, StopCause::Rollover).await {
+        tracing::warn!(error = %e, "could not stop the recording to begin the next meeting's");
+        return;
+    }
+    if !(starts_automatically(&next) || now.auto_record) {
+        // The person's settings ask first: the recording is over, so the two
+        // meetings are not one note, and the next meeting's own offer is
+        // raised, as the calendar would. The call is on, so not the join
+        // card. It was offered before, and its card taken down when this
+        // recording began, so it is let be offered again.
+        let payload = calendar_payload(&next, OfferSource::Calendar, None);
+        offers(app).with(|o| o.book.forget_offered(&next_key));
+        offer_event(app, payload, next.end, true);
+        return;
+    }
+    // The calendar's own offer for it must not come as well.
+    offers(app).with(|o| {
+        o.book.mark_offered(&next_key, next.end, jiff::Timestamp::now());
+    });
+    match crate::meeting::begin(
+        app.clone(),
+        Ctx::local(),
+        Some(next.event_id),
+        None,
+        None,
+        true,
+        None,
+    )
+    .await
+    {
+        Ok(_) => {
+            let text = rollover_text(&current.title, &next.title);
+            offers(app).with(|o| o.shown.push(CONTINUE_KEY.to_string()));
+            raise_notice(app, CONTINUE_KEY, &text);
+        }
+        Err(e) => report_failure(app, "", &e),
+    }
+}
+
 async fn mic_started(app: &AppHandle, app_name: Option<String>) {
     let session = app.state::<AppState>().session().as_session();
     let now: MeetingNow = match session.call(Ctx::local(), "meeting_now", json!({})).await {
@@ -1523,9 +1835,76 @@ async fn mic_started(app: &AppHandle, app_name: Option<String>) {
     if !still_on {
         return;
     }
+    // A call that is back moments after a recording of it stopped is the
+    // same meeting: carry its note on rather than start another -- by
+    // itself only when it is clearly the same call, otherwise by asking.
+    let event_now = now.event.as_ref().map(|e| event_key(e.calendar_id, &e.uid));
+    let mut rejoin = offers(app).with(|o| {
+        rejoin_for(
+            o.last_stop.as_ref(),
+            now.resume.as_ref(),
+            o.last_stop_elapsed(),
+            app_name.as_deref(),
+            event_now.as_deref(),
+            now.ready,
+        )
+    });
+    let had_resume = now.resume.is_some();
+    if let (Some(resume), Rejoin::Continue) = (now.resume.as_ref(), rejoin) {
+        let event_id = now.event.as_ref().map(|e| e.event_id);
+        let began = crate::meeting::begin(
+            app.clone(),
+            Ctx::local(),
+            event_id,
+            Some(resume.title.clone()),
+            None,
+            true,
+            Some(resume.recording_id),
+        )
+        .await;
+        match began {
+            Ok(_) => {
+                let text = continuing_text(&resume.title);
+                offers(app).with(|o| o.shown.push(CONTINUE_KEY.to_string()));
+                raise_notice(app, CONTINUE_KEY, &text);
+                return;
+            }
+            Err(e) => {
+                // The call is not to go unrecorded without a word: say so,
+                // and ask instead. `last_stop` is still there for it.
+                report_failure(app, "", &e);
+                rejoin = Rejoin::Ask;
+            }
+        }
+    }
+    if let (Some(resume), Rejoin::Ask) = (now.resume.as_ref(), rejoin) {
+        offers(app).with(|o| o.last_stop = None);
+        let mut payload = match &now.event {
+            Some(event) => calendar_payload(event, OfferSource::Microphone, app_name),
+            None => {
+                offers(app).with(|o| mic_payload(o.book.next_mic_number(), app_name, now.ready))
+            }
+        };
+        payload.auto_record = now.auto_record;
+        payload.automatic = false;
+        payload.ready = now.ready;
+        payload.title = format!("{CONTINUE_PREFIX}{}", resume.title);
+        payload.continues = Some(resume.recording_id);
+        let expires = now.event.as_ref().map(|e| e.end);
+        // Replaces an earlier offer for the same event: this one
+        // knows which note to carry on.
+        raise(app, payload, expires, true);
+        return;
+    }
     match now.event {
         Some(event) => {
-            let payload = calendar_payload(&event, OfferSource::Microphone, app_name);
+            let mut payload = calendar_payload(&event, OfferSource::Microphone, app_name);
+            // A recording of this meeting ended lately and the shell lost
+            // track of it (a restart, say): it may have been stopped on
+            // purpose, so ask rather than start it again unasked.
+            if had_resume {
+                payload.automatic = false;
+            }
             // The microphone going live is the join. A recording already
             // running holds the offer back, and that one is asked rather
             // than counted down the moment the previous recording stops.
@@ -1566,8 +1945,17 @@ pub fn on_mic_ended(app: &AppHandle) {
     if let Some(payload) = offers(app).with(|o| o.joined(jiff::Timestamp::now())) {
         show_still(app, &payload.key, CardPhase::Join);
     }
-    let (linked, name) =
-        offers(app).with(|o| (std::mem::take(&mut o.mic_linked), o.mic_app.take()));
+    let (linked, name) = offers(app).with(|o| {
+        // A recording begun before the call was joined learns whose call it
+        // was only now; a rejoin is of that application's.
+        if o.mic_linked
+            && let Some(r) = o.running.as_mut()
+            && r.app.is_none()
+        {
+            r.app = o.mic_app.clone();
+        }
+        (std::mem::take(&mut o.mic_linked), o.mic_app.take())
+    });
     if !linked || !crate::meeting::state_already_recording(app) {
         return;
     }
@@ -1586,7 +1974,7 @@ pub fn on_mic_ended(app: &AppHandle) {
             .and_then(crate::capture::CaptureSlot::handle)
             .and_then(|h| h.status())
             .map(|s| s.title);
-        match crate::meeting::stop(&app, false).await {
+        match crate::meeting::stop_because(&app, false, StopCause::CallEnded).await {
             Ok(()) => {
                 let text = call_ended_text(title.as_deref().unwrap_or("the call"), name.as_deref());
                 offers(&app).with(|o| o.shown.push(CALL_ENDED_KEY.to_string()));
@@ -1605,30 +1993,48 @@ pub fn on_mic_ended(app: &AppHandle) {
 /// Remembers whether a call is on, so [`on_mic_ended`] knows this recording
 /// belongs to it; and withdraws every pending offer, since there is one
 /// microphone and it is spoken for.
-pub(crate) fn on_recording_started(app: &AppHandle) {
+pub(crate) fn on_recording_started(app: &AppHandle, recording: &Recording) {
     let in_call = app.try_state::<crate::micwatch::MicWatch>().is_some_and(|m| m.session_active());
     offers(app).with(|o| {
         o.mic_linked = in_call;
         o.recording_started = Some(std::time::Instant::now());
+        o.running = Some(Running {
+            id: recording.id,
+            title: recording.title.clone(),
+            key: recording.event.as_ref().map(|e| event_key(e.calendar_id, &e.uid)),
+            event_start: recording.event.as_ref().map(|e| e.start),
+            end: recording.event.as_ref().map(|e| e.end),
+            started: recording.started_at,
+            app: if in_call { o.mic_app.clone() } else { None },
+        });
+        // Whatever it was, it has been used or is not wanted now.
+        o.last_stop = None;
     });
     settle_where(app, |_| true);
 }
 
 /// A recording has stopped, by any route: [`crate::meeting::stop`], or the
 /// capture thread ending on its own (`capture.rs`'s `clear_stale_slot`).
+/// `cause` is why, for [`mic_started`]'s rejoin.
 ///
 /// "Taking notes for ..." comes down, since it is no longer true and its
 /// Stop button would otherwise stop whatever is recorded next; and the
 /// offers held back while this was recording -- see `Book::deferred` -- are
 /// made now, if their meetings are not over.
-pub(crate) fn on_recording_stopped(app: &AppHandle) {
-    let (stale, deferred) = offers(app).with(|o| {
-        o.mic_linked = false;
-        o.recording_started = None;
-        let stale: Vec<String> = o.shown.iter().filter(|k| *k != CALL_ENDED_KEY).cloned().collect();
-        o.shown.retain(|k| k == CALL_ENDED_KEY);
-        (stale, o.book.take_deferred(jiff::Timestamp::now()))
-    });
+pub(crate) fn on_recording_stopped(app: &AppHandle, cause: StopCause) {
+    let (stale, deferred) =
+        offers(app).with(|o| {
+            o.mic_linked = false;
+            o.recording_started = None;
+            // Kept to carry on if the call is rejoined; see `mic_started`.
+            o.last_stop = o.running.take().filter(|_| cause != StopCause::Rollover).map(|r| {
+                LastStop { id: r.id, at: std::time::Instant::now(), cause, key: r.key, app: r.app }
+            });
+            let stale: Vec<String> =
+                o.shown.iter().filter(|k| *k != CALL_ENDED_KEY).cloned().collect();
+            o.shown.retain(|k| k == CALL_ENDED_KEY);
+            (stale, o.book.take_deferred(jiff::Timestamp::now()))
+        });
     for key in stale {
         crate::notice::withdraw(app, &key);
     }
@@ -1748,7 +2154,8 @@ pub(crate) fn take_now(app: &AppHandle) {
 }
 
 async fn take_now_inner(app: &AppHandle) {
-    if let Err(e) = crate::meeting::begin(app.clone(), Ctx::local(), None, None, None, false).await
+    if let Err(e) =
+        crate::meeting::begin(app.clone(), Ctx::local(), None, None, None, false, None).await
     {
         report_failure(app, "", &e);
     }
@@ -1851,9 +2258,10 @@ async fn take(app: &AppHandle, payload: &OfferPayload) -> CommandResult<Recordin
         app.clone(),
         Ctx::local(),
         payload.event_id,
-        Some(payload.title.clone()),
+        Some(continued_title(&payload.title).to_string()),
         None,
         false,
+        payload.continues,
     )
     .await
 }
@@ -1912,6 +2320,201 @@ mod tests {
 
     fn at(secs: i64) -> jiff::Timestamp {
         jiff::Timestamp::from_second(secs).unwrap()
+    }
+
+    // ---- rolling over and rejoining -------------------------------------------
+
+    fn roll(
+        key: Option<&str>,
+        end: Option<jiff::Timestamp>,
+        next_start: jiff::Timestamp,
+        recorded: bool,
+    ) -> bool {
+        should_roll_over(&running(key, None, end), "event:1:b", next_start, recorded, at(NOW))
+    }
+
+    /// A running recording that began an hour ago.
+    fn running(
+        key: Option<&str>,
+        event_start: Option<jiff::Timestamp>,
+        end: Option<jiff::Timestamp>,
+    ) -> Running {
+        Running {
+            id: RecordingId::new(),
+            title: "Standup".into(),
+            key: key.map(str::to_owned),
+            event_start,
+            end,
+            started: at(NOW - 3_600),
+            app: None,
+        }
+    }
+
+    #[test]
+    fn a_meeting_that_began_before_this_recording_or_its_event_is_not_the_next() {
+        // An all-day-ish meeting on now, begun before the recording.
+        assert!(!roll(None, None, at(NOW - 7_200), false));
+        assert!(!roll(Some("event:1:a"), Some(at(NOW - 60)), at(NOW - 7_200), false));
+        // Began before the current event did, though after the recording.
+        let current = running(Some("event:1:a"), Some(at(NOW - 3_000)), Some(at(NOW - 60)));
+        assert!(!should_roll_over(&current, "event:1:b", at(NOW - 3_300), false, at(NOW)));
+        assert!(should_roll_over(&current, "event:1:b", at(NOW - 600), false, at(NOW)));
+    }
+
+    #[test]
+    fn a_recording_with_no_meeting_rolls_over_to_one_that_has_started_or_is_about_to() {
+        assert!(roll(None, None, at(NOW - 600), false));
+        assert!(roll(None, None, at(NOW + 90), false));
+        assert!(roll(None, None, at(NOW + 120), false));
+        // Minutes away: a blip in an ad hoc call does not end it.
+        assert!(!roll(None, None, at(NOW + 121), false));
+        assert!(!roll(None, None, at(NOW + 240), false));
+    }
+
+    #[test]
+    fn the_same_meeting_never_rolls_over() {
+        assert!(!should_roll_over(
+            &running(Some("event:1:a"), None, Some(at(NOW - 3_600))),
+            "event:1:a",
+            at(NOW - 7_200),
+            false,
+            at(NOW)
+        ));
+    }
+
+    #[test]
+    fn a_meeting_that_was_just_recorded_is_not_rolled_over_to() {
+        assert!(!roll(None, None, at(NOW - 60), true));
+        assert!(!roll(Some("event:1:a"), Some(at(NOW - 60)), at(NOW - 60), true));
+    }
+
+    #[test]
+    fn a_meeting_that_is_not_nearly_over_is_not_left_for_another() {
+        // Ends in ten minutes: an overlapping meeting is not this one ending.
+        assert!(!roll(Some("event:1:a"), Some(at(NOW + 600)), at(NOW), false));
+        // Ends in four: the next one is being joined.
+        assert!(roll(Some("event:1:a"), Some(at(NOW + 240)), at(NOW), false));
+        // Over already.
+        assert!(roll(Some("event:1:a"), Some(at(NOW - 60)), at(NOW), false));
+    }
+
+    #[test]
+    fn a_meeting_whose_end_is_unknown_is_left_alone() {
+        assert!(!roll(Some("event:1:a"), None, at(NOW), false));
+    }
+
+    fn stopped(cause: StopCause) -> LastStop {
+        LastStop {
+            id: RecordingId::new(),
+            at: std::time::Instant::now(),
+            cause,
+            key: Some("event:1:a".into()),
+            app: Some("Zoom".into()),
+        }
+    }
+
+    fn hint(of: &LastStop) -> ResumeHint {
+        ResumeHint { recording_id: of.id, title: "Standup".into(), ended_at: at(NOW) }
+    }
+
+    const MINUTE: std::time::Duration = std::time::Duration::from_secs(60);
+
+    /// A rejoin of `last` in `zoom`, ready, with no meeting of its own chosen.
+    fn rejoin(last: &LastStop, elapsed: std::time::Duration) -> Rejoin {
+        rejoin_for(Some(last), Some(&hint(last)), elapsed, Some("zoom"), None, true)
+    }
+
+    #[test]
+    fn a_call_that_ended_and_is_back_in_the_same_app_carries_on_by_itself() {
+        let last = stopped(StopCause::CallEnded);
+        assert_eq!(rejoin(&last, MINUTE), Rejoin::Continue);
+        // And the meeting chosen is the one that was recorded.
+        let again = Some("event:1:a");
+        assert_eq!(
+            rejoin_for(Some(&last), Some(&hint(&last)), MINUTE, Some("Zoom"), again, true),
+            Rejoin::Continue
+        );
+    }
+
+    #[test]
+    fn another_application_or_one_not_named_is_asked_about_not_carried_on() {
+        let last = stopped(StopCause::CallEnded);
+        let h = hint(&last);
+        // Another call app, no meeting involved: the hint is ignored.
+        assert_eq!(
+            rejoin_for(Some(&last), Some(&h), MINUTE, Some("Discord"), None, true),
+            Rejoin::No
+        );
+        assert_eq!(rejoin_for(Some(&last), Some(&h), MINUTE, None, None, true), Rejoin::No);
+        let unnamed = LastStop { app: None, ..stopped(StopCause::CallEnded) };
+        assert_eq!(
+            rejoin_for(Some(&unnamed), Some(&hint(&unnamed)), MINUTE, None, None, true),
+            Rejoin::No
+        );
+        // Another app but the same meeting chosen: ask.
+        let same = Some("event:1:a");
+        assert_eq!(
+            rejoin_for(Some(&last), Some(&h), MINUTE, Some("Discord"), same, true),
+            Rejoin::Ask
+        );
+    }
+
+    #[test]
+    fn a_different_meeting_chosen_or_models_not_ready_is_asked_about() {
+        let last = stopped(StopCause::CallEnded);
+        let h = hint(&last);
+        let other = Some("event:1:z");
+        assert_eq!(
+            rejoin_for(Some(&last), Some(&h), MINUTE, Some("Zoom"), other, true),
+            Rejoin::Ask
+        );
+        assert_eq!(
+            rejoin_for(Some(&last), Some(&h), MINUTE, Some("Zoom"), None, false),
+            Rejoin::Ask
+        );
+    }
+
+    #[test]
+    fn a_stop_by_hand_asks_before_carrying_on_when_it_is_the_same_call() {
+        for cause in [StopCause::Manual, StopCause::Automatic] {
+            let last = stopped(cause);
+            assert_eq!(rejoin(&last, MINUTE), Rejoin::Ask);
+            let h = hint(&last);
+            let same = Some("event:1:a");
+            assert_eq!(
+                rejoin_for(Some(&last), Some(&h), MINUTE, Some("Other"), same, true),
+                Rejoin::Ask
+            );
+            assert_eq!(
+                rejoin_for(Some(&last), Some(&h), MINUTE, Some("Other"), None, true),
+                Rejoin::No
+            );
+        }
+    }
+
+    #[test]
+    fn a_rejoin_after_the_window_or_of_another_recording_is_not_one() {
+        let last = stopped(StopCause::CallEnded);
+        assert_eq!(rejoin(&last, 11 * MINUTE), Rejoin::No);
+        assert_eq!(rejoin(&last, 10 * MINUTE), Rejoin::Continue);
+        let other = stopped(StopCause::CallEnded);
+        assert_eq!(
+            rejoin_for(Some(&last), Some(&hint(&other)), MINUTE, Some("Zoom"), None, true),
+            Rejoin::No
+        );
+        assert_eq!(rejoin_for(Some(&last), None, MINUTE, Some("Zoom"), None, true), Rejoin::No);
+        assert_eq!(
+            rejoin_for(None, Some(&hint(&last)), MINUTE, Some("Zoom"), None, true),
+            Rejoin::No
+        );
+        let rolled = stopped(StopCause::Rollover);
+        assert_eq!(rejoin(&rolled, MINUTE), Rejoin::No);
+    }
+
+    #[test]
+    fn an_offer_to_continue_names_the_title_the_recording_keeps() {
+        assert_eq!(continued_title("Continue notes for Standup"), "Standup");
+        assert_eq!(continued_title("Call on Slack"), "Call on Slack");
     }
 
     fn meeting(automatic: bool, ready: bool) -> MeetingOffer {

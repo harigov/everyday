@@ -641,6 +641,7 @@ async fn begin(harness: &Harness, event_id: Option<EventId>, automatic: bool) ->
         None,
         None,
         automatic,
+        None,
         None, // no Tauri window: the whole point of this harness.
     )
     .await

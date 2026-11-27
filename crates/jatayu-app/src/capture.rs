@@ -95,6 +95,43 @@ pub const AUTO_STOP_ASK_AFTER: Duration = Duration::from_secs(30 * 60);
 /// which this clears on the retry that succeeds.
 const SYSTEM_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
+/// How often [`run`] tries to reopen the microphone after its stream died
+/// and one reopen failed -- a headset that dropped out and is reconnecting,
+/// a USB device being replugged. Much faster than [`SYSTEM_RETRY_INTERVAL`]:
+/// every second without a microphone is a second of the person's own voice
+/// missing from the call.
+const MIC_REOPEN_INTERVAL: Duration = Duration::from_secs(2);
+
+/// How long [`run`] keeps trying to bring the microphone back, recording the
+/// system track meanwhile, before it gives up and finishes the recording with
+/// what it has. A headset that died mid-call must not throw away the call so
+/// far, and one that does not come back in a minute is not coming back.
+pub const MIC_REOPEN_PATIENCE: Duration = Duration::from_secs(60);
+
+/// What to do about a microphone that is not open, this tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MicReopen {
+    /// Not yet time for another try.
+    Wait,
+    /// Try to open it now.
+    Try,
+    /// It has been gone for [`MIC_REOPEN_PATIENCE`]: finish with what there is.
+    GiveUp,
+}
+
+/// [`MicReopen`] for a microphone that has been gone for `lost_for`, the last
+/// try for it being `since_try` ago. Pure, so the timing is testable without
+/// a sound card.
+fn mic_reopen(lost_for: Duration, since_try: Duration) -> MicReopen {
+    if lost_for >= MIC_REOPEN_PATIENCE {
+        MicReopen::GiveUp
+    } else if since_try >= MIC_REOPEN_INTERVAL {
+        MicReopen::Try
+    } else {
+        MicReopen::Wait
+    }
+}
+
 /// Blocks in flight between a `cpal` callback and the capture thread. Small
 /// on purpose: a full channel means the worker is behind, and dropping the
 /// odd block is a click, not a gap you'd notice in a transcript. `try_send`
@@ -1039,6 +1076,22 @@ impl TrackState {
         }
         Ok(())
     }
+
+    /// The stream under this track has died. Send what the framer holds as a
+    /// short chunk and forget the resampler, so that audio from a reopened
+    /// stream starts a chunk of its own stamped at its own time. Without
+    /// this the half-filled chunk keeps the `start_ms` of its first sample and
+    /// whatever arrives after the gap (up to a minute later) is appended
+    /// straight after it, so those words land far too early.
+    fn stream_lost(
+        &mut self,
+        elapsed_ms: u64,
+        sink: &mut dyn ChunkSink,
+    ) -> Result<(), CaptureError> {
+        self.flush(elapsed_ms, sink)?;
+        self.resampler = None;
+        Ok(())
+    }
 }
 
 /// `app.emit`, guarded for the window-free case -- see [`start`]'s doc on
@@ -1144,6 +1197,14 @@ fn run(
     let mut mic = TrackState::new(Track::Mic);
     let mut system = TrackState::new(Track::System);
     let mut stopped_reason: Option<String> = None;
+    // The microphone died and did not come back within
+    // [`MIC_REOPEN_PATIENCE`]. Unlike `stopped_reason` the audio so far is
+    // sound, so this ends in a finish, not a discard.
+    let mut mic_gave_up: Option<String> = None;
+    // When the microphone was lost, and when it was last tried again.
+    let mut mic_lost: Option<(Instant, Instant)> = None;
+    // Why the last reopen failed, for the notification if it comes to that.
+    let mut mic_gave_up_reason: Option<String> = None;
     let mut discard_on_stop = false;
     // Set only by an explicit `ControlMsg::Stop` -- a press of "Stop
     // recording", or `CaptureHandle`'s own `Drop` backstop, which sends the
@@ -1183,20 +1244,28 @@ fn run(
                     match track {
                         Track::Mic => {
                             mic_stream = None;
+                            if let Err(e) = mic.stream_lost(elapsed_ms(), sink.as_mut()) {
+                                stopped_reason = Some(e.0);
+                                break 'outer;
+                            }
                             // Not reset to `None` here the way `system_returns`
-                            // is below: this arm either replaces it with a
-                            // fresh pool on success or breaks `'outer`
-                            // immediately on failure (a dead microphone ends
-                            // the recording), so there is no window where a
-                            // stale sender could be read.
+                            // is below: a successful reopen replaces it with a
+                            // fresh pool, and a failed one leaves no stream
+                            // to send a stale buffer back through.
                             match open_mic(&host, tx.clone()) {
                                 Ok((s, returns)) => {
                                     mic_stream = Some(s);
                                     mic_returns = Some(returns);
+                                    mic_lost = None;
                                 }
                                 Err(e) => {
-                                    stopped_reason = Some(e.0);
-                                    break 'outer;
+                                    // The system track carries on; the
+                                    // microphone is tried again below.
+                                    tracing::warn!(error = %e, "meeting capture: the microphone is gone; retrying");
+                                    let now = Instant::now();
+                                    mic_lost =
+                                        Some((mic_lost.map_or(now, |(lost_at, _)| lost_at), now));
+                                    mic_gave_up_reason = Some(e.0);
                                 }
                             }
                         }
@@ -1243,6 +1312,34 @@ fn run(
                     system_unavailable = None;
                 }
                 Err(e) => system_unavailable = Some(e.0),
+            }
+        }
+
+        if mic_stream.is_none()
+            && let Some((lost_at, last_try)) = mic_lost
+        {
+            match mic_reopen(lost_at.elapsed(), last_try.elapsed()) {
+                MicReopen::Wait => {}
+                MicReopen::Try => match open_mic(&host, tx.clone()) {
+                    Ok((s, returns)) => {
+                        tracing::info!("meeting capture: the microphone is back");
+                        mic_stream = Some(s);
+                        mic_returns = Some(returns);
+                        mic_lost = None;
+                    }
+                    Err(e) => {
+                        mic_lost = Some((lost_at, Instant::now()));
+                        mic_gave_up_reason = Some(e.0);
+                    }
+                },
+                MicReopen::GiveUp => {
+                    mic_gave_up = Some(
+                        mic_gave_up_reason
+                            .take()
+                            .unwrap_or_else(|| "the microphone stopped working".into()),
+                    );
+                    break 'outer;
+                }
             }
         }
 
@@ -1309,6 +1406,17 @@ fn run(
         }
         let _ = sink.discard();
     } else {
+        if let Some(reason) = &mic_gave_up {
+            tracing::warn!(error = %reason, "meeting capture: the microphone did not come back; finishing with what was recorded");
+            if let Some(events) = &events {
+                events.notify(
+                    jatayu_service::events::Notification::warning("Recording stopped")
+                        .body(mic_lost_text(reason))
+                        .domain(jatayu_service::Scope::Meetings)
+                        .for_user(),
+                );
+            }
+        }
         let flushed =
             mic.flush(now_ms, sink.as_mut()).and_then(|()| system.flush(now_ms, sink.as_mut()));
         let outcome = if discard_on_stop {
@@ -1383,6 +1491,16 @@ fn run(
     }
 }
 
+/// The notification's body when the microphone could not be brought back:
+/// the recording is kept, and the person is told so.
+fn mic_lost_text(reason: &str) -> String {
+    format!(
+        "The microphone stopped working ({reason}) and did not come back within {} seconds. \
+         What was recorded up to then is being written up as notes.",
+        MIC_REOPEN_PATIENCE.as_secs()
+    )
+}
+
 /// Undo what a capture thread ending on its own would otherwise leave
 /// stuck: the slot still holding this recording's [`CaptureHandle`] (so
 /// every later `meeting_start` is refused as "already in progress", and
@@ -1422,7 +1540,7 @@ fn clear_stale_slot(app: &Option<AppHandle>, recording_id: RecordingId) {
     // `offers::on_recording_stopped` -- under the same gate, for the same
     // reason.
     if stale {
-        crate::offers::on_recording_stopped(app);
+        crate::offers::on_recording_stopped(app, crate::offers::StopCause::Automatic);
     }
 }
 
@@ -1672,6 +1790,24 @@ mod tests {
     }
 
     #[test]
+    fn a_lost_stream_sends_its_partial_chunk_and_the_next_starts_at_its_own_time() {
+        let mut state = TrackState::new(Track::Mic);
+        let mut sink = VecSink::new();
+        state.ingest(&sine(48_000, 2.0, 440.0, 0.5), 48_000, 1_000, &mut sink).unwrap();
+        assert!(sink.chunks.is_empty(), "two seconds is not a whole chunk");
+        state.stream_lost(3_000, &mut sink).unwrap();
+        assert_eq!(sink.chunks.len(), 1, "the partial chunk went out as it was");
+        assert_eq!(sink.chunks[0].2, 1_000);
+
+        // The microphone comes back 40 s later.
+        state.ingest(&sine(48_000, 2.0, 440.0, 0.5), 48_000, 43_000, &mut sink).unwrap();
+        state.flush(45_000, &mut sink).unwrap();
+        assert_eq!(sink.chunks.len(), 2);
+        assert_eq!(sink.chunks[1].1, 1);
+        assert_eq!(sink.chunks[1].2, 43_000, "stamped at its own start, not the old chunk's");
+    }
+
+    #[test]
     fn the_microphone_track_is_cleaned_of_rumble_and_the_system_track_is_not() {
         let desk = sine(48_000, 3.0, 20.0, 0.3);
         let mut sink = VecSink::new();
@@ -1727,6 +1863,27 @@ mod tests {
         fn discard(&mut self) -> Result<(), CaptureError> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn a_lost_microphone_is_retried_every_two_seconds_then_given_up_on() {
+        let s = Duration::from_secs;
+        assert_eq!(mic_reopen(s(0), s(0)), MicReopen::Wait);
+        assert_eq!(mic_reopen(s(1), s(1)), MicReopen::Wait);
+        assert_eq!(mic_reopen(s(2), s(2)), MicReopen::Try);
+        assert_eq!(mic_reopen(s(10), s(1)), MicReopen::Wait);
+        assert_eq!(mic_reopen(s(59), s(2)), MicReopen::Try);
+        // Out of patience, whether or not a try is due.
+        assert_eq!(mic_reopen(s(60), s(0)), MicReopen::GiveUp);
+        assert_eq!(mic_reopen(s(90), s(5)), MicReopen::GiveUp);
+    }
+
+    #[test]
+    fn the_notification_for_a_lost_microphone_says_the_call_was_kept() {
+        let text = mic_lost_text("no microphone found");
+        assert!(text.contains("no microphone found"));
+        assert!(text.contains("60 seconds"));
+        assert!(text.contains("written up"));
     }
 
     #[test]

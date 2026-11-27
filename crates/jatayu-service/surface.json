@@ -764,6 +764,11 @@
           "name": "automatic",
           "required": false,
           "type": "boolean"
+        },
+        {
+          "name": "continues",
+          "required": false,
+          "type": "RecordingId | null"
         }
       ],
       "changes": {

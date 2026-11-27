@@ -14,6 +14,7 @@
 // one index and one ranking, because a half-remembered phrase should be found
 // wherever it was written down.
 
+import { tick } from 'svelte'
 import { api, newRequestId } from './api'
 import { Autosave } from './autosave'
 import { registerApply, type ChangeWithIds } from './live-apply'
@@ -308,7 +309,10 @@ class NotesState {
   async #patchOne(id: NoteId) {
     await patchOneFromChange({
       fetch: () => api.note(id),
-      apply: (note) => {
+      apply: async (note) => {
+        // First, and whatever the tag filter says below: the note in the
+        // editor is not the list's business.
+        await this.#reloadOpen(note)
         const summary = summarize(note)
         // A call's notes arriving from the pipeline, say, into a drawer that
         // held only the person's own until now -- told before the tag check
@@ -335,6 +339,39 @@ class NotesState {
       // with the vault.
       fallback: () => this.refresh(),
     })
+  }
+
+  /**
+   * Put another writer's version of the open note in the editor, in place.
+   *
+   * A call's note is written as a draft the moment the call ends and filled
+   * in minutes later by the pipeline, usually while the person has it open.
+   * `RichText` replaces its document only when `docId` changes, so without
+   * this the draft stays on screen and the next keystroke raises a conflict
+   * against the summary the person never saw. Only when nothing of theirs is
+   * at stake -- no edit waiting to save, none on the wire, no conflict
+   * already showing: their work is never discarded here, and one that is
+   * pending is left to the ordinary conflict path. A note at the version the
+   * editor already holds (this window's own save coming back as a change) is
+   * left alone, so the cursor does not jump on every autosave.
+   */
+  async #reloadOpen(fresh: Note) {
+    const open = this.open
+    if (!open || open.id !== fresh.id) return
+    if (fresh.updatedAt === this.#base) return
+    if (this.#saver.pending || this.saving || this.conflict) return
+    // Dropped first, for the reason `takeTheirs` gives: the same id would
+    // not rebuild the editor.
+    this.open = null
+    await tick()
+    // Something was typed in the instant the editor was gone, or the person
+    // opened another note: put the old one back rather than lose either.
+    if (this.open !== null || this.selected !== fresh.id || this.#saver.pending) {
+      if (this.open === null) this.open = open
+      return
+    }
+    this.open = fresh
+    this.#base = fresh.updatedAt
   }
 
   async setSort(sort: NoteSort) {

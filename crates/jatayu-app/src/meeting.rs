@@ -13,7 +13,7 @@
 use std::sync::{Arc, Mutex};
 
 use base64::Engine;
-use jatayu_core::id::{EventId, TemplateId};
+use jatayu_core::id::{EventId, RecordingId, TemplateId};
 use jatayu_core::meeting::Recording;
 use jatayu_service::Ctx;
 use jatayu_service::error::{CommandError, CommandResult};
@@ -40,6 +40,10 @@ use crate::tray::Tray;
 /// nothing reserved until the await returns, would let two starts pressed
 /// together both pass it.
 ///
+/// `continues` names an earlier recording of the same meeting that this one
+/// carries on -- the person left the call and is back -- so the two end up as
+/// one note.
+///
 /// The record is written as the window that asked -- see
 /// `windows::ctx_for` -- so a recording started in a window of one app reaches
 /// the main window's list, and is not reloaded by the window that started it.
@@ -50,9 +54,10 @@ pub async fn meeting_start(
     event_id: Option<EventId>,
     title: Option<String>,
     template_id: Option<TemplateId>,
+    continues: Option<RecordingId>,
 ) -> CommandResult<Recording> {
     let ctx = crate::windows::ctx_for(webview.label());
-    begin(app, ctx, event_id, title, template_id, false).await
+    begin(app, ctx, event_id, title, template_id, false, continues).await
 }
 
 /// Same as [`meeting_start`], but for a call detected on a calendar the
@@ -73,7 +78,7 @@ pub fn start_automatic(app: AppHandle, event_id: EventId) {
         if state_already_recording(&app) {
             return;
         }
-        if let Err(e) = begin(app, Ctx::local(), Some(event_id), None, None, true).await {
+        if let Err(e) = begin(app, Ctx::local(), Some(event_id), None, None, true, None).await {
             tracing::warn!(error = %e, "automatic recording could not start");
         }
     });
@@ -93,6 +98,7 @@ pub(crate) async fn begin(
     title: Option<String>,
     template_id: Option<TemplateId>,
     automatic: bool,
+    continues: Option<RecordingId>,
 ) -> CommandResult<Recording> {
     // One microphone, one listener: `begin_headless_as` refuses while the
     // assistant is being talked to or something is being dictated.
@@ -106,6 +112,7 @@ pub(crate) async fn begin(
         title,
         template_id,
         automatic,
+        continues,
         Some(app.clone()),
     )
     .await?;
@@ -117,7 +124,7 @@ pub(crate) async fn begin(
     }
     // After the tray: this settles the offers that are now moot, and that
     // rebuilds the tray again without their "Take notes" item.
-    crate::offers::on_recording_started(&app);
+    crate::offers::on_recording_started(&app, &recording);
     Ok(recording)
 }
 
@@ -182,6 +189,7 @@ pub async fn begin_headless(
     title: Option<String>,
     template_id: Option<TemplateId>,
     automatic: bool,
+    continues: Option<RecordingId>,
     app: Option<AppHandle>,
 ) -> CommandResult<Recording> {
     let ctx = Ctx::local();
@@ -194,6 +202,7 @@ pub async fn begin_headless(
         title,
         template_id,
         automatic,
+        continues,
         app,
     )
     .await
@@ -210,6 +219,7 @@ pub(crate) async fn begin_headless_as(
     title: Option<String>,
     template_id: Option<TemplateId>,
     automatic: bool,
+    continues: Option<RecordingId>,
     app: Option<AppHandle>,
 ) -> CommandResult<Recording> {
     {
@@ -240,8 +250,18 @@ pub(crate) async fn begin_headless_as(
         *slot = Some(CaptureSlot::Starting);
     }
 
-    let result =
-        try_begin(ctx, session, events, event_id, title, template_id, automatic, app.clone()).await;
+    let result = try_begin(
+        ctx,
+        session,
+        events,
+        event_id,
+        title,
+        template_id,
+        automatic,
+        continues,
+        app.clone(),
+    )
+    .await;
     let result = finish_reservation(capture_slot, result);
     // The recording card on the panel, wherever there is a panel to put it
     // on: every start that has a window comes through here, a press, the
@@ -268,6 +288,7 @@ async fn try_begin(
     title: Option<String>,
     template_id: Option<TemplateId>,
     automatic: bool,
+    continues: Option<RecordingId>,
     app: Option<AppHandle>,
 ) -> CommandResult<(Recording, CaptureHandle)> {
     let call_session = session.as_session();
@@ -276,7 +297,7 @@ async fn try_begin(
         .call(
             ctx,
             "begin_recording",
-            json!({ "eventId": event_id, "title": title, "templateId": template_id, "automatic": automatic }),
+            json!({ "eventId": event_id, "title": title, "templateId": template_id, "automatic": automatic, "continues": continues }),
         )
         .await?;
     let recording: Recording = serde_json::from_value(value).map_err(|e| {
@@ -390,6 +411,17 @@ pub fn stop_from_tray(app: AppHandle) {
 }
 
 pub(crate) async fn stop(app: &AppHandle, discard: bool) -> CommandResult<()> {
+    stop_because(app, discard, crate::offers::StopCause::Manual).await
+}
+
+/// [`stop`], saying why, so [`crate::offers`] can tell a call that ended (a
+/// rejoin carries on its note without asking) from a person's own stop (a
+/// rejoin asks).
+pub(crate) async fn stop_because(
+    app: &AppHandle,
+    discard: bool,
+    cause: crate::offers::StopCause,
+) -> CommandResult<()> {
     let state = app.state::<AppState>();
     // A slot still `CaptureSlot::Starting` (a start's `begin_recording`
     // round trip has not returned yet) has no `CaptureHandle` to stop --
@@ -407,7 +439,10 @@ pub(crate) async fn stop(app: &AppHandle, discard: bool) -> CommandResult<()> {
         CaptureSlot::Starting => None,
     });
     let Some(handle) = handle else { return Ok(()) };
-    crate::offers::on_recording_stopped(app);
+    crate::offers::on_recording_stopped(
+        app,
+        if discard { crate::offers::StopCause::Manual } else { cause },
+    );
     crate::recordcard::on_stopped(app);
     if let Some(tray) = app.try_state::<Tray>() {
         let _ = tray.set_recording(app, None);
@@ -521,8 +556,8 @@ mod tests {
         let capture: Mutex<Option<CaptureSlot>> = Mutex::new(None);
 
         let (a, b) = tokio::join!(
-            begin_headless(session.clone(), None, &capture, None, None, None, false, None),
-            begin_headless(session.clone(), None, &capture, None, None, None, false, None),
+            begin_headless(session.clone(), None, &capture, None, None, None, false, None, None),
+            begin_headless(session.clone(), None, &capture, None, None, None, false, None, None),
         );
 
         let codes: Vec<String> =
@@ -583,7 +618,8 @@ mod tests {
         let capture: Mutex<Option<CaptureSlot>> =
             Mutex::new(Some(CaptureSlot::Recording(ended_capture_handle(recording_id))));
 
-        let result = begin_headless(session, None, &capture, None, None, None, false, None).await;
+        let result =
+            begin_headless(session, None, &capture, None, None, None, false, None, None).await;
 
         // Refused, but for the vault's own reason (meeting notes turned
         // off) -- proving `begin_headless` reclaimed the stale slot and

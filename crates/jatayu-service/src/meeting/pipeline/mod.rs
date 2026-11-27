@@ -77,9 +77,12 @@
 //! `sweep_orphaned_spool` for what clears it.
 
 mod adapters;
+mod combine;
+mod draft;
 mod drivers;
 mod enqueue;
 mod failure;
+mod link;
 mod propose;
 // `pub(crate)`, not private: `crate::retry`'s own tests compare
 // `retry::is_transient` against `outbox::is_transient_local_failure` to
@@ -95,6 +98,7 @@ mod test_hooks;
 mod tests;
 
 pub use adapters::{AssistantSummariser, AudioSource, SpoolSource, Summariser};
+pub(crate) use draft::release_note;
 pub use drivers::run_recording;
 pub use enqueue::{chunk_closed, enqueue};
 pub(crate) use stages::{

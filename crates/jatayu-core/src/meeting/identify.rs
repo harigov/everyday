@@ -63,6 +63,20 @@ pub struct Params {
     /// owner cannot be. Lets the owner's own voiceprint, if they have one,
     /// match a cluster.
     pub owner_may_speak: bool,
+    /// The least speech, in milliseconds, a cluster needs to be a person
+    /// rather than a fragment. An embedding of a one-to-three-second clip
+    /// through a call codec is unreliable, so a voice that spoke for only
+    /// a few seconds in all is as likely to be a stray piece of somebody
+    /// else's speech as a new person. Real people on a call speak for
+    /// longer than this.
+    pub min_voice_ms: u64,
+    /// Speech, in milliseconds, past which a cluster is a person however
+    /// small a share of a long meeting it is: somebody who spoke for most
+    /// of a minute is there.
+    pub major_voice_ms: u64,
+    /// The share of all the system track's speech that makes a cluster
+    /// above `min_voice_ms` a person: a quiet attendee in a short call.
+    pub min_voice_share: f32,
 }
 
 impl Default for Params {
@@ -73,6 +87,9 @@ impl Default for Params {
             max_voices: None,
             cap_floor: 0.3,
             owner_may_speak: false,
+            min_voice_ms: 10_000,
+            major_voice_ms: 45_000,
+            min_voice_share: 0.03,
         }
     }
 }
@@ -191,6 +208,15 @@ pub fn identify(turns: &[Turn], candidates: &[Candidate], params: Params) -> Vec
 
     mixed.resize(mergeable.len(), false);
 
+    // 3a. Fragments are not people: a cluster with only a few seconds of
+    //     speech is absorbed into a real voice (see `absorb_fragments`).
+    //     Before the cap, never after: with dozens of fragments still
+    //     standing, the cap would reach its count by merging the real
+    //     voices with each other -- the most alike pair is two people at
+    //     0.5, not a fragment, which resembles nothing -- and on real calls
+    //     it did, turning three speakers into two.
+    absorb_fragments(&mut mergeable, &mut mixed, turns, candidates, params);
+
     // 3b. No more voices than there are people who could be speaking.
     //     First a hint group with no embedding at all -- a few short turns
     //     the recogniser labelled within one request -- joins whichever
@@ -287,6 +313,111 @@ pub fn identify(turns: &[Turn], candidates: &[Candidate], params: Params) -> Vec
         }
     }
     clusters
+}
+
+/// Whether a cluster speaking for `speech_ms` of `total_ms` is a person
+/// and not a fragment: long enough to embed reliably, and either long in
+/// itself or a real share of the call.
+fn is_significant(speech_ms: u64, total_ms: u64, params: Params) -> bool {
+    if speech_ms < params.min_voice_ms {
+        return false;
+    }
+    speech_ms >= params.major_voice_ms
+        || speech_ms as f32 >= params.min_voice_share * total_ms as f32
+}
+
+/// Fold every insignificant cluster into a significant one, the way
+/// diarisers do with their smallest clusters: they are fragments of the
+/// real voices, not extra people. A fragment goes to the significant
+/// cluster whose centroid it most resembles. A cluster that matches a
+/// candidate's voiceprint is kept however briefly it spoke -- a known
+/// person saying one sentence is still that person. When no embedded
+/// cluster is significant the embedded one with the most speech is kept,
+/// so there is always somebody to attribute the call to.
+///
+/// Only clusters with a centroid take part. A cluster with none is a
+/// speaker hint from a transcriber that tells voices apart itself, scoped
+/// to one request of about thirty seconds: it is short because the request
+/// was, not because it is a fragment, and with nothing to compare it by
+/// voice, the neighbour in time is a coin toss in a conversation. Those are
+/// left to the cap above and to the model, which reads what was said.
+///
+/// The target is not marked `mixed`: a fragment adds little to its
+/// centroid, and the centroid is recomputed from the turns afterwards.
+fn absorb_fragments(
+    clusters: &mut Vec<Vec<usize>>,
+    mixed: &mut Vec<bool>,
+    turns: &[Turn],
+    candidates: &[Candidate],
+    params: Params,
+) {
+    if clusters.len() < 2 {
+        return;
+    }
+    let speech: Vec<u64> = clusters
+        .iter()
+        .map(|members| members.iter().map(|&p| turns[p].duration_ms).sum())
+        .collect();
+    let total: u64 = speech.iter().sum();
+    let centroids: Vec<Vec<f32>> = clusters.iter().map(|m| centroid_of(m, turns)).collect();
+
+    let known = |ci: usize| -> bool {
+        if centroids[ci].is_empty() {
+            return false;
+        }
+        candidates.iter().any(|c| {
+            let Some(vp) = &c.voiceprint else { return false };
+            (params.owner_may_speak || !vp.is_owner)
+                && vp.centroids.iter().any(|v| cosine(&centroids[ci], v) >= params.match_threshold)
+        })
+    };
+
+    let embedded = |ci: usize| !centroids[ci].is_empty();
+    let mut keep: Vec<bool> = (0..clusters.len())
+        .map(|ci| !embedded(ci) || is_significant(speech[ci], total, params) || known(ci))
+        .collect();
+    if !(0..clusters.len()).any(|ci| embedded(ci) && keep[ci])
+        && let Some(biggest) =
+            (0..clusters.len()).filter(|&ci| embedded(ci)).max_by_key(|&ci| speech[ci])
+    {
+        keep[biggest] = true;
+    }
+    if keep.iter().all(|&k| k) {
+        return;
+    }
+
+    let mut moves: Vec<(usize, usize)> = Vec::new();
+    let fragments: Vec<usize> = (0..clusters.len()).filter(|&ci| !keep[ci]).collect();
+    for from in fragments {
+        let to = (0..clusters.len()).filter(|&to| keep[to] && embedded(to)).max_by(|&a, &b| {
+            let (sa, sb) =
+                (cosine(&centroids[from], &centroids[a]), cosine(&centroids[from], &centroids[b]));
+            sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        match to {
+            Some(to) => moves.push((from, to)),
+            None => keep[from] = true,
+        }
+    }
+    for &(from, to) in &moves {
+        let taken = std::mem::take(&mut clusters[from]);
+        clusters[to].extend(taken);
+    }
+    let mut index = 0;
+    clusters.retain(|_| {
+        let kept = keep[index];
+        index += 1;
+        kept
+    });
+    let mut index = 0;
+    mixed.retain(|_| {
+        let kept = keep[index];
+        index += 1;
+        kept
+    });
+    for members in clusters.iter_mut() {
+        members.sort_unstable();
+    }
 }
 
 fn avg_pairwise_similarity(a: &[usize], b: &[usize], turns: &[Turn]) -> Option<f32> {
@@ -566,11 +697,11 @@ mod tests {
     }
 
     fn turn(index: usize, embedding: Vec<f32>) -> Turn {
-        Turn { index, duration_ms: 2_000, hint: None, embedding }
+        Turn { index, duration_ms: 20_000, hint: None, embedding }
     }
 
     fn hinted_turn(index: usize, scope: u32, hint: &str, embedding: Vec<f32>) -> Turn {
-        Turn { index, duration_ms: 2_000, hint: Some((scope, hint.to_string())), embedding }
+        Turn { index, duration_ms: 20_000, hint: Some((scope, hint.to_string())), embedding }
     }
 
     fn voiceprint(name: &str, centroid: Vec<f32>) -> Voiceprint {
@@ -952,5 +1083,167 @@ mod tests {
         let before = vp.clone();
         fold_into(&mut vp, &[], Params::default());
         assert_eq!(vp, before);
+    }
+
+    fn long_turn(index: usize, ms: u64, embedding: Vec<f32>) -> Turn {
+        Turn { index, duration_ms: ms, hint: None, embedding }
+    }
+
+    #[test]
+    fn fragments_are_absorbed_into_the_voice_they_sound_like() {
+        let mut rng = Lcg(11);
+        let a = base_vector(0);
+        let b = base_vector(4);
+        let mut turns = Vec::new();
+        // Two real voices with a minute each, and four short fragments that
+        // sound unlike either (below the clustering threshold) but are
+        // closer to `a` than to `b`.
+        for i in 0..6 {
+            let base = if i % 2 == 0 { &a } else { &b };
+            turns.push(long_turn(turns.len(), 12_000, noisy(base, &mut rng, 0.03)));
+        }
+        let mut odd = a.clone();
+        odd[6] = 1.5;
+        for _ in 0..4 {
+            let at = turns.len();
+            turns.push(long_turn(at, 1_500, noisy(&normalise(&odd), &mut rng, 0.02)));
+        }
+        let clusters = identify(&turns, &[], Params::default());
+        assert_eq!(clusters.len(), 2, "{clusters:#?}");
+        let with_a = clusters.iter().find(|c| c.turns.contains(&0)).unwrap();
+        assert!([6, 7, 8, 9].iter().all(|t| with_a.turns.contains(t)), "{clusters:#?}");
+        let labels: Vec<&str> = clusters.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, vec!["Unknown 1", "Unknown 2"]);
+    }
+
+    #[test]
+    fn a_short_hint_group_with_no_sound_is_left_for_the_model() {
+        let mut rng = Lcg(5);
+        let a = base_vector(0);
+        let b = base_vector(4);
+        let mut turns = vec![
+            long_turn(0, 30_000, noisy(&a, &mut rng, 0.02)),
+            long_turn(1, 30_000, noisy(&a, &mut rng, 0.02)),
+            long_turn(2, 30_000, noisy(&b, &mut rng, 0.02)),
+            long_turn(3, 30_000, noisy(&b, &mut rng, 0.02)),
+        ];
+        // A hint group with no embedding, sitting next to the b voice: a
+        // diarising transcriber's label for one request, not a fragment.
+        // Nothing says by voice whose it is, so it is not folded by time.
+        turns.push(Turn {
+            index: 4,
+            duration_ms: 2_000,
+            hint: Some((9, "x".into())),
+            embedding: Vec::new(),
+        });
+        let clusters = identify(&turns, &[], Params::default());
+        assert_eq!(clusters.len(), 3, "{clusters:#?}");
+        assert!(clusters.iter().any(|c| c.turns == vec![4]), "{clusters:#?}");
+    }
+
+    #[test]
+    fn a_known_voice_survives_however_briefly_it_spoke() {
+        let mut rng = Lcg(3);
+        let a = base_vector(0);
+        let b = base_vector(4);
+        let turns = vec![
+            long_turn(0, 60_000, noisy(&a, &mut rng, 0.02)),
+            long_turn(1, 3_000, noisy(&b, &mut rng, 0.02)),
+        ];
+        let candidates = vec![Candidate {
+            attendee: "Bob <bob@x.com>".into(),
+            voiceprint: Some(voiceprint("Bob", b.clone())),
+            declined: false,
+        }];
+        let clusters = identify(&turns, &candidates, Params::default());
+        assert_eq!(clusters.len(), 2, "{clusters:#?}");
+        assert!(clusters.iter().any(|c| c.label == "Bob"), "{clusters:#?}");
+        // Without his voiceprint he is a fragment of the main voice.
+        assert_eq!(identify(&turns, &[], Params::default()).len(), 1);
+    }
+
+    #[test]
+    fn when_nothing_is_significant_the_one_with_most_speech_is_kept() {
+        let mut rng = Lcg(8);
+        let turns = vec![
+            long_turn(0, 2_000, noisy(&base_vector(0), &mut rng, 0.02)),
+            long_turn(1, 4_000, noisy(&base_vector(4), &mut rng, 0.02)),
+            long_turn(2, 3_000, noisy(&base_vector(2), &mut rng, 0.02)),
+        ];
+        let clusters = identify(&turns, &[], Params::default());
+        assert_eq!(clusters.len(), 1, "{clusters:#?}");
+        assert_eq!(clusters[0].turns, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn a_voice_is_a_person_by_length_or_by_share() {
+        let p = Params::default();
+        // Under the floor: never, however big a share.
+        assert!(!is_significant(9_000, 9_000, p));
+        // Long in itself, however small a share of a long call.
+        assert!(is_significant(45_000, 3_000_000, p));
+        // Over the floor and a real share of a short call.
+        assert!(is_significant(12_000, 100_000, p));
+        // Over the floor but a sliver of a long call.
+        assert!(!is_significant(12_000, 1_000_000, p));
+    }
+
+    #[test]
+    fn a_sixty_voice_call_collapses_to_the_few_who_really_spoke() {
+        // Two people speak at length; sixty fragments, each its own odd
+        // direction, are scattered between them.
+        let mut rng = Lcg(21);
+        let a = base_vector(0);
+        let b = base_vector(4);
+        let mut turns = Vec::new();
+        for i in 0..20 {
+            let base = if i % 2 == 0 { &a } else { &b };
+            turns.push(long_turn(turns.len(), 15_000, noisy(base, &mut rng, 0.03)));
+            for k in 0..3 {
+                let at = turns.len();
+                let mut v = vec![0.0f32; DIM];
+                v[(i + k) % DIM] = 1.0;
+                v[(i * 3 + k + 2) % DIM] += 0.9;
+                turns.push(long_turn(at, 1_200, normalise(&v)));
+            }
+        }
+        let clusters = identify(&turns, &[], Params::default());
+        assert!(clusters.len() <= 3, "{} clusters", clusters.len());
+        let total: usize = clusters.iter().map(|c| c.turns.len()).sum();
+        assert_eq!(total, turns.len());
+    }
+
+    #[test]
+    fn fragments_never_make_the_cap_merge_real_voices() {
+        // Three people, two of whom sound somewhat alike (0.5, under the
+        // clustering threshold), and fragments that resemble nobody. With a
+        // cap of five the fragments must go first: capping while they
+        // still stood merged the most alike pair -- the two real voices,
+        // since a fragment resembles nothing -- which is what a real panel
+        // recording did, three speakers coming back as two.
+        let mut rng = Lcg(33);
+        let unit = |i: usize| {
+            let mut v = vec![0.0f32; DIM];
+            v[i] = 1.0;
+            v
+        };
+        let mut alike = vec![0.0f32; DIM];
+        alike[0] = 0.5;
+        alike[1] = 0.866;
+        let voices = [unit(0), alike, unit(2)];
+        let mut turns = Vec::new();
+        for i in 0..30 {
+            turns.push(long_turn(turns.len(), 15_000, noisy(&voices[i % 3], &mut rng, 0.01)));
+            let at = turns.len();
+            turns.push(long_turn(at, 1_200, unit(3 + i % 5)));
+        }
+        let params = Params { max_voices: Some(5), ..Params::default() };
+        let clusters = identify(&turns, &[], params);
+        assert_eq!(clusters.len(), 3, "{clusters:#?}");
+        for k in 0..3 {
+            let firsts: Vec<usize> = (0..30).filter(|i| i % 3 == k).map(|i| i * 2).collect();
+            let home = clusters.iter().find(|c| c.turns.contains(&firsts[0])).unwrap();
+            assert!(firsts.iter().all(|t| home.turns.contains(t)), "voice {k}: {clusters:#?}");
+        }
     }
 }

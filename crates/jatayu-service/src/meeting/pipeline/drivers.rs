@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use jatayu_core::meeting::{Recording, Stage, Transcript};
 use jatayu_core::speech::SpeechConfig;
-use jatayu_core::{Note, NoteOrigin, RecordingId, TranscriptId, Vault};
+use jatayu_core::{RecordingId, TranscriptId, Vault};
 use jiff::Timestamp;
 
 use crate::ctx::Scope;
@@ -19,6 +19,8 @@ use super::adapters::*;
 use super::enqueue::*;
 use crate::speech::transcribe::build_transcriber;
 
+use super::combine::{self, Gate};
+use super::draft::{self, Fill};
 use super::failure::*;
 use super::retry::*;
 use super::stages::*;
@@ -76,16 +78,46 @@ pub async fn run_recording(
                 return Ok(());
             }
             Stage::Transcribing => {
+                // The note exists from the moment the call ends, while the
+                // rest of the pipeline is still at work.
+                draft_quietly(&vault, id, events.as_ref()).await;
                 if let Err(e) = retry_transient(|| do_transcribe(&vault, &source, id)).await {
                     fail(&vault, id, Stage::Transcribing, &e, events.as_ref()).await?;
                     return Err(e);
                 }
             }
             Stage::Identifying => {
+                // Before voices are told apart, because who was invited is
+                // what names them: look for the calendar meeting a call
+                // begun without one belongs to. Never fatal -- an unfiled
+                // call is still a call.
+                if let Err(e) =
+                    super::link::link_to_calendar(&vault, summariser.as_deref(), id).await
+                {
+                    tracing::warn!(
+                        recording = %id,
+                        error = %e.message,
+                        "meeting pipeline: could not look for the calendar meeting this was of"
+                    );
+                }
+                // After the link: finding that this call carries on an
+                // earlier one folds the draft it made for itself into that
+                // one's note.
+                draft_quietly(&vault, id, events.as_ref()).await;
                 if let Err(e) = retry_transient(|| identify_into(&vault, &source, id, &found)).await
                 {
                     fail(&vault, id, Stage::Identifying, &e, events.as_ref()).await?;
                     return Err(e);
+                }
+                if let Some(identified) = found.copy()
+                    && let Err(e) =
+                        draft::refresh_draft(&vault, id, &identified, events.as_ref()).await
+                {
+                    tracing::warn!(
+                        recording = %id,
+                        error = %e.message,
+                        "meeting pipeline: could not bring the draft note up to date"
+                    );
                 }
             }
             Stage::Summarising => {
@@ -94,6 +126,25 @@ pub async fn run_recording(
                     fail(&vault, id, Stage::Summarising, &e, events.as_ref()).await?;
                     return Err(e);
                 };
+                // A meeting the person left and came back to is one note,
+                // written once the earlier part is. Whoever finishes it
+                // wakes this one -- see `combine::wake_followers`.
+                match combine::gate(&vault, id).await {
+                    Ok(Gate::Park) => {
+                        tracing::info!(
+                            recording = %id,
+                            "meeting pipeline: waiting for the earlier part of this meeting"
+                        );
+                        return Ok(());
+                    }
+                    Ok(Gate::Go) => {}
+                    Err(e) => tracing::warn!(
+                        recording = %id,
+                        error = %e.message,
+                        "meeting pipeline: could not tell whether an earlier part is still at work"
+                    ),
+                }
+                draft_quietly(&vault, id, events.as_ref()).await;
                 if let Err(e) = retry_transient(|| {
                     summarise_and_write_from(
                         &vault,
@@ -113,6 +164,19 @@ pub async fn run_recording(
             }
             Stage::Done | Stage::Failed { .. } => return Ok(()),
         }
+    }
+}
+
+/// [`draft::ensure_draft`], whose failure is logged and nothing more: the
+/// draft is for the person to look at while the model works, and not being
+/// able to make one is no reason to fail a call that can still be written up.
+async fn draft_quietly(vault: &Arc<Vault>, id: RecordingId, events: &dyn crate::events::EventSink) {
+    if let Err(e) = draft::ensure_draft(vault, id, events).await {
+        tracing::warn!(
+            recording = %id,
+            error = %e.message,
+            "meeting pipeline: could not write the draft note; the notes will be written whole"
+        );
     }
 }
 
@@ -293,18 +357,18 @@ impl Found {
 }
 
 /// Compute the identifying stage's result, keep it in `found`, and checkpoint
-/// the transition to [`Stage::Summarising`]. Deliberately does *not* persist a
-/// [`Transcript`]: one needs a [`jatayu_core::NoteId`] to be indexed
-/// against, and that id does not exist until [`summarise_and_write_from`]
-/// mints it. Instead `recording.partial` is left exactly as the transcribing
-/// stage left it (not cleared here), so [`summarise_and_write_from`] starts
-/// from `found` when it runs straight after this in the same pass, and on a
-/// later pass -- a retry following a crash or a lock between this checkpoint
-/// and the note being written -- can call [`identify_stage`] again itself and
-/// get the same, deterministic answer. The alternative is a second storage
-/// shape for "a transcript with no note yet", which is more moving parts than
-/// a re-embed of a single call's audio, now and then, is worth guarding
-/// against.
+/// the transition to [`Stage::Summarising`]. What it found is not stored as
+/// such: `recording.partial` is left exactly as the transcribing stage left
+/// it (not cleared here), so [`summarise_and_write_from`] starts from `found`
+/// when it runs straight after this in the same pass, and on a later pass --
+/// a retry following a crash or a lock between this checkpoint and the note
+/// being written -- can call [`identify_stage`] again itself and get the
+/// same, deterministic answer. The alternative is a second storage shape for
+/// "who said what, not yet summarised", which is more moving parts than a
+/// re-embed of a single call's audio, now and then, is worth guarding
+/// against. The draft note's transcript is brought up to date from `found`
+/// by the caller -- see [`draft::refresh_draft`] -- as a courtesy to whoever
+/// is reading it, not as the pipeline's own state.
 pub(crate) async fn identify_into(
     vault: &Arc<Vault>,
     source: &Arc<dyn AudioSource>,
@@ -472,8 +536,37 @@ pub(crate) async fn summarise_and_write_from(
     // Names first, so the summary is written about people rather than
     // "Unknown 3".
     resolve_speakers(summariser, &mut identified, budget).await;
-    let mut transcript = build_transcript(&recording, &identified, speech.as_ref());
-    let facts = facts_for(&recording, &identified, &tz);
+    let part = build_transcript(&recording, &identified, speech.as_ref());
+
+    // A recording that carries on an earlier one is summarised over both: the
+    // earlier transcript first, this one's words after it on the same clock,
+    // into the note the earlier one wrote. See `combine`.
+    let earlier = {
+        let vault = vault.clone();
+        let recording = recording.clone();
+        blocking(move || combine::earlier_of(&vault, &recording)).await?
+    };
+    let (transcript, notes, began) = match &earlier {
+        Some(earlier) => {
+            let mut whole = earlier.transcript.clone().unwrap_or_else(|| Transcript {
+                speakers: Vec::new(),
+                segments: Vec::new(),
+                recording_id: Some(earlier.recording.id),
+                ..part.clone()
+            });
+            // Replaced, not added: the draft already put this recording's
+            // words in the shared transcript, and a retry runs this again.
+            whole.replace_part(
+                &part.speakers,
+                &part.segments,
+                draft::ms_after(earlier.origin, recording.started_at),
+            );
+            (whole, combine::notes_after(earlier, &recording), earlier.origin)
+        }
+        None => (part, recording.notes.clone(), recording.started_at),
+    };
+    let mut facts = facts_over(&recording, &identified, &transcript, &tz);
+    facts.started_at = Some(began);
 
     let spelling = jatayu_core::meeting::vocab::spelling_line(&identified.words);
     // What the person wrote down on the panel during the call goes to the
@@ -485,18 +578,28 @@ pub(crate) async fn summarise_and_write_from(
         &facts,
         budget,
         &spelling,
-        &recording.notes,
+        &notes,
     )
     .await?;
+    // A step is given to a person who was there or invited, or to nobody.
+    // The owner's own addresses count as the owner: a step written to one of
+    // them is theirs, and becomes their task.
+    let mut allowed = owners_allowed(&identified.owner_label, &facts);
+    allowed.extend({
+        let vault = vault.clone();
+        blocking(move || Ok(owner_of(&vault).addresses)).await?
+    });
+    let answer =
+        jatayu_core::meeting::prompt::settle_owners(&answer, &allowed, &transcript.as_lines());
     let details = jatayu_core::meeting::template::details_block(&facts);
     let body = with_own_notes(
         if details.is_empty() { answer.clone() } else { format!("{details}\n\n{answer}") },
-        &recording.notes,
+        &notes,
     );
 
     let date = {
         let zone = jiff::tz::TimeZone::get(&facts.tz).unwrap_or(jiff::tz::TimeZone::UTC);
-        let at = recording.event.as_ref().map_or(recording.started_at, |e| e.start);
+        let at = recording.event.as_ref().map_or(began, |e| e.start);
         at.to_zoned(zone).strftime("%-d %B %Y").to_string()
     };
     // The title is made from what the notes say, not from the note as it is
@@ -504,8 +607,6 @@ pub(crate) async fn summarise_and_write_from(
     let title = title_for(summariser, &facts.title, &answer, &date).await;
     let meeting = if facts.title.trim().is_empty() { title.clone() } else { facts.title.clone() };
 
-    let note = Note::written_by(NoteOrigin::Meeting, title.clone(), &body);
-    let note_id = note.id;
     let (purpose, (tags, retagged)) = {
         let vault = vault.clone();
         let recording = recording.clone();
@@ -514,38 +615,41 @@ pub(crate) async fn summarise_and_write_from(
         })
         .await?
     };
-    let mut note = note;
-    note.purpose = purpose;
-    note.tags = tags;
 
-    transcript.note_id = note_id;
-    transcript.segments.sort_by_key(|s| s.start_ms);
-    transcript.updated_at = Timestamp::now();
-
-    // The note, the transcript and the recording's own `Done` row commit
+    // The note the draft made when the call ended, or the earlier part's
+    // when the meeting was put back together; a new one only when there is
+    // none to write into (the assistant was off, or it was deleted). The
+    // note, the transcript and the recording's own `Done` row commit
     // together, in one `blocking` call -- `mutate_recording` for the row so
     // it is still serialised against any other mutator of the same
     // recording (see `spool::mutate_recording`'s own doc), even though
     // nothing should legitimately be racing a recording that has already
-    // left `Transcribing`.
-    {
+    // left `Transcribing`. See `draft::commit` for what is kept of the
+    // person's own edits.
+    let target = earlier.as_ref().map(|e| e.note_id).or(recording.note_id);
+    let fill = Fill { title: title.clone(), body: body.clone(), tags, purpose };
+    let committed = {
         let vault = vault.clone();
-        let note = note.clone();
-        let transcript = transcript.clone();
-        blocking(move || {
-            vault.save_note(&note, None)?;
-            vault.save_transcript(&transcript)?;
-            crate::meeting::spool::mutate_recording(&vault, id, |recording| {
-                recording.stage = Stage::Done;
-                recording.note_id = Some(note_id);
-                recording.chunks.clear();
-                recording.partial.clear();
-                recording.updated_at = Timestamp::now();
-                Ok(())
-            })?;
-            Ok(())
+        blocking(move || draft::commit(&vault, id, target, &fill, transcript)).await?
+    };
+    let (note_id, transcript) = (committed.note.id, &committed.transcript);
+    if let Some(earlier) = &earlier {
+        let vault = vault.clone();
+        let earlier = earlier.recording.clone();
+        let written = (!committed.kept_edits).then_some(committed.note.updated_at);
+        let source = source.clone();
+        let settled = blocking(move || {
+            combine::settle_earlier(&vault, source.as_ref(), &earlier, note_id, written)
         })
-        .await?;
+        .await;
+        match settled {
+            Ok(Some(change)) => events.changed(change),
+            Ok(None) => {}
+            Err(e) => tracing::warn!(
+                error = %e.message,
+                "meeting pipeline: could not settle the earlier part of the meeting"
+            ),
+        }
     }
 
     // The note is committed; everything from here on only tidies the spool,
@@ -569,7 +673,8 @@ pub(crate) async fn summarise_and_write_from(
         );
     }
 
-    let mut change = Change::new(Kind::Note, Op::Created);
+    let mut change =
+        Change::new(Kind::Note, if committed.created { Op::Created } else { Op::Updated });
     change.id = Some(note_id.to_string());
     events.changed(change);
     for id in retagged {
@@ -594,7 +699,7 @@ pub(crate) async fn summarise_and_write_from(
     // [`PROPOSALS_WAIT`], though; see there.
     let on = {
         let zone = jiff::tz::TimeZone::get(&facts.tz).unwrap_or(jiff::tz::TimeZone::UTC);
-        let at = recording.event.as_ref().map_or(recording.started_at, |e| e.start);
+        let at = recording.event.as_ref().map_or(began, |e| e.start);
         at.to_zoned(zone).date()
     };
     let others: Vec<String> = facts.invitees.iter().map(|i| i.name.clone()).collect();
