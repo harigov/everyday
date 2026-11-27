@@ -9,6 +9,8 @@
   import { relativeTime } from '../lib/format'
   import { stageLabel } from '../lib/meetings-format'
   import { meetings } from '../lib/meetings.svelte'
+  import { notes } from '../lib/notes.svelte'
+  import { details } from '../lib/phone.svelte'
   import type { Recording } from '../lib/types'
   import Icon from './Icon.svelte'
 
@@ -17,7 +19,17 @@
   const failed = $derived(recording.stage.type === 'failed')
   const reason = $derived(recording.stage.type === 'failed' ? recording.stage.reason : null)
 
+  /** Its note exists already -- a draft the call's pipeline is filling in. */
+  const noteId = $derived(recording.noteId ?? null)
+
   let busy = $state(false)
+
+  /** Open the draft note, over the list on a phone, as `NotesNav` does. */
+  async function openNote() {
+    if (!noteId) return
+    await notes.openNote(noteId)
+    details.open('notes')
+  }
 
   async function retry() {
     busy = true
@@ -38,26 +50,43 @@
   }
 </script>
 
-<div class="card" class:failed>
-  <div class="head">
+{#snippet summary()}
+  <span class="head">
     {#if failed}
       <Icon name="alert" size={14} />
     {:else}
       <span class="spinner" aria-hidden="true"></span>
     {/if}
     <span class="title">{recording.title}</span>
+  </span>
+  <span class="stage">
+    {#if noteId && !failed}
+      Notes started, writing the summary · {relativeTime(recording.startedAt)}
+    {:else}
+      {stageLabel(recording.stage)} · started {relativeTime(recording.startedAt)}
+    {/if}
+  </span>
+{/snippet}
+
+{#if noteId && !failed}
+  <button class="card open" onclick={() => void openNote()}>
+    {@render summary()}
+  </button>
+{:else}
+  <div class="card" class:failed>
+    {@render summary()}
+    {#if failed && reason}
+      <p class="reason">{reason}</p>
+      <div class="actions">
+        {#if noteId}
+          <button class="btn" onclick={() => void openNote()}>Open note</button>
+        {/if}
+        <button class="btn" disabled={busy} onclick={() => void discard()}>Discard</button>
+        <button class="btn btn-primary" disabled={busy} onclick={() => void retry()}>Retry</button>
+      </div>
+    {/if}
   </div>
-  <p class="stage">
-    {stageLabel(recording.stage)} · started {relativeTime(recording.startedAt)}
-  </p>
-  {#if failed && reason}
-    <p class="reason">{reason}</p>
-    <div class="actions">
-      <button class="btn" disabled={busy} onclick={() => void discard()}>Discard</button>
-      <button class="btn btn-primary" disabled={busy} onclick={() => void retry()}>Retry</button>
-    </div>
-  {/if}
-</div>
+{/if}
 
 <style>
   .card {
@@ -69,6 +98,17 @@
     border: 1px solid var(--border);
     border-radius: var(--radius);
     background: var(--bg);
+  }
+  /* The card as a button: a draft note to open. Reset to look like the div. */
+  .card.open {
+    width: calc(100% - 2 * var(--sp-2));
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .card.open:hover {
+    border-color: var(--border-strong, var(--border));
+    background: var(--bg-raised);
   }
   .card.failed {
     border-color: color-mix(in oklab, var(--danger) 30%, var(--border));
@@ -95,6 +135,7 @@
   }
 
   .stage {
+    display: block;
     margin: 0;
     color: var(--fg-faint);
     font-size: var(--text-xs);

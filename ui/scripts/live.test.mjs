@@ -157,7 +157,9 @@ assert.deepEqual(new Set(targetsFor(['task', 'item'])), new Set(['todo', 'librar
 // A kind that deliberately reloads nothing contributes nothing.
 assert.deepEqual(targetsFor(['conversation', 'memory']), [])
 assert.deepEqual(targetsFor(['conversation', 'task']), ['todo'])
-assert.deepEqual(targetsFor(['transcript']), [])
+// A transcript is read again by the open panel, through the one target.
+assert.deepEqual(targetsFor(['transcript']), ['meetings'])
+assert.deepEqual(targetsFor(['transcript', 'recording']), ['meetings'])
 // A kind the service raises that no command declares, so the generated
 // `ChangeKind` and `RELOADS` do not name it: a supervised task's status when
 // the vault unlocks, a sync pass's mailbox. It does not stop the rest of the

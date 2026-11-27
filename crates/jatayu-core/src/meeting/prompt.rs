@@ -185,6 +185,11 @@ How to write, so the notes read at a glance:
   nobody took it on, its owner is \"Unassigned\"; when a voice nobody could \
   name took it on, it is \"Unassigned\" too, and the step ends with \"(offered \
   by someone on the call)\".
+- When somebody is asked by name (\"Josh, can you send the deck?\") and the \
+  reply accepts (\"sure\", \"on it\", \"I'll do that\"), the step belongs to \
+  the person named, even when the voice that accepted carries an \"Unknown\" \
+  label: the name in the question says who was asked. Someone who answers \
+  for another person does not take the step on for them.
 - Write each next step so it makes sense on its own in a to-do list, away \
   from these notes: start with a verb and name the thing (\"Send Acme the \
   revised pricing deck\", not \"send it\"). When a day was said (\"Friday\", \
@@ -430,6 +435,11 @@ pub fn people_block(transcript: &Transcript, invitees: &[super::people::Invitee]
         }
     }
     let one_room_mic = transcript.room;
+    let mut words: std::collections::BTreeMap<u16, usize> = std::collections::BTreeMap::new();
+    for seg in &transcript.segments {
+        *words.entry(seg.speaker).or_default() += super::words::tokens(&seg.text).len();
+    }
+    let total_words: usize = words.values().sum();
     let mut lines = Vec::new();
     for key in &spoke {
         let Some(s) = transcript.speaker(*key) else { continue };
@@ -450,7 +460,11 @@ pub fn people_block(transcript: &Transcript, invitees: &[super::people::Invitee]
             .filter(|a| !a.is_empty())
             .map(|a| format!("{a}; "))
             .unwrap_or_default();
-        lines.push(format!("- {} -- {answer}spoke ({how})", s.label));
+        let share = match words.get(key).copied().unwrap_or_default() as f32 / total_words as f32 {
+            share if total_words == 0 || share < 0.03 => String::new(),
+            share => format!("; about {}% of what was said", (share * 20.0).round() as u32 * 5),
+        };
+        lines.push(format!("- {} -- {answer}spoke ({how}{share})", s.label));
     }
     for person in invitees {
         let heard = spoke
@@ -551,6 +565,335 @@ pub fn title_of(event_title: &str, topic: Option<&str>, date: &str) -> String {
         None if event_title.is_empty() => format!("Call on {date}"),
         None => format!("{event_title}, {date}"),
     }
+}
+
+/// Whether a heading names the section of a note that lists who will do
+/// what. Matched by whole words, so "Traction", "Customer reactions" and
+/// "Interactions" never count as "actions", and "Things to do differently"
+/// is not a to-do list: "to do" counts only as a heading's first or last
+/// words.
+fn is_action_heading(line: &str) -> bool {
+    let key = super::template::heading_key(line);
+    let words: Vec<&str> =
+        key.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    let single = ["action", "actions", "todo", "todos", "task", "tasks"];
+    if words.iter().any(|w| single.contains(w)) {
+        return true;
+    }
+    let has = |phrase: &[&str]| words.windows(phrase.len()).any(|w| w == phrase);
+    if has(&["next", "step"]) || has(&["next", "steps"]) || has(&["follow", "up"]) {
+        return true;
+    }
+    if has(&["follow", "ups"]) {
+        return true;
+    }
+    words.starts_with(&["to", "do"])
+        || words.starts_with(&["to", "dos"])
+        || words.ends_with(&["to", "do"])
+        || words.ends_with(&["to", "dos"])
+}
+
+/// A heading's depth: its `#`s, or a bold-only line as deeper than any.
+fn heading_level(line: &str) -> usize {
+    match line.trim().chars().take_while(|&c| c == '#').count() {
+        0 => 7,
+        n => n,
+    }
+}
+
+/// Labels that are voices nobody could name, never people, however they
+/// got onto a list of allowed names.
+fn is_voice_label(name: &str) -> bool {
+    let lower = name.trim().trim_matches('*').trim().to_lowercase();
+    let numbered =
+        |prefix: &str| lower.strip_prefix(prefix).is_some_and(|n| n.trim().parse::<u32>().is_ok());
+    lower == super::people::OTHERS.to_lowercase()
+        || matches!(lower.as_str(), "someone" | "somebody" | "them" | "unknown" | "speaker")
+        || numbered("unknown ")
+        || numbered("speaker ")
+}
+
+/// The words of some text, lower-cased, for asking whether a name was
+/// spoken: letters and digits only, so punctuation never hides one.
+fn words_of(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// Words that make a name read as a team or company rather than a person.
+const TEAM_WORDS: &[&str] =
+    &["team", "group", "department", "dept", "company", "inc", "corp", "ltd", "llc", "labs"];
+
+/// What a note's owners are checked against.
+struct Roster<'a> {
+    allowed: &'a [String],
+    /// Every word of the transcript the note was written from.
+    heard: std::collections::HashSet<String>,
+}
+
+impl Roster<'_> {
+    /// Whether every word of `name` was said on the call, as whole words.
+    fn spoken(&self, name: &str) -> bool {
+        let words = words_of(name);
+        !words.is_empty() && words.iter().all(|w| self.heard.contains(w))
+    }
+
+    /// One owner, single: "Unassigned", the owner's own "You"/"Me", an
+    /// allowed address, an allowed name whole (any case) or the unique first
+    /// name of one, a name said on the call (a person addressed as "Josh,
+    /// can you...", invited or not), or a team or company named there.
+    fn one(&self, name: &str) -> bool {
+        let name = name.trim().trim_matches('*').trim();
+        if name.is_empty() || is_voice_label(name) {
+            return name.is_empty();
+        }
+        if ["unassigned", "you", "me"].iter().any(|k| name.eq_ignore_ascii_case(k)) {
+            return true;
+        }
+        if name.contains('@') {
+            return self.allowed.iter().any(|a| a.trim().eq_ignore_ascii_case(name));
+        }
+        let people: Vec<&str> = self
+            .allowed
+            .iter()
+            .map(|a| a.trim())
+            .filter(|a| !a.is_empty() && !is_voice_label(a))
+            .collect();
+        if people.iter().any(|a| a.eq_ignore_ascii_case(name)) {
+            return true;
+        }
+        if name.split_whitespace().count() == 1 {
+            let first = |n: &str| n.split_whitespace().next().map(str::to_lowercase);
+            let wanted = name.to_lowercase();
+            if people.iter().filter(|a| first(a).as_deref() == Some(wanted.as_str())).count() == 1 {
+                return true;
+            }
+        }
+        if self.spoken(name) {
+            return true;
+        }
+        // "Acme Sales Team" when "Acme" was said.
+        let words = words_of(name);
+        words.len() > 1
+            && words.iter().any(|w| TEAM_WORDS.contains(&w.as_str()))
+            && words.first().is_some_and(|w| self.heard.contains(w))
+    }
+
+    /// The parts of an owner written as several ("Priya and Dev",
+    /// "Priya, Dev"), or the one.
+    fn parts(owner: &str) -> Vec<&str> {
+        owner
+            .split([',', '&', '/'])
+            .flat_map(|p| p.split(" and "))
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .collect()
+    }
+
+    /// An owner as written, in a column that is only owners: fine when each
+    /// part of it is.
+    fn owner_is_allowed(&self, owner: &str) -> bool {
+        let owner = owner.trim().trim_matches('*').trim();
+        if self.one(owner) {
+            return true;
+        }
+        let parts = Self::parts(owner);
+        parts.len() > 1 && parts.iter().all(|p| self.one(p))
+    }
+
+    /// A bold lead-in that is wrong as an owner. Stricter than the column
+    /// case, since a lead-in may as well be a topic ("**Pricing:** agree a
+    /// number"): only a voice label, or a short capitalised name-like phrase
+    /// that is neither allowed nor said on the call, is rewritten.
+    fn lead_in_is_invented(&self, lead_in: &str) -> bool {
+        let lead_in = lead_in.trim().trim_matches('*').trim();
+        if lead_in.is_empty() || self.owner_is_allowed(lead_in) {
+            return false;
+        }
+        // An address that is not allowed is plainly an owner, and wrong.
+        if lead_in.contains('@') {
+            return true;
+        }
+        let parts = Self::parts(lead_in);
+        if parts.iter().any(|p| is_voice_label(p)) || is_voice_label(lead_in) {
+            return true;
+        }
+        if lead_in.split_whitespace().count() > 4 {
+            return false;
+        }
+        let parts = if parts.is_empty() { vec![lead_in] } else { parts };
+        parts.iter().any(|p| !self.one(p) && looks_like_a_name(p))
+    }
+}
+
+/// Whether a phrase reads as a person's or team's name rather than a topic:
+/// at most four words, each capitalised, and when it is one word, not one
+/// with a common noun's ending ("Pricing", "Timeline", "Budgeting").
+fn looks_like_a_name(phrase: &str) -> bool {
+    let words: Vec<&str> = phrase.split_whitespace().collect();
+    if words.is_empty() || words.len() > 4 {
+        return false;
+    }
+    let capitalised = |w: &&str| {
+        let mut chars = w.chars();
+        chars.next().is_some_and(char::is_uppercase) && w.chars().count() >= 2
+    };
+    if !words.iter().all(capitalised) {
+        return false;
+    }
+    if words.len() == 1 {
+        let lower = words[0].to_lowercase();
+        let noun = ["ing", "tion", "sion", "ment", "ness", "ity", "ance", "ence", "ship", "line"];
+        return !noun.iter().any(|n| lower.ends_with(n));
+    }
+    true
+}
+
+/// The owner of a `- **Name:** step` bullet: the byte range of the name
+/// inside the bold marks, without a colon that sits inside them. A leading
+/// checkbox is allowed.
+fn bullet_owner(line: &str) -> Option<(usize, usize)> {
+    let indent = line.len() - line.trim_start().len();
+    let rest = &line[indent..];
+    let marker = rest.chars().next().filter(|c| matches!(c, '-' | '*' | '+'))?;
+    let mut at = indent + marker.len_utf8();
+    let after = &line[at..];
+    let spaces = after.len() - after.trim_start().len();
+    if spaces == 0 {
+        return None;
+    }
+    at += spaces;
+    for checkbox in ["[ ]", "[x]", "[X]"] {
+        if line[at..].starts_with(checkbox) {
+            at += checkbox.len();
+            at += line[at..].len() - line[at..].trim_start().len();
+            break;
+        }
+    }
+    if !line[at..].starts_with("**") {
+        return None;
+    }
+    let start = at + 2;
+    let close = line[start..].find("**")? + start;
+    let mut end = close;
+    if line[start..close].ends_with(':') {
+        end -= 1;
+    }
+    (end > start).then_some((start, end))
+}
+
+/// Rewrite one row of an "Owner | Action | Due" table, or `None` when the
+/// owner there is fine.
+fn settle_row(line: &str, column: usize, roster: &Roster) -> Option<String> {
+    let mut cells: Vec<&str> = line.split('|').collect();
+    let cell = *cells.get(column)?;
+    let owner = cell.trim();
+    let bare = owner.trim_matches('*').trim();
+    if bare.is_empty()
+        || roster.owner_is_allowed(bare)
+        || bare.chars().all(|c| c == '-' || c == ':')
+    {
+        return None;
+    }
+    let lead = &cell[..cell.len() - cell.trim_start().len()];
+    let trail = &cell[cell.trim_end().len()..];
+    let new = format!("{lead}Unassigned{trail}");
+    cells[column] = &new;
+    Some(cells.join("|"))
+}
+
+/// Owners in a note's next steps that are not people: a `**Name:**` bullet
+/// lead-in, or an Owner cell of a table, that names nobody real becomes
+/// "Unassigned". A model asked to give each step an owner sometimes invents
+/// one, or writes a voice's label as if it were a name; a wrong owner is
+/// worse than none, since the owner's own steps become their tasks.
+///
+/// What is kept: "Unassigned"; "You" and "Me" (the owner's own steps as the
+/// model wrote them); an e-mail address in `allowed`; a name in `allowed`,
+/// whole and without regard to case, or the first name of exactly one of
+/// them; and any name whose words were all said on the call (`heard`, the
+/// transcript text the note was written from, matched as whole words), since
+/// a person addressed as "Josh, can you..." is a real owner even when not
+/// invited or labelled, and likewise a team or company named there. What is
+/// rewritten: a voice's label ("Unknown 2", "Speaker 1", "Others",
+/// "Someone", "Somebody", "Them") and a name found in neither place.
+///
+/// `allowed` should hold the owner's own label, the owner's addresses, the
+/// invitees' names and the labels of the voices present that are not voice
+/// labels (a name the person was matched or introduced by).
+///
+/// Only a section whose heading is an action-items heading by whole words
+/// (next steps, action items, follow-ups, to-dos, tasks; see
+/// `is_action_heading`) is touched, and in a bullet only a lead-in that
+/// looks like an owner: one of at most four words, capitalised like a name
+/// and not a common noun in form. A topic such as "**Pricing:**" or
+/// "**Q4 budget:**" is left alone, as is anything over four words. Table
+/// Owner columns, which hold owners and nothing else, get no such leniency.
+/// Everything else in `body` is left exactly as it was.
+pub fn settle_owners(body: &str, allowed: &[String], heard: &str) -> String {
+    let roster = Roster { allowed, heard: words_of(heard).into_iter().collect() };
+    let mut out: Vec<String> = Vec::new();
+    let mut in_fence = false;
+    // The level of the heading whose section we are in, when it is one
+    // that lists actions.
+    let mut section: Option<usize> = None;
+    // The Owner column of the table being read, once its header was seen.
+    let mut column: Option<usize> = None;
+    for line in body.lines() {
+        let t = line.trim_start();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            in_fence = !in_fence;
+            out.push(line.to_string());
+            continue;
+        }
+        if in_fence {
+            out.push(line.to_string());
+            continue;
+        }
+        if super::template::is_heading_line(line) {
+            let level = heading_level(line);
+            match section {
+                Some(current) if level > current => {}
+                _ => section = is_action_heading(line).then_some(level),
+            }
+            column = None;
+            out.push(line.to_string());
+            continue;
+        }
+        if section.is_none() {
+            out.push(line.to_string());
+            continue;
+        }
+        if t.starts_with('|') {
+            let cells: Vec<String> = line.split('|').map(|c| c.trim().to_lowercase()).collect();
+            let header = cells.iter().position(|c| {
+                matches!(c.trim_matches('*'), "owner" | "assignee" | "who" | "responsible")
+            });
+            if let Some(h) = header {
+                column = Some(h);
+                out.push(line.to_string());
+            } else if let Some(c) = column {
+                out.push(settle_row(line, c, &roster).unwrap_or_else(|| line.to_string()));
+            } else {
+                out.push(line.to_string());
+            }
+            continue;
+        }
+        column = None;
+        match bullet_owner(line) {
+            Some((start, end)) if roster.lead_in_is_invented(&line[start..end]) => {
+                out.push(format!("{}Unassigned{}", &line[..start], &line[end..]));
+            }
+            _ => out.push(line.to_string()),
+        }
+    }
+    let mut joined = out.join("\n");
+    if body.ends_with('\n') {
+        joined.push('\n');
+    }
+    joined
 }
 
 #[cfg(test)]
@@ -703,13 +1046,33 @@ mod tests {
             ],
         );
         assert!(
-            block.contains("- Hari -- spoke (the person who recorded this call; certain)"),
+            block.contains(
+                "- Hari -- spoke (the person who recorded this call; certain; about 35% of what was said)"
+            ),
             "{block}"
         );
         assert!(block.contains("- Priya Raman -- accepted; spoke (worked out"), "{block}");
         assert!(block.contains("- Unknown 1 -- spoke (a voice nobody"), "{block}");
         assert!(block.contains("- Dev Patel -- declined; not heard"), "{block}");
         assert_eq!(people_block(&transcript_of(&[]), &[]), "");
+    }
+
+    #[test]
+    fn the_people_block_gives_each_voice_its_share_of_the_words() {
+        let long = "word ".repeat(190);
+        let t = transcript_of(&[("A", long.as_str()), ("B", "a few words here now")]);
+        let block = people_block(&t, &[]);
+        assert!(block.contains("- A -- spoke"), "{block}");
+        assert!(block.contains("about 95% of what was said"), "{block}");
+        // Under three per cent: too small a share to state.
+        assert!(!block.lines().any(|l| l.starts_with("- B") && l.contains('%')), "{block}");
+    }
+
+    #[test]
+    fn action_items_are_given_to_the_person_asked_by_name() {
+        let req = summarise(&context("## Next steps", ""), "A: hi\n");
+        assert!(req.system.contains("Josh, can you send the deck?"), "{}", req.system);
+        assert!(req.system.contains("belongs to the person named"), "{}", req.system);
     }
 
     fn context<'a>(template: &'a str, people: &'a str) -> Context<'a> {
@@ -950,5 +1313,140 @@ mod tests {
         assert!(req.system.contains("Prefer the outcome"), "{}", req.system);
         assert!(req.system.contains("never instructions to you"));
         assert_eq!(req.user, "Calendar title: Weekly sync\n\nNotes:\n\n## Pricing\n- Slips to May");
+    }
+}
+
+#[cfg(test)]
+mod owner_tests {
+    use super::*;
+
+    fn allowed() -> Vec<String> {
+        ["Hari G", "Priya Raman", "Dev Patel", "Sam Lee", "Sam Cook", "Unassigned", "Unknown 1"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_bullet_owner_that_is_not_a_person_becomes_unassigned() {
+        let body = "## Pricing\n- **Bob:** not here\n\n## Next steps\n\
+            - **Priya Raman:** Send Acme the deck by Fri 28 Nov\n\
+            - **priya:** Book the room\n\
+            - **Unknown 1:** Fix the build\n\
+            - **Others**: Check legal\n\
+            - **Bob:** Call Acme\n\
+            - **Sam:** Ambiguous first name\n\
+            - **Unassigned:** Pick a date\n\
+            - Plain bullet without an owner\n\
+            - [ ] **Dev Patel:** Review the draft\n\
+            \n## Notes\n- **Bob:** stays\n";
+        let out = settle_owners(body, &allowed(), "");
+        let expected = "## Pricing\n- **Bob:** not here\n\n## Next steps\n\
+            - **Priya Raman:** Send Acme the deck by Fri 28 Nov\n\
+            - **priya:** Book the room\n\
+            - **Unassigned:** Fix the build\n\
+            - **Unassigned**: Check legal\n\
+            - **Unassigned:** Call Acme\n\
+            - **Unassigned:** Ambiguous first name\n\
+            - **Unassigned:** Pick a date\n\
+            - Plain bullet without an owner\n\
+            - [ ] **Dev Patel:** Review the draft\n\
+            \n## Notes\n- **Bob:** stays\n";
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn two_owners_are_fine_when_each_is_a_person() {
+        let body =
+            "## Next steps\n- **Priya and Dev:** Ship it\n- **Priya and Bob:** Ship it too\n";
+        let out = settle_owners(body, &allowed(), "");
+        assert_eq!(
+            out,
+            "## Next steps\n- **Priya and Dev:** Ship it\n- **Unassigned:** Ship it too\n"
+        );
+    }
+
+    #[test]
+    fn a_table_of_actions_has_its_owner_column_settled() {
+        let body = "## Action items\n\n| Owner | Action | Due |\n|---|---|---|\n\
+            | Priya Raman | Send the deck | Fri |\n| Someone | Fix it | |\n| Zed | Call | |\n\
+            \n## Open questions\n| Owner | x |\n| Zed | y |\n";
+        let out = settle_owners(body, &allowed(), "");
+        assert!(out.contains("| Priya Raman | Send the deck | Fri |"), "{out}");
+        assert!(out.contains("| Unassigned | Fix it | |"), "{out}");
+        assert!(out.contains("| Unassigned | Call | |"), "{out}");
+        assert!(out.contains("| Zed | y |"), "{out}");
+        assert!(out.contains("|---|---|---|"));
+    }
+
+    #[test]
+    fn bold_line_headings_and_code_fences_are_respected() {
+        let body = "**Next steps**\n- **Zed:** x\n```\n- **Zed:** y\n```\n";
+        let out = settle_owners(body, &allowed(), "");
+        assert_eq!(out, "**Next steps**\n- **Unassigned:** x\n```\n- **Zed:** y\n```\n");
+        // No allowed list at all: only Unassigned survives.
+        assert_eq!(
+            settle_owners("## Next steps\n- **Priya:** x", &[], ""),
+            "## Next steps\n- **Unassigned:** x"
+        );
+    }
+
+    #[test]
+    fn the_owners_own_steps_and_addresses_are_kept() {
+        let mut allowed = allowed();
+        allowed.push("hari@example.com".to_string());
+        let body = "## Next steps\n- **You:** Send the deck\n- **Me:** Book it\n\
+            - **hari@example.com:** Pay\n- **other@example.com:** Pay\n";
+        let out = settle_owners(body, &allowed, "");
+        assert_eq!(
+            out,
+            "## Next steps\n- **You:** Send the deck\n- **Me:** Book it\n\
+            - **hari@example.com:** Pay\n- **Unassigned:** Pay\n"
+        );
+    }
+
+    #[test]
+    fn a_person_addressed_by_name_on_the_call_is_kept() {
+        let heard = "Josh, can you send Acme the numbers? Sure. The Platform Team will help.";
+        let body = "## Next steps\n- **Josh:** Send Acme the numbers\n\
+            - **Platform Team:** Help\n- **Zed:** Invented\n";
+        let out = settle_owners(body, &allowed(), heard);
+        assert_eq!(
+            out,
+            "## Next steps\n- **Josh:** Send Acme the numbers\n\
+            - **Platform Team:** Help\n- **Unassigned:** Invented\n"
+        );
+        // Whole words only: "Jo" is not in "Josh".
+        assert!(settle_owners("## Next steps\n- **Jo:** x\n", &[], heard).contains("Unassigned"));
+    }
+
+    #[test]
+    fn only_headings_that_are_action_lists_by_whole_words_are_touched() {
+        for heading in
+            ["Traction", "Customer reactions", "Interactions", "Things to do differently"]
+        {
+            let body = format!("## {heading}\n- **Zed:** x\n");
+            assert_eq!(settle_owners(&body, &allowed(), ""), body, "{heading}");
+        }
+        for heading in ["Action items", "Follow-ups", "Follow up", "To-dos", "Tasks", "To do"] {
+            let body = format!("## {heading}\n- **Zed:** x\n");
+            assert!(settle_owners(&body, &allowed(), "").contains("Unassigned"), "{heading}");
+        }
+    }
+
+    #[test]
+    fn a_topic_lead_in_is_not_an_owner() {
+        let body = "## Next steps\n- **Pricing:** agree a number\n\
+            - **Q4 budget:** settle it\n- **timeline:** draft\n\
+            - **The long headline of the whole matter at hand:** do\n\
+            - **Speaker 2:** call\n- **Them:** call\n- **Zed Quinn:** call\n";
+        let out = settle_owners(body, &allowed(), "");
+        assert_eq!(
+            out,
+            "## Next steps\n- **Pricing:** agree a number\n\
+            - **Q4 budget:** settle it\n- **timeline:** draft\n\
+            - **The long headline of the whole matter at hand:** do\n\
+            - **Unassigned:** call\n- **Unassigned:** call\n- **Unassigned:** call\n"
+        );
     }
 }

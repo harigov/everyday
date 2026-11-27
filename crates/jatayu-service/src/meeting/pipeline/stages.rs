@@ -247,6 +247,12 @@ pub(crate) fn read_range(
 /// the plan's "skip < 1 s".
 const MIN_EMBED_MS: u64 = 1_000;
 
+/// The most remote voices a call with no calendar invite is taken to have.
+/// Most ad-hoc calls have one to three people besides the owner, who is
+/// always the mic track; five leaves room for a larger one while still
+/// holding back the dozens of fragments a compressed line breeds.
+const NO_INVITE_MAX_VOICES: usize = 5;
+
 /// Who the owner is, as [`people::invitees`] needs it to leave them off the
 /// invite: every configured mail account's own address and identities, and
 /// the profile's name. Best-effort -- an account read failure just means no
@@ -621,8 +627,9 @@ pub(crate) async fn identify_stage(
 
     // Nobody on the other end can be anyone but an invitee, so there are
     // never more distinct voices than invitees -- see `Params::max_voices`.
+    // With no invite to count, assume an ordinary call rather than none.
     let params = identify::Params {
-        max_voices: (!invitees.is_empty()).then_some(invitees.len()),
+        max_voices: Some(if invitees.is_empty() { NO_INVITE_MAX_VOICES } else { invitees.len() }),
         ..identify::Params::default()
     };
     let mut clusters = identify::identify(&turns, &candidates, params);
@@ -765,7 +772,7 @@ pub(crate) async fn identify_stage(
     // invite has room for: the model reads them as the audio split them,
     // which is what lets it say two labels are one person -- see
     // `resolve_speakers`, which has the last word.
-    people::tidy(&mut speakers, &mut segments, None);
+    people::tidy(&mut speakers, &mut segments, people::Room::RenumberOnly);
 
     let room = in_room && mic_clusters.is_empty();
     Ok(Identified { speakers, segments, invitees, owner_label: label, room, words, agenda })
@@ -857,34 +864,39 @@ pub(crate) async fn resolve_speakers(
     identified: &mut Identified,
     budget: u32,
 ) {
-    let Some(req) = people::resolve_request(
+    if let Some(req) = people::resolve_request(
         &identified.invitees,
         &identified.owner_label,
         &identified.speakers,
         &identified.segments,
         budget.min(NAMING_BUDGET),
-    ) else {
-        return;
-    };
-    match summariser.ask(&req.system, &req.user).await {
-        Ok(answer) => {
-            let resolutions = people::parse_resolutions(&answer);
-            people::apply(
-                &mut identified.speakers,
-                &mut identified.segments,
-                &identified.invitees,
-                &resolutions,
-            );
-        }
-        Err(e) => {
-            tracing::warn!(
-                error = %e.message,
-                "meeting pipeline: could not ask who the unnamed voices were; keeping them unnamed"
-            );
+    ) {
+        match summariser.ask(&req.system, &req.user).await {
+            Ok(answer) => {
+                let resolutions = people::parse_resolutions(&answer);
+                people::apply(
+                    &mut identified.speakers,
+                    &mut identified.segments,
+                    &identified.invitees,
+                    &resolutions,
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e.message,
+                    "meeting pipeline: could not ask who the unnamed voices were; keeping them unnamed"
+                );
+            }
         }
     }
-    let invited = (!identified.invitees.is_empty()).then_some(identified.invitees.len());
-    people::tidy(&mut identified.speakers, &mut identified.segments, invited);
+    // Whether or not the model was asked: what is still unnamed is folded
+    // and numbered, with or without an invite to count.
+    let room = if identified.invitees.is_empty() {
+        people::Room::Uninvited
+    } else {
+        people::Room::Invited(identified.invitees.len())
+    };
+    people::tidy(&mut identified.speakers, &mut identified.segments, room);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -931,7 +943,47 @@ pub(crate) fn facts_for(recording: &Recording, identified: &Identified, tz: &str
     facts
 }
 
-fn facts_from(
+/// [`facts_for`], over a transcript that may be more than what `identified`
+/// found: a recording that carries on an earlier one is summarised over both
+/// parts, so who spoke is read from the joined transcript, not from this
+/// part alone. The invitees and the agenda are the meeting's, the same for
+/// both.
+pub(crate) fn facts_over(
+    recording: &Recording,
+    identified: &Identified,
+    transcript: &Transcript,
+    tz: &str,
+) -> Facts {
+    let mut facts = facts_from(recording, &transcript.speakers, &transcript.segments, tz);
+    facts.invitees = identified.invitees.clone();
+    facts.agenda = identified.agenda.clone();
+    facts
+}
+
+/// Who a next step may be given to: the owner, the people invited, everybody
+/// heard who is a person -- a voice nobody could name ("Unknown 2",
+/// "Others") is not one -- and "Unassigned". What
+/// `prompt::settle_owners` holds the model's owners to.
+pub(crate) fn owners_allowed(owner_label: &str, facts: &Facts) -> Vec<String> {
+    let mut allowed = vec![owner_label.to_string()];
+    allowed.extend(facts.invitees.iter().map(|i| i.name.clone()));
+    allowed.extend(
+        facts
+            .present
+            .iter()
+            .filter(|label| *label != people::OTHERS && !label.starts_with("Unknown "))
+            .cloned(),
+    );
+    // Addresses too: a step may be owned by "priya@x.com" as written in the
+    // invitation, the owner's own among them when they were invited or heard.
+    allowed.extend(facts.invitees.iter().filter_map(|i| i.email.clone()));
+    allowed.extend(facts.present_emails.iter().cloned());
+    allowed.push("Unassigned".to_string());
+    allowed.retain(|name| !name.trim().is_empty());
+    allowed
+}
+
+pub(crate) fn facts_from(
     recording: &Recording,
     speakers: &[Speaker],
     segments: &[Segment],

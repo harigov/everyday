@@ -467,6 +467,7 @@ export interface Commands {
       title?: string | null
       templateId?: TemplateId | null
       automatic?: boolean
+      continues?: RecordingId | null
     }
     result: Recording
   }

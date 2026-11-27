@@ -192,6 +192,16 @@ fn speaker_json(speaker: &Speaker) -> Value {
     })
 }
 
+/// Widen the span of a note's entry to take in another recording of it: the
+/// earliest start and the latest end.
+fn widen(span: &mut (Timestamp, Option<Timestamp>), start: Timestamp, end: Option<Timestamp>) {
+    span.0 = span.0.min(start);
+    span.1 = match (span.1, end) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    };
+}
+
 fn run_list_meeting_notes(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let (from, to) = args.window(ctx, Window::Back(DEFAULT_HISTORY_DAYS))?;
     let (from_ts, to_ts) = day_window_timestamps(from, to, ctx.tz);
@@ -211,7 +221,12 @@ fn run_list_meeting_notes(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Valu
     let needle = args.opt_str("attendee").map(|s| s.trim().to_lowercase());
     let limit = args.opt_u32("limit").unwrap_or(DEFAULT_NOTES_LIMIT).clamp(1, super::MAX_LIMIT);
 
-    let mut notes = Vec::new();
+    // One entry to a note: a meeting that was left and rejoined is several
+    // recordings written into the one note, and the person (and the model)
+    // should see it once, from the first part's start to the last one's end.
+    let mut notes: Vec<Value> = Vec::new();
+    let mut spans: Vec<(Timestamp, Option<Timestamp>)> = Vec::new();
+    let mut listed: std::collections::HashMap<NoteId, usize> = std::collections::HashMap::new();
     for r in recordings {
         let Some(note_id) = r.note_id else { continue };
         if let Some(needle) = &needle {
@@ -225,6 +240,13 @@ fn run_list_meeting_notes(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Valu
         // row -- see `Recording::note_id`'s doc. Skipped rather than
         // failing the whole call over one stale pointer.
         let Ok(note) = ctx.vault.note(note_id) else { continue };
+        if let Some(&at) = listed.get(&note_id) {
+            widen(&mut spans[at], r.started_at, r.ended_at);
+            continue;
+        }
+        if notes.len() as u32 >= limit {
+            continue;
+        }
         // The titles and the guest list come from the invitation, which
         // whoever sent it wrote: under `untrusted_text`, like everything else
         // here that a stranger chose the words of.
@@ -246,9 +268,14 @@ fn run_list_meeting_notes(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Valu
                     .unwrap_or_default(),
             },
         }));
-        if notes.len() as u32 >= limit {
-            break;
-        }
+        listed.insert(note_id, notes.len() - 1);
+        spans.push((r.started_at, r.ended_at));
+        // Only stop once the page is full and the scan can add nothing more
+        // to it: a later (older) recording of a listed note still widens it.
+    }
+    for (note, (start, end)) in notes.iter_mut().zip(&spans) {
+        note["start"] = json!(start.to_string());
+        note["end"] = json!(end.map(|t| t.to_string()));
     }
 
     Ok(json!({
@@ -318,6 +345,18 @@ mod tests {
         assert!(attendee_matches(&attendees, "priya"));
         assert!(attendee_matches(&attendees, "sam@x.com"));
         assert!(!attendee_matches(&attendees, "nobody"));
+    }
+
+    #[test]
+    fn a_rejoined_meeting_is_one_span_from_the_first_start_to_the_last_end() {
+        let at = |s: i64| Timestamp::from_second(s).unwrap();
+        let mut span = (at(100), Some(at(200)));
+        widen(&mut span, at(50), Some(at(80)));
+        assert_eq!(span, (at(50), Some(at(200))));
+        widen(&mut span, at(300), Some(at(400)));
+        assert_eq!(span, (at(50), Some(at(400))));
+        widen(&mut span, at(60), None);
+        assert_eq!(span, (at(50), Some(at(400))), "an open end does not erase a known one");
     }
 
     #[test]

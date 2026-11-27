@@ -212,6 +212,45 @@ assert.equal(
   await notes.setTag(null)
 }
 
+// ── another writer fills in the open note (a call's draft turning into its summary) ─
+
+const otherWriter = async (id, text) => {
+  const whole = structuredClone(await api.note(id))
+  whole.body = { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text }] }] }
+  whole.updatedAt = new Date(Date.now() + 60_000).toISOString()
+  await api.saveNoteForce(whole)
+  return whole
+}
+{
+  await notes.create('a draft')
+  const id = notes.selected
+  const written = await otherWriter(id, 'the summary landed')
+  applier([{ kind: 'note', op: 'updated', id, origin: 'remote' }])
+  await new Promise((r) => setTimeout(r, 100))
+  assert.equal(notes.open?.id, id, 'the note stays open')
+  assert.equal(
+    notes.open.body.content[0].content[0].text,
+    'the summary landed',
+    'an untouched open note is reloaded in place',
+  )
+  assert.equal(notes.open.updatedAt, written.updatedAt)
+  assert.equal(notes.conflict, false)
+
+  // The same version coming back -- this window's own save -- changes nothing.
+  const same = notes.open
+  applier([{ kind: 'note', op: 'updated', id, origin: 'remote' }])
+  await new Promise((r) => setTimeout(r, 100))
+  assert.equal(notes.open, same, 'a version already held is left alone')
+
+  // An edit waiting to save is never thrown away.
+  notes.setTitle('typed by the person')
+  await otherWriter(id, 'summary again')
+  applier([{ kind: 'note', op: 'updated', id, origin: 'remote' }])
+  await new Promise((r) => setTimeout(r, 100))
+  assert.equal(notes.open.title, 'typed by the person', 'unsaved edits survive the other write')
+  await notes.keepMine()
+}
+
 await close()
 console.log('notes-store: all checks passed')
 

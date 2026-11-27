@@ -5471,6 +5471,14 @@ export interface Recording {
   /** What the person wrote down while it was recorded (from the panel's
    *  recording card), in the order written. The note keeps them. */
   notes?: RecordingNote[]
+  /** The earlier recording of the same meeting this one carries on (a
+   *  rejoin after trouble); its note is the one written into. */
+  continues?: RecordingId | null
+  /** The pipeline already looked for the calendar meeting this belongs to. */
+  linkChecked?: boolean
+  /** The note's `updatedAt` as the pipeline last wrote it; a note still at
+   *  that time has not been edited by the person. */
+  noteWrittenAt?: string | null
   updatedAt: string
 }
 

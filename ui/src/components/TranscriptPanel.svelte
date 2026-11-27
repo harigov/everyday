@@ -12,7 +12,12 @@
 <script lang="ts">
   import { api } from '../lib/api'
   import { plural } from '../lib/format'
-  import { formatOffset, speakerColor, speakerNameStyle } from '../lib/meetings-format'
+  import {
+    formatOffset,
+    quietSpeakers,
+    speakerColor,
+    speakerNameStyle,
+  } from '../lib/meetings-format'
   import { meetings } from '../lib/meetings.svelte'
   import { notes } from '../lib/notes.svelte'
   import { templates as templateStore } from '../lib/templates.svelte'
@@ -53,6 +58,34 @@
   $effect(() => {
     void load(noteId)
   })
+
+  // The transcript is written, rewritten and renamed by the pipeline while
+  // this panel may be open on its note: a draft note has none at first. A
+  // change refetches it quietly -- not `load`, which also clears a half-typed
+  // name, a rewrite preview and the search box.
+  let seenRevision = meetings.transcriptRevision
+  $effect(() => {
+    const revision = meetings.transcriptRevision
+    if (revision === seenRevision) return
+    seenRevision = revision
+    void refetch(noteId)
+  })
+
+  async function refetch(id: NoteId) {
+    try {
+      const t = await api.getTranscript(id)
+      if (id !== noteId) return
+      const first = transcript === null
+      transcript = t
+      if (first && t) loading = false
+      if (t?.recordingId && event === undefined) {
+        const r = await api.getRecording(t.recordingId)
+        if (id === noteId) event = r.event ?? null
+      }
+    } catch {
+      // Keep what is on screen; the next change tries again.
+    }
+  }
 
   async function load(id: NoteId) {
     loading = true
@@ -101,6 +134,20 @@
       }
     }
   }
+
+  /** Unnamed voices with next to nothing to say, behind one toggle. */
+  const quiet = $derived(quietSpeakers(transcript?.speakers ?? [], transcript?.segments ?? []))
+  let showQuiet = $state(false)
+  const quietLabel = $derived(
+    showQuiet
+      ? 'Hide quieter voices'
+      : `+${quiet.size} quieter ${quiet.size === 1 ? 'voice' : 'voices'}`,
+  )
+  const chipSpeakers = $derived(
+    (transcript?.speakers ?? []).filter(
+      (s) => showQuiet || !quiet.has(s.key) || namingKey === s.key,
+    ),
+  )
 
   const speakerById = $derived(new Map((transcript?.speakers ?? []).map((s) => [s.key, s])))
 
@@ -243,7 +290,7 @@
     {#if expanded}
       <div class="body">
         <div class="chips">
-          {#each transcript.speakers as s (s.key)}
+          {#each chipSpeakers as s (s.key)}
             {@const style = speakerNameStyle(s.how)}
             <span class="chip" style="--c: {speakerColor(s.key, s.how.type === 'owner')}">
               <span class="swatch" aria-hidden="true"></span>
@@ -272,6 +319,11 @@
               {/if}
             </span>
           {/each}
+          {#if quiet.size > 0}
+            <button class="link" aria-expanded={showQuiet} onclick={() => (showQuiet = !showQuiet)}>
+              {quietLabel}
+            </button>
+          {/if}
         </div>
 
         {#if offerRewrite}

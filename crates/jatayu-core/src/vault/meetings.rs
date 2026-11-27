@@ -35,7 +35,7 @@ use super::Vault;
 use super::session::{Domain, Unlocked, pick_domain};
 use crate::error::Result;
 use crate::id::{NoteId, RecordingId, TranscriptId, VoiceprintId};
-use crate::meeting::{MeetingSettings, Recording, Stage, Transcript, Voiceprint};
+use crate::meeting::{MeetingSettings, Recording, Transcript, Voiceprint};
 use crate::record::RecordKind;
 use crate::store::JournalStore;
 use crate::store::meetings::{MeetingStore, RecordingQuery};
@@ -464,15 +464,15 @@ pub(super) fn transcript_texts(
 /// [`Recording::note_id`]'s own doc already promises is "cleared if the note
 /// is deleted".
 ///
-/// Only recordings at [`Stage::Done`] are walked -- `note_id` is `None`
-/// everywhere else in the pipeline, per that field's own doc, so nothing
-/// earlier in the pipeline can be pointing at this note in the first place.
-/// `RecordingQuery` has no way to filter by `note_id` itself (there is no
-/// clear column for it -- see the SQL schema's own reasoning), so this reads
-/// every finished recording and checks in Rust; a vault's history of
-/// finished calls is small enough that this costs nothing a person would
-/// notice, and it is the same shape `list_recordings` itself is built to
-/// finish its own filters in.
+/// Recordings of every stage are walked, not only finished ones: the note
+/// is written as a draft the moment a call ends, so a recording still being
+/// summarised already points at it, and a deleted draft must not leave a
+/// dangling `note_id` (the pipeline reads a missing note as "write a new
+/// one"). `RecordingQuery` has no way to filter by `note_id` itself (there
+/// is no clear column for it -- see the SQL schema's own reasoning), so this
+/// reads every recording and checks in Rust; a vault's history of calls is
+/// small enough that this costs nothing a person would notice, and it is the
+/// same shape `list_recordings` itself is built to finish its own filters in.
 pub(super) fn detach_note_from_meetings(u: &Unlocked, note_id: NoteId) -> Result<()> {
     let Some(meetings) = u.store.meetings() else { return Ok(()) };
 
@@ -480,13 +480,10 @@ pub(super) fn detach_note_from_meetings(u: &Unlocked, note_id: NoteId) -> Result
         meetings.delete_transcript(transcript.id)?;
     }
 
-    let done = meetings.list_recordings(&RecordingQuery {
-        stages: vec![Stage::Done.as_str().to_string()],
-        ..Default::default()
-    })?;
-    for mut recording in done {
+    for mut recording in meetings.list_recordings(&RecordingQuery::default())? {
         if recording.note_id == Some(note_id) {
             recording.note_id = None;
+            recording.note_written_at = None;
             meetings.put_recording(&recording)?;
         }
     }

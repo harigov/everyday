@@ -73,8 +73,8 @@ use std::time::{Duration, Instant};
 
 use jatayu_core::id::{EventId, RecordingId, TemplateId};
 use jatayu_core::meeting::{
-    CHUNK_SECONDS, ChunkMeta, EventRef, FAILED_SPOOL_DAYS, Recording, SAMPLE_RATE, Stage, Track,
-    chunk_aad,
+    CHUNK_SECONDS, ChunkMeta, EventRef, FAILED_SPOOL_DAYS, REJOIN_WINDOW_MS, Recording,
+    SAMPLE_RATE, Stage, Track, chunk_aad,
 };
 use jatayu_core::store::meetings::RecordingQuery;
 use jatayu_core::{Error, Vault};
@@ -118,6 +118,161 @@ pub struct BeginArgs {
     pub title: Option<String>,
     pub template_id: Option<TemplateId>,
     pub automatic: bool,
+    /// See `BeginRecording::continues`.
+    pub continues: Option<RecordingId>,
+}
+
+/// The earlier recording a recording of `event` starting at `started_at`
+/// carries on, if there is one: the most recent other recording of the same
+/// calendar meeting (calendar and uid) that has ended -- one still being
+/// captured is never carried on, and a row with no end time is skipped --
+/// no more than [`jatayu_core::meeting::REJOIN_WINDOW_MS`] before
+/// `started_at` (or, at most a minute after it, for clocks that disagree),
+/// and was not discarded. `exclude` is the recording asking.
+/// Always `None` for a recording with no meeting: two calls on no calendar
+/// are only put together when the shell says so.
+pub(crate) fn continued_by(
+    vault: &Vault,
+    event: Option<&jatayu_core::meeting::EventRef>,
+    started_at: jiff::Timestamp,
+    exclude: RecordingId,
+) -> jatayu_core::Result<Option<RecordingId>> {
+    let Some(event) = event else {
+        return Ok(None);
+    };
+    // A meeting can be recorded for hours, so the earlier recording may have
+    // *started* long before this one; only when it *ended* matters, and that
+    // is not a column, so the query is widened by a generous slack and the
+    // answer filtered here.
+    let window = REJOIN_WINDOW_MS;
+    let from = ms_before(started_at, window + LONG_MEETING_SLACK_MS);
+    let to = ms_before(started_at, -60_000);
+    let candidates = vault.recordings(&RecordingQuery {
+        calendar_id: Some(event.calendar_id),
+        from: Some(from),
+        to: Some(to),
+        ..Default::default()
+    })?;
+    Ok(candidates
+        .into_iter()
+        .filter(|r| r.id != exclude && !matches!(r.stage, Stage::Recording))
+        .filter(|r| r.event.as_ref().is_some_and(|e| e.uid == event.uid))
+        .filter_map(|r| {
+            let ended = r.ended_at?;
+            let gap = started_at.as_millisecond() - ended.as_millisecond();
+            // A recording that "ended" after this one began is a clock
+            // disagreement, not a rejoin; a small overlap is let through.
+            (gap <= window && gap >= -60_000).then_some((ended, r.id))
+        })
+        .max_by_key(|(ended, _)| *ended)
+        .map(|(_, id)| id))
+}
+
+/// How long before a meeting's first recording started another may still
+/// share its note: nothing does in practice, but the first recording's own
+/// clock and its neighbours' are not the same clock.
+const RELATED_BEFORE_MS: i64 = 60 * 60 * 1000;
+
+/// How long after a meeting's first recording started a part of it may
+/// start: the meeting itself, and the rejoins that carry it on.
+const RELATED_AFTER_MS: i64 = 2 * 24 * 60 * 60 * 1000;
+
+/// Most recordings looked at around one meeting; a meeting has a handful of
+/// parts, so this is only there so a bad clock cannot make it a full scan.
+const RELATED_LIMIT: u32 = 500;
+
+/// How many `continues` links are followed looking for the first part of a
+/// meeting, so a loop in bad data cannot spin.
+const CHAIN_HOPS: usize = 32;
+
+/// When the first recording of the meeting `recording` belongs to started:
+/// follow `continues` back as far as the rows are there.
+pub(crate) fn chain_origin_start(vault: &Vault, recording: &Recording) -> jiff::Timestamp {
+    let mut started = recording.started_at;
+    let mut next = recording.continues;
+    for _ in 0..CHAIN_HOPS {
+        let Some(prev) = next.and_then(|id| vault.recording(id).ok()) else { break };
+        started = prev.started_at;
+        next = prev.continues;
+    }
+    started
+}
+
+/// Every recording that started near `anchor` -- the start of a meeting's
+/// first recording -- which is where anything sharing a note with it sits.
+/// Narrower than listing the whole history, each row of which is decrypted
+/// to be read.
+pub(crate) fn recordings_near(
+    vault: &Vault,
+    anchor: jiff::Timestamp,
+) -> jatayu_core::Result<Vec<Recording>> {
+    vault.recordings(&RecordingQuery {
+        from: Some(ms_before(anchor, RELATED_BEFORE_MS)),
+        to: Some(ms_before(anchor, -RELATED_AFTER_MS)),
+        limit: Some(RELATED_LIMIT),
+        ..Default::default()
+    })
+}
+
+/// The recordings that can be part of the same meeting as `recording`
+/// (itself included, when it is saved): see [`recordings_near`].
+pub(crate) fn related_recordings(
+    vault: &Vault,
+    recording: &Recording,
+) -> jatayu_core::Result<Vec<Recording>> {
+    recordings_near(vault, chain_origin_start(vault, recording))
+}
+
+/// How much earlier than a rejoin's own window a recording of the same
+/// meeting may have started and still be the one it carries on: a long
+/// meeting is recorded for hours before somebody drops out of it.
+const LONG_MEETING_SLACK_MS: i64 = 6 * 60 * 60 * 1000;
+
+fn ms_before(at: jiff::Timestamp, ms: i64) -> jiff::Timestamp {
+    jiff::Timestamp::from_millisecond(at.as_millisecond() - ms).unwrap_or(at)
+}
+
+/// Is `title` one the shell made up ("Call on Slack", "Recording") rather
+/// than one a person typed or a meeting carries? A made-up title never
+/// replaces the title of the recording being carried on.
+///
+/// Only the shell's own forms count -- "Call", "Call on <app>" and
+/// "Recording" -- so a typed "Callback plan" or "Recording studio sync" is
+/// kept as the person wrote it.
+fn is_generic_title(title: &str) -> bool {
+    let t = title.trim();
+    t.is_empty()
+        || t == "Call"
+        || t == "Recording"
+        || t.strip_prefix("Call on ").is_some_and(|app| !app.trim().is_empty())
+}
+
+/// The recording `begin` was told to carry on, if the claim holds up: it
+/// exists, is not still being captured, and ended no more than twice
+/// [`REJOIN_WINDOW_MS`] ago (twice, because the shell's clock and this
+/// service's are not the same clock and the shell has already judged it).
+/// Anything else is not an error -- the person gets a fresh recording, which
+/// is what they would have had before there was such a thing as rejoining.
+fn valid_continuation(vault: &Vault, id: RecordingId, now: jiff::Timestamp) -> Option<Recording> {
+    let prev = match vault.recording(id) {
+        Ok(prev) => prev,
+        Err(e) => {
+            tracing::info!(error = %e, recording = %id, "meeting spool: recording to continue not found; starting afresh");
+            return None;
+        }
+    };
+    if matches!(prev.stage, Stage::Recording) {
+        tracing::info!(recording = %id, "meeting spool: recording to continue is still being captured; starting afresh");
+        return None;
+    }
+    // No `ended_at` on a stage past Recording is a record the recovery pass
+    // has not tidied; it cannot be dated, so it is not a rejoin.
+    let ended = prev.ended_at?;
+    if now.as_millisecond() - ended.as_millisecond() > 2 * REJOIN_WINDOW_MS {
+        tracing::info!(recording = %id, "meeting spool: recording to continue ended too long ago; starting afresh");
+        return None;
+    }
+    Some(prev)
 }
 
 // ---- paths ------------------------------------------------------------
@@ -320,7 +475,7 @@ pub fn begin(svc: &Arc<Service>, args: BeginArgs) -> CommandResult<Recording> {
         return Err(Error::Invalid(format!("cannot start recording: {why}")).into());
     }
 
-    let (event_ref, default_title) = match args.event_id {
+    let (mut event_ref, default_title) = match args.event_id {
         Some(id) => {
             let event = vault.event(id)?;
             let calendar_name = vault
@@ -334,11 +489,55 @@ pub fn begin(svc: &Arc<Service>, args: BeginArgs) -> CommandResult<Recording> {
         }
         None => (None, "Recording".to_string()),
     };
-    let title = args.title.filter(|t| !t.trim().is_empty()).unwrap_or(default_title);
+    let typed_title = args.title.as_deref().is_some_and(|t| !is_generic_title(t));
+    let mut title = args.title.filter(|t| !t.trim().is_empty()).unwrap_or(default_title);
     let template_id = args.template_id.unwrap_or_else(|| vault.meeting_template(None).id);
+    let mut carried_template = None;
+
+    // Carrying on an earlier recording: the shell may say which, or, for a
+    // recording of a calendar meeting, it is worked out below. A named
+    // recording of a *different* meeting is the next meeting, not a rejoin.
+    let mut continues = None;
+    if let Some(id) = args.continues
+        && let Some(prev) = valid_continuation(&vault, id, svc.now())
+    {
+        let same_meeting = match (&event_ref, &prev.event) {
+            (None, _) => true,
+            (Some(new), Some(old)) => new.calendar_id == old.calendar_id && new.uid == old.uid,
+            (Some(_), None) => false,
+        };
+        if same_meeting {
+            if event_ref.is_none() {
+                event_ref = prev.event.clone();
+            }
+            if !typed_title {
+                title = prev.title.clone();
+            }
+            carried_template = Some(prev.template_id);
+            continues = Some(prev.id);
+        } else {
+            tracing::info!(recording = %id, "meeting spool: recording to continue is of another meeting; starting afresh");
+        }
+    }
 
     let mut recording = Recording::new(title, event_ref, template_id);
     recording.automatic = args.automatic;
+    recording.continues = match continues {
+        Some(id) => Some(id),
+        None => continued_by(&vault, recording.event.as_ref(), recording.started_at, recording.id)?,
+    };
+    // The meeting's note is one note, written again over both parts, so it
+    // keeps the layout the first part was asked for; only a template asked
+    // for by name now overrides that.
+    if args.template_id.is_none()
+        && let Some(prev_id) = recording.continues
+    {
+        let carried =
+            carried_template.or_else(|| vault.recording(prev_id).ok().map(|prev| prev.template_id));
+        if let Some(template_id) = carried {
+            recording.template_id = template_id;
+        }
+    }
     vault.save_recording(&recording)?;
     Ok(recording)
 }
@@ -451,6 +650,22 @@ pub fn finish(svc: &Arc<Service>, id: RecordingId) -> CommandResult<Recording> {
     Ok(recording)
 }
 
+/// The draft note a recording thrown away leaves behind -- see
+/// [`pipeline::release_note`]. Never fails the discard over it.
+fn release_draft(vault: &Vault, recording: &Recording) -> Vec<Change> {
+    match pipeline::release_note(vault, recording) {
+        Ok(changes) => changes,
+        Err(e) => {
+            tracing::warn!(
+                recording = %recording.id,
+                error = %e.message,
+                "meeting spool: could not clear the draft note of a discarded recording"
+            );
+            Vec::new()
+        }
+    }
+}
+
 /// Throw a recording away: its spool, and its history row. Any stage but
 /// `Done` -- a finished note has nothing left in the spool to discard, and
 /// is deleted through `delete_recording` instead.
@@ -470,10 +685,14 @@ pub fn discard(svc: &Arc<Service>, id: RecordingId) -> CommandResult<()> {
             "a finished recording cannot be discarded, only deleted from the history",
         ));
     }
+    let released = release_draft(&vault, &recording);
     remove_audio(&vault, id)?;
     vault.delete_recording(id)?;
     drop(_guard);
     svc.meeting_forget_append(id);
+    for change in released {
+        svc.events().changed(change);
+    }
     Ok(())
 }
 
@@ -500,6 +719,27 @@ pub fn retry(svc: &Arc<Service>, id: RecordingId) -> CommandResult<Recording> {
                 "only a failed recording can be retried",
             ));
         };
+        // Its words were carried on by a later part, which wrote into the
+        // same note: running this one again would write the earlier part
+        // alone over the whole meeting.
+        //
+        // Only a later part that *continues this one* and is done counts. A
+        // part that merely shares the note does not: every follower is given
+        // the earlier part's note as soon as it is drafted, so a failed later
+        // part shares the note with a finished earlier one and must stay
+        // retryable.
+        let carried_on = related_recordings(&vault, recording)?.iter().any(|r| {
+            r.id != recording.id
+                && r.continues == Some(recording.id)
+                && matches!(r.stage, Stage::Done)
+        });
+        if carried_on {
+            return Err(CommandError::new(
+                codes::INVALID,
+                "this recording's words were already carried on in the meeting's note; \
+                 there is nothing to retry",
+            ));
+        }
         let resume = match *at {
             Stage::Recording => Stage::Transcribing,
             other => other,
@@ -693,8 +933,16 @@ fn expire_failed(svc: &Arc<Service>, vault: &Vault) -> CommandResult<()> {
                 .recording(recording.id)
                 .is_ok_and(|r| matches!(r.stage, Stage::Failed { .. }));
             if still_failed {
+                let released = vault
+                    .recording(recording.id)
+                    .ok()
+                    .map(|r| release_draft(vault, &r))
+                    .unwrap_or_default();
                 remove_audio(vault, recording.id)?;
                 vault.delete_recording(recording.id)?;
+                for change in released {
+                    svc.events().changed(change);
+                }
                 svc.meeting_forget_append(recording.id);
                 deleted = true;
             }
@@ -1054,6 +1302,130 @@ mod tests {
         assert!(vault.recording(recording.id).is_err());
     }
 
+    /// A recording with a draft note, as the pipeline leaves one.
+    fn seed_drafted(vault: &Vault, stage: Stage) -> (Recording, jatayu_core::NoteId) {
+        let mut recording = seed(vault, stage);
+        let note = jatayu_core::Note::written_by(
+            jatayu_core::NoteOrigin::Meeting,
+            "Design sync",
+            &format!("{}\n\nmore", pipeline_marker()),
+        );
+        vault.save_note(&note, None).unwrap();
+        recording.note_id = Some(note.id);
+        recording.note_written_at = Some(note.updated_at);
+        vault.save_recording(&recording).unwrap();
+        (recording, note.id)
+    }
+
+    fn pipeline_marker() -> &'static str {
+        "_Writing the summary of this call. The transcript is below; \
+this note fills in by itself when the summary is ready._"
+    }
+
+    #[test]
+    fn discard_deletes_a_draft_nobody_touched() {
+        let (svc, vault, _dir) = env();
+        let (recording, note_id) = seed_drafted(&vault, Stage::Transcribing);
+        discard(&svc, recording.id).unwrap();
+        assert!(vault.note(note_id).is_err(), "the draft is gone with its recording");
+    }
+
+    #[test]
+    fn discard_keeps_a_draft_the_person_wrote_in_but_stops_promising_a_summary() {
+        let (svc, vault, _dir) = env();
+        let (recording, note_id) = seed_drafted(&vault, Stage::Transcribing);
+        let mut note = vault.note(note_id).unwrap();
+        let read = note.updated_at;
+        note.body = jatayu_core::RichDoc::from_markdown(&format!(
+            "{}\n\nmy own words",
+            note.body.to_markdown()
+        ));
+        note.updated_at = jiff::Timestamp::now() + Duration::from_secs(5);
+        vault.save_note(&note, Some(read)).unwrap();
+
+        discard(&svc, recording.id).unwrap();
+
+        let body = vault.note(note_id).unwrap().body.to_markdown();
+        assert!(body.contains("my own words"), "{body}");
+        assert!(body.contains("discarded before its summary was written"), "{body}");
+        assert!(!body.contains("fills in by itself"), "{body}");
+    }
+
+    #[test]
+    fn discard_leaves_a_note_another_recording_writes_into() {
+        let (svc, vault, _dir) = env();
+        let (recording, note_id) = seed_drafted(&vault, Stage::Transcribing);
+        let mut later = seed(&vault, Stage::Transcribing);
+        later.note_id = Some(note_id);
+        later.continues = Some(recording.id);
+        vault.save_recording(&later).unwrap();
+
+        discard(&svc, recording.id).unwrap();
+        assert!(vault.note(note_id).is_ok());
+    }
+
+    #[test]
+    fn expiring_a_failed_recording_clears_its_untouched_draft() {
+        let (svc, vault, _dir) = env();
+        let (mut recording, note_id) = seed_drafted(
+            &vault,
+            Stage::Failed { reason: "boom".into(), at: Box::new(Stage::Transcribing) },
+        );
+        recording.updated_at = days_ago(FAILED_SPOOL_DAYS + 1);
+        vault.save_recording(&recording).unwrap();
+
+        expire_failed(&svc, &vault).unwrap();
+
+        assert!(vault.recording(recording.id).is_err());
+        assert!(vault.note(note_id).is_err());
+    }
+
+    #[test]
+    fn only_the_shells_own_titles_are_generic() {
+        for generic in ["", "  ", "Call", "Call on Slack", "Recording"] {
+            assert!(is_generic_title(generic), "{generic:?}");
+        }
+        for typed in ["Callback plan with Bob", "Recording studio sync", "Call on", "Design sync"] {
+            assert!(!is_generic_title(typed), "{typed:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_refuses_an_earlier_part_a_later_one_already_carried_on() {
+        let (svc, vault, _dir) = env();
+        let (mut first, note_id) = seed_drafted(
+            &vault,
+            Stage::Failed { reason: "no reply".into(), at: Box::new(Stage::Transcribing) },
+        );
+        first.updated_at = jiff::Timestamp::now();
+        vault.save_recording(&first).unwrap();
+        let mut second = seed(&vault, Stage::Done);
+        second.continues = Some(first.id);
+        second.note_id = Some(note_id);
+        vault.save_recording(&second).unwrap();
+
+        let err = retry(&svc, first.id).unwrap_err();
+        assert_eq!(err.code, "invalid");
+        assert!(err.message.contains("carried on"), "{}", err.message);
+        assert!(matches!(vault.recording(first.id).unwrap().stage, Stage::Failed { .. }));
+    }
+
+    #[tokio::test]
+    async fn retry_allows_a_failed_later_part_that_shares_a_finished_earlier_ones_note() {
+        let (svc, vault, _dir) = env();
+        let (first, note_id) = seed_drafted(&vault, Stage::Done);
+        let mut second = seed(
+            &vault,
+            Stage::Failed { reason: "no reply".into(), at: Box::new(Stage::Transcribing) },
+        );
+        second.continues = Some(first.id);
+        second.note_id = Some(note_id);
+        vault.save_recording(&second).unwrap();
+
+        let retried = retry(&svc, second.id).unwrap();
+        assert!(!matches!(retried.stage, Stage::Failed { .. }), "{:?}", retried.stage);
+    }
+
     #[test]
     fn discard_refuses_a_finished_recording() {
         let (svc, vault, _dir) = env();
@@ -1171,5 +1543,327 @@ mod tests {
         expire_failed(&svc, &vault).unwrap();
 
         assert!(vault.recording(recording.id).is_ok());
+    }
+
+    // ---- carrying on an earlier recording ------------------------------
+
+    use jatayu_core::calendar::{
+        AccountCalendarSource, AccountSyncCursor, Calendar, CalendarOrigin, Event, EventStatus,
+    };
+    use jatayu_core::id::{AccountId, CalendarId};
+    use jatayu_core::meeting::{REJOIN_WINDOW_MS, TranscriberConfig};
+    use jatayu_core::speech::SpeechConfig;
+    use jiff::{Timestamp, tz::TimeZone};
+
+    /// Meeting notes on, over a speech model that is usable on any machine
+    /// (a loopback "compatible" server needs no key and no speech kit), so a
+    /// plain `begin` can succeed here.
+    fn enable(vault: &Vault) {
+        let mut models = vault.model_settings().unwrap();
+        models.speech = Some(SpeechConfig::new(TranscriberConfig::Compatible {
+            base_url: "http://127.0.0.1:1/v1".into(),
+            model: "whisper-1".into(),
+        }));
+        vault.save_model_settings(&models).unwrap();
+        vault.save_meeting_settings(&enabled_settings()).unwrap();
+    }
+
+    fn account_calendar(vault: &Vault) -> Calendar {
+        let mut calendar = Calendar::subscribed("Work", "https://example.com/work.ics");
+        calendar.origin = CalendarOrigin::Account {
+            account_id: AccountId::new(),
+            remote_id: "primary".into(),
+            remote_name: "Work".into(),
+            source: AccountCalendarSource::Google,
+        };
+        vault.save_calendar(&calendar).unwrap();
+        calendar
+    }
+
+    fn event_on(calendar_id: CalendarId, title: &str) -> Event {
+        let now = Timestamp::now();
+        let end = Timestamp::from_second(now.as_second() + 1_800).unwrap();
+        let day = |at: Timestamp| at.to_zoned(TimeZone::system()).date();
+        Event {
+            id: jatayu_core::id::EventId::new(),
+            calendar_id,
+            uid: format!("evt-{}", jatayu_core::id::EventId::new()),
+            title: title.into(),
+            description: String::new(),
+            location: String::new(),
+            start: now,
+            end,
+            local_date: day(now),
+            end_date: day(end),
+            tz: "UTC".into(),
+            all_day: false,
+            status: EventStatus::Confirmed,
+            organizer: "Alice <alice@example.com>".into(),
+            attendees: vec!["Bob <bob@example.com>".into()],
+            guests: Vec::new(),
+            url: String::new(),
+            busy: true,
+            series: None,
+            own: None,
+            alerts: None,
+            updated_at: now,
+        }
+    }
+
+    fn seed_event(vault: &Vault, event: &Event) {
+        vault
+            .sync_account_calendar(
+                event.calendar_id,
+                std::slice::from_ref(event),
+                &[],
+                AccountSyncCursor::default(),
+            )
+            .unwrap();
+    }
+
+    /// A recording of `event` that finished `ended_ago_ms` ago.
+    fn ended_recording(vault: &Vault, event: &Event, ended_ago_ms: i64) -> Recording {
+        let mut recording = Recording::new(
+            event.title.clone(),
+            Some(EventRef::from_event(event, "Work")),
+            TemplateId::new(),
+        );
+        let ended =
+            Timestamp::from_millisecond(Timestamp::now().as_millisecond() - ended_ago_ms).unwrap();
+        recording.started_at =
+            Timestamp::from_millisecond(ended.as_millisecond() - 300_000).unwrap();
+        recording.ended_at = Some(ended);
+        recording.stage = Stage::Transcribing;
+        vault.save_recording(&recording).unwrap();
+        recording
+    }
+
+    fn args(event: Option<&Event>, continues: Option<RecordingId>) -> BeginArgs {
+        BeginArgs {
+            event_id: event.map(|e| e.id),
+            title: None,
+            template_id: None,
+            automatic: false,
+            continues,
+        }
+    }
+
+    #[test]
+    fn begin_with_a_valid_continues_copies_the_meeting_and_title() {
+        let (svc, vault, _dir) = env();
+        enable(&vault);
+        let calendar = account_calendar(&vault);
+        let event = event_on(calendar.id, "Design sync");
+        seed_event(&vault, &event);
+        let prev = ended_recording(&vault, &event, 2 * 60 * 1000);
+
+        let mut a = args(None, Some(prev.id));
+        a.title = Some("Call on Slack".into());
+        let recording = begin(&svc, a).unwrap();
+
+        assert_eq!(recording.continues, Some(prev.id));
+        assert_eq!(recording.event.as_ref().map(|e| e.uid.as_str()), Some(event.uid.as_str()));
+        assert_eq!(recording.title, "Design sync", "a made-up title does not replace it");
+    }
+
+    #[test]
+    fn begin_carries_on_the_earlier_parts_template_unless_one_is_asked_for() {
+        let (svc, vault, _dir) = env();
+        enable(&vault);
+        let calendar = account_calendar(&vault);
+        let event = event_on(calendar.id, "Design sync");
+        seed_event(&vault, &event);
+        let prev = ended_recording(&vault, &event, 2 * 60 * 1000);
+
+        // Named by the shell.
+        let named = begin(&svc, args(None, Some(prev.id))).unwrap();
+        assert_eq!(named.continues, Some(prev.id));
+        assert_eq!(named.template_id, prev.template_id);
+        discard(&svc, named.id).unwrap();
+
+        // Worked out from the calendar meeting.
+        let derived = begin(&svc, args(Some(&event), None)).unwrap();
+        assert_eq!(derived.continues, Some(prev.id));
+        assert_eq!(derived.template_id, prev.template_id);
+        discard(&svc, derived.id).unwrap();
+
+        // Asked for: that one.
+        let asked = TemplateId::new();
+        let mut a = args(Some(&event), None);
+        a.template_id = Some(asked);
+        let chosen = begin(&svc, a).unwrap();
+        assert_eq!(chosen.continues, Some(prev.id));
+        assert_eq!(chosen.template_id, asked);
+    }
+
+    #[test]
+    fn a_discarded_later_part_takes_its_lines_and_marker_out_of_the_shared_note() {
+        use jatayu_core::meeting::{Attribution, Segment, Speaker, Transcript};
+        let (svc, vault, _dir) = env();
+        // The earlier part: done, its note finished (no marker) and its
+        // transcript on its own clock.
+        let (mut first, note_id) = seed_drafted(&vault, Stage::Done);
+        let mut note = vault.note(note_id).unwrap();
+        let read = note.updated_at;
+        note.body = jatayu_core::RichDoc::from_markdown("## Summary\n\nfinished");
+        note.updated_at = read + Duration::from_secs(1);
+        vault.save_note(&note, Some(read)).unwrap();
+        first.note_written_at = Some(note.updated_at);
+        vault.save_recording(&first).unwrap();
+        let now = jiff::Timestamp::now();
+        let segment = |text: &str, start_ms: u64| Segment {
+            speaker: 0,
+            start_ms,
+            end_ms: start_ms + 1000,
+            text: text.into(),
+        };
+        let transcript = Transcript {
+            id: jatayu_core::id::TranscriptId::new(),
+            note_id,
+            recording_id: Some(first.id),
+            language: None,
+            backend: String::new(),
+            speakers: vec![Speaker {
+                key: 0,
+                label: "Me".into(),
+                email: None,
+                voiceprint_id: None,
+                how: Attribution::Owner,
+                centroid: Vec::new(),
+                embedding_model: String::new(),
+            }],
+            segments: vec![
+                segment("early words", 0),
+                segment("provisional rejoin words", 20 * 60_000),
+            ],
+            room: false,
+            created_at: now,
+            updated_at: now,
+        };
+        vault.save_transcript(&transcript).unwrap();
+        // The follower adopted the note: marker on top, and its lines in.
+        let mut note = vault.note(note_id).unwrap();
+        let read = note.updated_at;
+        note.body = jatayu_core::RichDoc::from_markdown(&format!(
+            "{}\n\n## Summary\n\nfinished",
+            pipeline_marker()
+        ));
+        note.updated_at = read + Duration::from_secs(1);
+        vault.save_note(&note, Some(read)).unwrap();
+        let mut second = seed(&vault, Stage::Summarising);
+        second.started_at = first.started_at + Duration::from_secs(20 * 60);
+        second.continues = Some(first.id);
+        second.note_id = Some(note_id);
+        second.note_written_at = Some(note.updated_at);
+        vault.save_recording(&second).unwrap();
+
+        discard(&svc, second.id).unwrap();
+
+        let body = vault.note(note_id).unwrap().body.to_markdown();
+        assert!(!body.contains("fills in by itself") && body.contains("finished"), "{body}");
+        let lines = vault.transcript_for_note(note_id).unwrap().unwrap().as_lines();
+        assert!(lines.contains("early words"), "{lines}");
+        assert!(!lines.contains("provisional rejoin words"), "{lines}");
+        // Nothing else mistakes the pipeline's own write for the person's.
+        let note = vault.note(note_id).unwrap();
+        assert_eq!(vault.recording(first.id).unwrap().note_written_at, Some(note.updated_at));
+    }
+
+    #[test]
+    fn begin_keeps_a_title_the_person_typed_when_it_continues() {
+        let (svc, vault, _dir) = env();
+        enable(&vault);
+        let calendar = account_calendar(&vault);
+        let event = event_on(calendar.id, "Design sync");
+        let prev = ended_recording(&vault, &event, 60 * 1000);
+
+        let mut a = args(None, Some(prev.id));
+        a.title = Some("Weekly with Bob".into());
+        let recording = begin(&svc, a).unwrap();
+
+        assert_eq!(recording.continues, Some(prev.id));
+        assert_eq!(recording.title, "Weekly with Bob");
+    }
+
+    #[test]
+    fn begin_for_the_same_event_right_after_one_ended_derives_continues() {
+        let (svc, vault, _dir) = env();
+        enable(&vault);
+        let calendar = account_calendar(&vault);
+        let event = event_on(calendar.id, "Design sync");
+        seed_event(&vault, &event);
+        let older = ended_recording(&vault, &event, 8 * 60 * 1000);
+        let newer = ended_recording(&vault, &event, 2 * 60 * 1000);
+
+        let recording = begin(&svc, args(Some(&event), None)).unwrap();
+
+        assert_ne!(Some(older.id), recording.continues);
+        assert_eq!(recording.continues, Some(newer.id), "the most recent one");
+    }
+
+    #[test]
+    fn begin_for_the_same_event_long_after_one_ended_is_a_new_sitting() {
+        let (svc, vault, _dir) = env();
+        enable(&vault);
+        let calendar = account_calendar(&vault);
+        let event = event_on(calendar.id, "Design sync");
+        seed_event(&vault, &event);
+        ended_recording(&vault, &event, REJOIN_WINDOW_MS + 5 * 60 * 1000);
+
+        let recording = begin(&svc, args(Some(&event), None)).unwrap();
+
+        assert_eq!(recording.continues, None);
+    }
+
+    #[test]
+    fn begin_for_a_different_event_ignores_continues() {
+        let (svc, vault, _dir) = env();
+        enable(&vault);
+        let calendar = account_calendar(&vault);
+        let first = event_on(calendar.id, "Design sync");
+        let second = event_on(calendar.id, "Budget review");
+        seed_event(&vault, &second);
+        let prev = ended_recording(&vault, &first, 60 * 1000);
+
+        let recording = begin(&svc, args(Some(&second), Some(prev.id))).unwrap();
+
+        assert_eq!(recording.continues, None);
+        assert_eq!(recording.title, "Budget review");
+        assert_eq!(recording.event.as_ref().map(|e| e.uid.as_str()), Some(second.uid.as_str()));
+    }
+
+    #[test]
+    fn begin_ignores_a_continues_that_is_too_old_missing_or_still_recording() {
+        let (svc, vault, _dir) = env();
+        enable(&vault);
+        let calendar = account_calendar(&vault);
+        let event = event_on(calendar.id, "Design sync");
+
+        let old = ended_recording(&vault, &event, 3 * REJOIN_WINDOW_MS);
+        let recording = begin(&svc, args(None, Some(old.id))).unwrap();
+        assert_eq!(recording.continues, None, "too old");
+        assert!(recording.event.is_none());
+        discard(&svc, recording.id).unwrap();
+
+        let recording = begin(&svc, args(None, Some(RecordingId::new()))).unwrap();
+        assert_eq!(recording.continues, None, "missing");
+        discard(&svc, recording.id).unwrap();
+
+        let mut live = ended_recording(&vault, &event, 60 * 1000);
+        live.stage = Stage::Recording;
+        live.ended_at = None;
+        vault.save_recording(&live).unwrap();
+        assert!(valid_continuation(&vault, live.id, Timestamp::now()).is_none(), "still recording");
+        assert_eq!(
+            continued_by(&vault, live.event.as_ref(), Timestamp::now(), RecordingId::new())
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn a_recording_with_no_meeting_is_never_continued_by_itself() {
+        let (_svc, vault, _dir) = env();
+        assert_eq!(continued_by(&vault, None, Timestamp::now(), RecordingId::new()).unwrap(), None);
     }
 }

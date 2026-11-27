@@ -315,6 +315,93 @@ card the 1.7B does not fit beside a decision model the app already holds
 there (about 2 GB), and then it goes to the processor. Not yet measured on
 Indian-accented speech here.
 
+## One meeting, one note (Nov 2026)
+
+The person's notes over three weeks showed five faults, and a look at the
+records explained each.
+
+- **Calls joined without pressing "Take notes" had no meeting.** A call
+  noticed from the microphone was recorded as "Call on Google Chrome input"
+  or "Call on Slack", and nothing ever looked at the calendar again. With no
+  invitees there was no cap on voices, no naming, no series and no area.
+  Now, once the words are known and before voices are told apart, the
+  pipeline asks which meeting it was (`meeting::linking`,
+  `pipeline::link`). Candidates are the person's own meetings (calendar
+  filter, skipped series, and never one they declined) whose time overlaps
+  the call's. The times settle the plain case -- one meeting that the call
+  and the meeting mostly share -- and the model decides the rest from the
+  candidates, their invitees, the program that had the microphone and what
+  was said. Only a high or medium answer files it, and a meeting that
+  already has a recording of its own takes only a sure one (obvious, or
+  high): a separate short call just after a recorded meeting is usually a
+  different conversation. A title the person typed is kept; only the
+  shell's own ("Call on ...", "Call", "Recording") is replaced.
+- **A rejoin made a second, unfiled note.** After the first recording of a
+  meeting existed, `meeting_now` stopped naming that meeting, so coming back
+  to the call became a plain "Call on ..." recording. A meeting whose last
+  recording ended within `REJOIN_WINDOW_MS` (ten minutes) is named again,
+  with a `resume` hint, and a recording begun for it `continues` the earlier
+  one (`Recording.continues`, set by `spool::begin` for the same meeting, or
+  when the shell says so, or by the linker when it is sure). It takes the
+  earlier part's meeting, title and template, and its words go into the
+  earlier part's note: the pipeline writes this part's transcript after the
+  earlier one (`Transcript::replace_part`, idempotent under retries) and
+  summarises both, waiting for the earlier part to finish first. The shell
+  carries on without asking only when the call app let go of the
+  microphone, the same app takes it back within the window, the meeting (if
+  any) is the same one and a recording could start; after a stop the person
+  pressed, or from another app, it asks, in the same note's name, and any
+  other call gets the ordinary offer.
+- **Back-to-back meetings ran together.** The shell's microphone watcher
+  saw one session for as long as anything held the microphone, so moving
+  from one call straight to the next produced no event at all, and the next
+  meeting's offer waited for a recording that never ended. The watcher now
+  reports a *handover* -- the call's capture stream replaced by a different
+  one (leaving one Meet and joining the next, a Slack huddle then a Meet);
+  a short gap in the same stream (a mute, a device switch) is not one. On a
+  handover the shell asks which meeting is on; a different one that started
+  after the current recording, once the current meeting is over or about to
+  be (or, for a call with no meeting, once the next one has started or is
+  two minutes off), ends this recording. The next meeting's recording then
+  begins by itself only when the settings would have begun it anyway
+  ("Always", or the countdown); otherwise it is offered. That is the split
+  Screenpipe makes, and for the same reason: the calendar alone cannot tell
+  a meeting running over from the next one starting. On macOS the stream
+  identity is the process, so two meetings in one browser are not split.
+- **Nothing showed until the summary was written.** The note now exists the
+  moment the call ends: the meeting's title and details, a line saying the
+  summary is being written, and the transcript so far (owner and "Others"
+  until voices are told apart, then the voices). The same note is filled in
+  when the summary is ready, and a person who typed into it meanwhile keeps
+  their text below the summary. A failed summary leaves the draft, with the
+  reason, and Retry; discarding the recording takes an untouched draft away
+  with it. The open note reloads itself when the pipeline writes.
+- **Dozens of "Unknown" voices.** Fragments of a second or two embed
+  unreliably through a call's codec, and with no invitees nothing bounded
+  the clusters, so a two-person call came back with sixty voices, nearly all
+  under thirty words. Now a voice must have spoken for long enough to be a
+  person (ten seconds, and either three per cent of the remote speech or
+  three quarters of a minute), and a shorter one joins the voice it sounds
+  most like -- the small-cluster absorption pyannote and Anarlog use, done
+  before the cap, never after it, or the cap merges real voices to reach its
+  count. A call with no invitees is capped at five remote voices; the model
+  is asked which unnamed labels are one voice even without an invite; and
+  folding leftover voices into "Others" spares a main speaker (a real call
+  came back with "Others" holding 68% of the words). On two 20-minute
+  podcast clips sent through a 16 kbit/s Opus call codec, the old code found
+  14 and 29 voices, the new one 2 and 3. Steps in the notes belong to people
+  heard, named on the call or invited, or to the owner ("You", "Me", their
+  addresses); any other owner the model writes, and every voice label,
+  becomes "Unassigned" (`prompt::settle_owners`), and a step asked of
+  someone by name and accepted is theirs whoever's voice said yes.
+
+A microphone that fails mid-call and cannot be reopened no longer throws the
+recording away: the shell keeps the system audio, tries the microphone again
+for a minute, and then finishes what it has. And the speech kit installed
+before sherpa-onnx re-published its speaker-embedding model one byte larger
+counts as installed again; without that, every build since the catalogue
+took the new size refused meeting notes on a machine set up before it.
+
 The app already knows when a call is about to start, who was invited, and
 how to write a note, and it already has a model it trusts to write one. What
 it cannot do is hear. This plan gives it ears for the length of a call: it

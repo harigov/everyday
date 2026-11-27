@@ -12514,6 +12514,14 @@
         },
         "type": "array"
       },
+      "continues": {
+        "description": "The earlier recording of the same meeting this one carries on, when\nthe person left the call and came back within [`REJOIN_WINDOW_MS`]\n(or the shell rolled one call into the next by mistake and this was\nput back together): its note is the one this recording's words are\nadded to, rather than a note of this recording's own.",
+        "format": "uuid",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "endedAt": {
         "format": "date-time",
         "type": [
@@ -12536,9 +12544,21 @@
         "format": "uuid",
         "type": "string"
       },
+      "linkChecked": {
+        "description": "Whether the pipeline has already looked for the calendar meeting a\nrecording begun without one belongs to -- so a retry does not ask\nthe model twice. Never set on a recording begun with its meeting.",
+        "type": "boolean"
+      },
       "noteId": {
-        "description": "Set at `Done`. Cleared if the note is deleted.",
+        "description": "The note this recording's words are written into. Set as soon as the\ncall ends, when the pipeline writes the draft (title, details and the\ntranscript, with the summary still to come), and kept at `Done`.\nCleared if the note is deleted.",
         "format": "uuid",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "noteWrittenAt": {
+        "description": "`updated_at` of the note as the pipeline last wrote it (the draft\nwritten when the call ended, or the finished notes). A note whose\n`updated_at` still matches was not touched by the person since, so\nthe next write may replace it outright; one that moved has their\nedits in it, which a later write keeps.",
+        "format": "date-time",
         "type": [
           "string",
           "null"

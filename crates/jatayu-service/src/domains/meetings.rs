@@ -106,6 +106,13 @@ pub struct BeginRecording {
     pub template_id: Option<TemplateId>,
     #[serde(default)]
     pub automatic: bool,
+    /// The earlier recording of the same meeting this one carries on: the
+    /// person left the call and came back. Its meeting and title are this
+    /// one's too, and the notes are written into its note. Checked by the
+    /// service, which also works this out by itself for a recording begun
+    /// for the same calendar meeting as one that ended moments ago.
+    #[serde(default)]
+    pub continues: Option<RecordingId>,
 }
 
 /// `meeting_now`'s answer: what the desktop shell needs to decide whether,
@@ -130,6 +137,24 @@ pub struct MeetingNow {
     /// recording to -- an offer for it, in exactly the shape the watcher
     /// raises, so the shell treats both alike.
     pub event: Option<crate::events::MeetingOffer>,
+    /// A recording of this same meeting that ended moments ago (within
+    /// `REJOIN_WINDOW_MS`), which a recording begun now would carry on:
+    /// the person left the call and is back. Absent when there is none, and
+    /// from an older service.
+    #[serde(default)]
+    pub resume: Option<ResumeHint>,
+}
+
+/// The recording a call starting now would carry on -- see
+/// [`MeetingNow::resume`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResumeHint {
+    pub recording_id: RecordingId,
+    /// Its title, for the shell's "Continuing notes for ..." line.
+    pub title: String,
+    /// When it ended.
+    pub ended_at: jiff::Timestamp,
 }
 
 /// One spooled chunk, over the wire. `pcm` is little-endian `i16` samples,
@@ -572,6 +597,7 @@ async fn begin_recording(
                 title: args.title,
                 template_id: args.template_id,
                 automatic: args.automatic,
+                continues: args.continues,
             },
         )
     })
@@ -796,6 +822,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
             ("title", "string | null", false),
             ("templateId", "TemplateId | null", false),
             ("automatic", "boolean", false),
+            ("continues", "RecordingId | null", false),
         ],
         run: begin_recording,
     },

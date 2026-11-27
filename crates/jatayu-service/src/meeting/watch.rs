@@ -58,13 +58,15 @@ use std::sync::Arc;
 
 use jatayu_core::calendar::{Calendar, Event};
 use jatayu_core::id::CalendarId;
-use jatayu_core::meeting::{CalendarFilter, MeetingSettings, Offer, detect};
+use jatayu_core::meeting::{
+    CalendarFilter, MeetingSettings, Offer, REJOIN_WINDOW_MS, Recording, Stage, detect,
+};
 use jatayu_core::store::calendars::EventQuery;
 use jatayu_core::store::meetings::RecordingQuery;
 use jatayu_core::{Result as CoreResult, Vault};
 use jiff::{Span, Timestamp, tz::TimeZone};
 
-use crate::domains::meetings::MeetingNow;
+use crate::domains::meetings::{MeetingNow, ResumeHint};
 use crate::error::CommandResult;
 use crate::events::MeetingOffer;
 use crate::service::Service;
@@ -256,6 +258,11 @@ const NOW_LOOKAHEAD_SECS: i64 = 5 * 60;
 /// ([`gate`]), or nothing qualifies -- the shell then offers a plain
 /// recording with no event.
 ///
+/// A meeting that was recorded a moment ago (within
+/// [`REJOIN_WINDOW_MS`]) is still answered: the person left and came back,
+/// and `resume` then names the recording a new one would carry on. One
+/// recorded longer ago is not, as before.
+///
 /// A read, deliberately: it never calls [`Service::meeting_offer_seen`].
 /// The shell de-duplicates its own offers (one per time another application
 /// takes the microphone), and marking the event seen here would silence the
@@ -269,6 +276,7 @@ pub fn now(svc: &Arc<Service>, vault: &Vault) -> CoreResult<MeetingNow> {
         ready,
         auto_record: settings.offer == Offer::Ask && settings.auto_record && ready,
         event: None,
+        resume: None,
     };
     if !offers {
         return Ok(answer);
@@ -286,12 +294,99 @@ pub fn now(svc: &Arc<Service>, vault: &Vault) -> CoreResult<MeetingNow> {
     // Latest start first; the first one that passes is the answer.
     events.sort_by_key(|e| std::cmp::Reverse(e.start));
     for event in &events {
-        if let Some(calendar) = eligible(vault, &settings, &owners, &calendars, event)? {
-            answer.event = Some(offer_for(event, calendar, &settings, ready));
-            break;
+        // Not `eligible`: a meeting recorded a moment ago is exactly what a
+        // person who left and came back is in, and refusing it here made the
+        // rejoin "Call on Google Chrome input" with no meeting at all.
+        let Some(calendar) = a_meeting_of_ours(&settings, &owners, &calendars, event) else {
+            continue;
+        };
+        if recorded_and_not_rejoinable(vault, event, now)? {
+            continue;
         }
+        answer.event = Some(offer_for(event, calendar, &settings, ready));
+        break;
     }
+    answer.resume = resume_hint(vault, answer.event.as_ref(), now)?;
     Ok(answer)
+}
+
+/// The recording a call starting now would carry on -- see
+/// [`MeetingNow::resume`]. The most recent recording, finished being
+/// captured, that ended within [`REJOIN_WINDOW_MS`] of `now`, if it is
+/// of the meeting `chosen` now; or, when no meeting is chosen, if it had no
+/// meeting or its meeting is still on (or ended less than the window ago).
+/// A different meeting chosen now means the person has moved on to the next
+/// one: no resume, however recently the last one ended.
+fn resume_hint(
+    vault: &Vault,
+    chosen: Option<&MeetingOffer>,
+    now: Timestamp,
+) -> CoreResult<Option<ResumeHint>> {
+    // Anything that ended inside the window started at most a long meeting
+    // ago; a day's worth, newest first and capped, is more than enough.
+    let from = Timestamp::from_second(now.as_second() - 24 * 60 * 60).unwrap_or(now);
+    let to = Timestamp::from_second(now.as_second() + 60).unwrap_or(now);
+    let recordings = vault.recordings(&RecordingQuery {
+        from: Some(from),
+        to: Some(to),
+        limit: Some(RECENT_RECORDINGS_LIMIT),
+        ..Default::default()
+    })?;
+    let Some(latest) = recordings
+        .into_iter()
+        .filter(|r| !matches!(r.stage, Stage::Recording))
+        .filter(|r| r.ended_at.is_some_and(|e| ended_within_window(e, now)))
+        .max_by_key(|r| r.ended_at)
+    else {
+        return Ok(None);
+    };
+    let fits = match (chosen, &latest.event) {
+        (Some(chosen), Some(had)) => chosen.calendar_id == had.calendar_id && chosen.uid == had.uid,
+        (Some(_), None) => false,
+        (None, None) => true,
+        (None, Some(had)) => {
+            now.as_millisecond() < had.end.as_millisecond().saturating_add(REJOIN_WINDOW_MS)
+        }
+    };
+    Ok(fits.then(|| ResumeHint {
+        recording_id: latest.id,
+        title: latest.title.clone(),
+        ended_at: latest.ended_at.unwrap_or(now),
+    }))
+}
+
+/// How many recordings [`resume_hint`] looks through.
+const RECENT_RECORDINGS_LIMIT: u32 = 50;
+
+/// Did something that ended at `ended` end within [`REJOIN_WINDOW_MS`] of
+/// `now`? A moment in the future (the two clocks disagreeing) counts.
+fn ended_within_window(ended: Timestamp, now: Timestamp) -> bool {
+    now.as_millisecond() - ended.as_millisecond() <= REJOIN_WINDOW_MS
+}
+
+/// Has `event` been recorded, with no recording of it recent enough to be
+/// rejoined? What [`now`] asks where [`eligible`] asks [`already_recorded`]:
+/// the same lookup, but a recording that is not being captured any more and
+/// ended within [`REJOIN_WINDOW_MS`] (or is still being worked on and so
+/// cannot yet say) leaves the meeting open to a new recording that carries
+/// on from it. One still being captured, or one that ended longer ago, still
+/// closes it.
+fn recorded_and_not_rejoinable(vault: &Vault, event: &Event, now: Timestamp) -> CoreResult<bool> {
+    let recordings = recordings_of(vault, event)?;
+    if recordings.is_empty() {
+        return Ok(false);
+    }
+    if recordings.iter().any(|r| matches!(r.stage, Stage::Recording)) {
+        return Ok(true);
+    }
+    let rejoinable = recordings.iter().any(|r| match r.stage {
+        Stage::Recording => false,
+        _ => match r.ended_at {
+            Some(ended) => ended_within_window(ended, now),
+            None => r.stage.is_pending(),
+        },
+    });
+    Ok(!rejoinable)
 }
 
 fn starts_in_window(event: &Event, now: Timestamp) -> bool {
@@ -320,7 +415,7 @@ fn calendar_allowed(filter: &CalendarFilter, calendar: &Calendar) -> bool {
 /// is that *any* attendee besides an owner address counts as somebody else,
 /// so an empty owner list still finds a meeting, it merely cannot yet tell the
 /// owner's own address apart from a guest's.
-fn owner_addresses(vault: &Vault) -> CoreResult<Vec<String>> {
+pub(crate) fn owner_addresses(vault: &Vault) -> CoreResult<Vec<String>> {
     if !vault.supports_accounts() {
         return Ok(Vec::new());
     }
@@ -339,6 +434,11 @@ fn owner_addresses(vault: &Vault) -> CoreResult<Vec<String>> {
 /// [`jatayu_core::meeting::EventRef::uid`] is copied from it and a feed
 /// calendar's `EventId` is not stable across a resync.
 fn already_recorded(vault: &Vault, event: &Event) -> CoreResult<bool> {
+    Ok(!recordings_of(vault, event)?.is_empty())
+}
+
+/// Every recording of `event` -- see [`already_recorded`].
+fn recordings_of(vault: &Vault, event: &Event) -> CoreResult<Vec<Recording>> {
     let margin = 6 * 60 * 60;
     let from = Timestamp::from_second(event.start.as_second() - margin).unwrap_or(event.start);
     let to = Timestamp::from_second(event.start.as_second() + margin).unwrap_or(event.start);
@@ -348,7 +448,10 @@ fn already_recorded(vault: &Vault, event: &Event) -> CoreResult<bool> {
         to: Some(to),
         ..Default::default()
     })?;
-    Ok(recordings.iter().any(|r| r.event.as_ref().is_some_and(|e| e.uid == event.uid)))
+    Ok(recordings
+        .into_iter()
+        .filter(|r| r.event.as_ref().is_some_and(|e| e.uid == event.uid))
+        .collect())
 }
 
 /// `dismiss_meeting_offer`'s body: not offered again this session either
@@ -392,7 +495,7 @@ mod tests {
     use crate::events::{EventSink, Notification};
     use jatayu_core::calendar::{AccountCalendarSource, CalendarOrigin, EventStatus};
     use jatayu_core::id::{AccountId, EventId, TemplateId};
-    use jatayu_core::meeting::{EventRef, MeetingSettings, Recording, TranscriberConfig};
+    use jatayu_core::meeting::{EventRef, MeetingSettings, Recording, Stage, TranscriberConfig};
     use jatayu_core::speech::SpeechConfig;
     use std::sync::Mutex as StdMutex;
 
@@ -990,5 +1093,123 @@ mod tests {
         assert!(calendar_allowed(&filter, &calendar));
         let filter = CalendarFilter { calendar_ids: vec![CalendarId::new()], area_ids: vec![] };
         assert!(!calendar_allowed(&filter, &calendar));
+    }
+
+    // ---- rejoining ------------------------------------------------------
+
+    /// A recording of `event` that stopped being captured `ended_ago_secs`
+    /// ago and is now `stage`.
+    fn recorded(vault: &Vault, event: &Event, ended_ago_secs: i64, stage: Stage) -> Recording {
+        let ended = Timestamp::from_second(Timestamp::now().as_second() - ended_ago_secs).unwrap();
+        let mut recording = Recording::new(
+            "Design sync",
+            Some(EventRef::from_event(event, "Work")),
+            TemplateId::new(),
+        );
+        recording.started_at = Timestamp::from_second(ended.as_second() - 300).unwrap();
+        recording.ended_at = Some(ended);
+        recording.stage = stage;
+        vault.save_recording(&recording).unwrap();
+        recording
+    }
+
+    #[test]
+    fn a_meeting_recorded_two_minutes_ago_is_still_what_is_on_and_is_resumed() {
+        let (svc, vault, _dir) = env();
+        enable(&vault, Offer::Ask);
+        let calendar = account_calendar(&vault);
+        let event = online_event(calendar.id, -600);
+        seed_event(&vault, calendar.id, &event);
+        let earlier = recorded(&vault, &event, 120, Stage::Transcribing);
+
+        let answer = now(&svc, &vault).unwrap();
+
+        assert_eq!(answer.event.as_ref().map(|e| e.event_id), Some(event.id));
+        let resume = answer.resume.expect("a rejoin");
+        assert_eq!(resume.recording_id, earlier.id);
+        assert_eq!(resume.title, "Design sync");
+        // The calendar offer at a meeting's start is another matter and
+        // still stops at "recorded".
+        assert!(already_recorded(&vault, &event).unwrap());
+    }
+
+    #[test]
+    fn a_meeting_recorded_three_hours_ago_is_not_what_is_on() {
+        let (svc, vault, _dir) = env();
+        enable(&vault, Offer::Ask);
+        let calendar = account_calendar(&vault);
+        let event = online_event(calendar.id, -600);
+        seed_event(&vault, calendar.id, &event);
+        recorded(&vault, &event, 3 * 60 * 60, Stage::Done);
+
+        let answer = now(&svc, &vault).unwrap();
+
+        assert!(answer.event.is_none());
+        assert!(answer.resume.is_none());
+    }
+
+    #[test]
+    fn a_meeting_still_being_recorded_is_not_what_is_on() {
+        let (svc, vault, _dir) = env();
+        enable(&vault, Offer::Ask);
+        let calendar = account_calendar(&vault);
+        let event = online_event(calendar.id, -600);
+        seed_event(&vault, calendar.id, &event);
+        let mut live = recorded(&vault, &event, 60, Stage::Recording);
+        live.ended_at = None;
+        vault.save_recording(&live).unwrap();
+
+        let answer = now(&svc, &vault).unwrap();
+
+        assert!(answer.event.is_none());
+        assert!(answer.resume.is_none());
+    }
+
+    #[test]
+    fn the_next_meeting_is_not_a_resume_of_the_last() {
+        let (svc, vault, _dir) = env();
+        enable(&vault, Offer::Ask);
+        let calendar = account_calendar(&vault);
+        let last = online_event(calendar.id, -1_200);
+        let next = online_event(calendar.id, 0);
+        seed_event(&vault, calendar.id, &last);
+        seed_event(&vault, calendar.id, &next);
+        recorded(&vault, &last, 60, Stage::Transcribing);
+
+        let answer = now(&svc, &vault).unwrap();
+
+        assert_eq!(answer.event.as_ref().map(|e| e.event_id), Some(next.id));
+        assert!(answer.resume.is_none());
+    }
+
+    #[test]
+    fn a_call_with_no_meeting_that_just_ended_is_resumed_when_no_meeting_is_on() {
+        let (svc, vault, _dir) = env();
+        enable(&vault, Offer::Ask);
+        let mut call = Recording::new("Call on Slack", None, TemplateId::new());
+        let ended = Timestamp::from_second(Timestamp::now().as_second() - 90).unwrap();
+        call.started_at = Timestamp::from_second(ended.as_second() - 600).unwrap();
+        call.ended_at = Some(ended);
+        call.stage = Stage::Identifying;
+        vault.save_recording(&call).unwrap();
+
+        let answer = now(&svc, &vault).unwrap();
+
+        assert!(answer.event.is_none());
+        assert_eq!(answer.resume.map(|r| r.recording_id), Some(call.id));
+    }
+
+    #[test]
+    fn a_call_that_ended_long_ago_is_not_resumed() {
+        let (svc, vault, _dir) = env();
+        enable(&vault, Offer::Ask);
+        let mut call = Recording::new("Call on Slack", None, TemplateId::new());
+        let ended = Timestamp::from_second(Timestamp::now().as_second() - 3_600).unwrap();
+        call.started_at = Timestamp::from_second(ended.as_second() - 600).unwrap();
+        call.ended_at = Some(ended);
+        call.stage = Stage::Done;
+        vault.save_recording(&call).unwrap();
+
+        assert!(now(&svc, &vault).unwrap().resume.is_none());
     }
 }
