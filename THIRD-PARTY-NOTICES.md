@@ -74,6 +74,7 @@ Reproduced below in full:
   65. Kokoro 82M (model and voices) — © hexgrad, https://huggingface.co/hexgrad/Kokoro-82M
   66. loqui-g2p — © 2026 Awakened Labs Inc., https://github.com/Awakened-Labs/loqui, with misaki's lexicons (© hexgrad, https://github.com/hexgrad/misaki), Peter Reid's grapheme-to-phoneme models (https://huggingface.co/PeterReid/graphemes_to_phonemes_en_us) and spaCy's English tokenizer rules (© ExplosionAI GmbH, https://github.com/explosion/spaCy)
   67. pdf-extract and lopdf — © Jeff Muizelaar, https://github.com/jrmuizel/pdf-extract, and © 2016 Junfeng Liu, https://github.com/J-F-Liu/lopdf
+  68. FiveFilters site rules (ftr-site-config) — FiveFilters.org and contributors, https://github.com/fivefilters/ftr-site-config
 
 The interface icons in `ui/src/lib/icons.ts` are drawn for this project, but
 follow the geometry conventions of Lucide (https://lucide.dev), which is ISC
@@ -4181,3 +4182,15 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+## 68. FiveFilters site rules (ftr-site-config)
+
+"Fetch the full article" in the Feed reads where an article is on a page, and
+what around it to strip, from FiveFilters' site rules
+(https://github.com/fivefilters/ftr-site-config), FiveFilters.org and its
+contributors, bundled in `crates/jatayu-service/src/news/site_rules.txt` by
+`scripts/site-rules.mjs` (see `news/rules.rs`). The rules are released to the
+public domain under CC0-1.0. No notice is required; this entry says where they
+came from.

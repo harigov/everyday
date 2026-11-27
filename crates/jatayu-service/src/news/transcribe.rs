@@ -2305,6 +2305,8 @@ mod tests {
         // What the feed carried as the episode's description.
         f.vault
             .save_story_body(&StoryBody {
+                byline: None,
+                site_name: None,
                 story_id: ep.id,
                 html:
                     "<p>Guest: Ada Lovelace. <a href=\"https://example.com/book\">Her book</a></p>"
@@ -2473,6 +2475,8 @@ mod tests {
                 "2026-03-09T12:00:00Z".parse().unwrap(),
             );
             let body = StoryBody {
+                byline: None,
+                site_name: None,
                 story_id: story.id,
                 html: "<p>Words.</p>".into(),
                 text: "Words.".into(),

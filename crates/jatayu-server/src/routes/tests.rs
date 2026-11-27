@@ -350,6 +350,8 @@ mod news_route_tests {
         );
         story.summary = "The summary".into();
         let body = StoryBody {
+            byline: None,
+            site_name: None,
             story_id: story.id,
             html: "<p>Hello</p><img src=\"jatayu://news/img/s/tok\">".into(),
             text: String::new(),
@@ -419,6 +421,8 @@ mod news_route_tests {
             .require()
             .unwrap()
             .save_story_body(&StoryBody {
+                byline: None,
+                site_name: None,
                 story_id: story,
                 html: "<p>Written.</p><hr data-show-notes><h2>Show notes</h2><p>Guest</p>".into(),
                 text: String::new(),

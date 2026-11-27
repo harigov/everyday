@@ -619,6 +619,8 @@ mod tests {
         story.url = "https://example.com/post".into();
         story.summary = "The feed's own few words.".into();
         let body = text.map(|text| StoryBody {
+            byline: None,
+            site_name: None,
             story_id: story.id,
             html: format!("<p>{text}</p>"),
             text: text.into(),
@@ -988,6 +990,8 @@ mod tests {
         let story = article(&f.vault, &source, "Story", None);
         f.vault
             .save_story_body(&StoryBody {
+                byline: None,
+                site_name: None,
                 story_id: story.id,
                 html: "<h2>Why gardens</h2><p>Soil is <b>alive</b>.</p>".into(),
                 text: String::new(),

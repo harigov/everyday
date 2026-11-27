@@ -31,6 +31,7 @@ export type PrefKey =
   | 'jatayu.feed.kind'
   | 'jatayu.feed.folders.closed'
   | 'jatayu.feed.newsletters'
+  | 'jatayu.feed.reading'
   | 'jatayu.money.view'
   | 'jatayu.screentime.view'
   | 'jatayu.screentime.range'

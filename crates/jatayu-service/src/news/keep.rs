@@ -393,6 +393,8 @@ mod tests {
         story.url = "https://example.com/post".into();
         story.summary = "A short summary.".into();
         let body = body.map(|html| StoryBody {
+            byline: None,
+            site_name: None,
             story_id: story.id,
             html: html.into(),
             text: "Plain words of the post.".into(),

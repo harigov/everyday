@@ -618,6 +618,15 @@ pub struct StoryBody {
     /// The pictures `html` refers to, by token.
     #[serde(default)]
     pub images: Vec<NewsImage>,
+    /// Who the page says wrote it -- "Jane Doe", not "By Jane Doe" -- when
+    /// the article was read from the page itself. A feed's own author is
+    /// the story's, not this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub byline: Option<String>,
+    /// The publication the page names itself as -- "The Atlantic" for
+    /// `theatlantic.com` -- when the article was read from the page itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site_name: Option<String>,
 }
 
 /// Where a body came from.

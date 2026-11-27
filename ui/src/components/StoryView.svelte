@@ -25,7 +25,15 @@
   import { untrack } from 'svelte'
   import { feed, type LoadedBody } from '../lib/feed.svelte'
   import { listening } from '../lib/listen.svelte'
-  import { alsoOn, distinctAuthor, hostOf, looksCutOff, scopeTitle, sourceLabel } from '../lib/feed'
+  import {
+    alsoOn,
+    distinctAuthor,
+    hostOf,
+    looksCutOff,
+    plainText,
+    scopeTitle,
+    sourceLabel,
+  } from '../lib/feed'
   import { mediaUrl } from '../lib/api'
   import { dateFormat } from '../lib/format'
   import { menu } from '../lib/menu.svelte'
@@ -33,12 +41,16 @@
   import { openExternal } from '../lib/open-external'
   import { phone } from '../lib/phone.svelte'
   import { episodeProgress, formatDuration } from '../lib/podcast'
+  import { COLUMN_PX, minutesToRead, paneStyle } from '../lib/reading'
+  // Named apart from `reading` below, which is whether this story is being read aloud.
+  import { reading as readingPrefs } from '../lib/reading.svelte'
   import { app } from '../lib/state.svelte'
   import { upnext } from '../lib/upnext.svelte'
   import type { Story } from '../lib/types'
   import EpisodeActions from './EpisodeActions.svelte'
   import Icon from './Icon.svelte'
   import PhoneBack from './PhoneBack.svelte'
+  import ReadingSettings from './ReadingSettings.svelte'
   import SourceIcon from './SourceIcon.svelte'
   import SourceSettings from './SourceSettings.svelte'
   import StoryTabs from './StoryTabs.svelte'
@@ -133,10 +145,12 @@
     const id = storyId
     void hasBody
     void stamp
-    // The body is drawn for the window's theme as it is loaded, so a change of
-    // theme (or of light and dark) loads it again.
+    // The body is drawn for the window's theme and the reading settings as it
+    // is loaded, so a change of theme (or of light and dark), or of how an
+    // article is set, loads it again.
     void app.dark
     void app.frame
+    void readingPrefs.settings
     if (feed.extracting) return
     const target = untrack(() => story)
     const mine = ++loads
@@ -172,6 +186,51 @@
       !story.expired &&
       (!story.hasBody || (body !== null && looksCutOff(body.html))),
   )
+
+  // ── How it is set ─────────────────────────────────────────────────────
+
+  /**
+   * Whether the reading settings apply: not to a newsletter, which is mail's
+   * own document (`feed.loadBody`), nor to a story whose text is gone.
+   */
+  const restyles = $derived(!story.mailMessage && !story.expired)
+  let readingOpen = $state(false)
+  // Never carried to the next story, nor left open over one it does not
+  // apply to -- where it would come back, uninvited, at the next article.
+  $effect(() => {
+    void storyId
+    readingOpen = false
+  })
+  $effect(() => {
+    if (!restyles) readingOpen = false
+  })
+  /** The page the settings chose, around the frame as well as in it. */
+  const pane = $derived(restyles ? paneStyle(readingPrefs.settings) : '')
+  /** How wide the column may grow; a phone's is the screen. */
+  const columnPx = $derived(phone.on ? null : COLUMN_PX[readingPrefs.settings.width])
+
+  // ── What the page said about it ───────────────────────────────────────
+
+  /**
+   * Who wrote it, from the page the article was read from, when the feed did
+   * not say: the feed's own author, when there is one, is the one shown.
+   */
+  const pageByline = $derived.by(() => {
+    const named = body?.byline?.trim() ?? ''
+    if (!named || author) return ''
+    return named.toLowerCase() === sourceName.trim().toLowerCase() ? '' : named
+  })
+  /**
+   * What the publication calls itself, beside its address unless it is the
+   * source's own name. Never in place of the address: a page names itself
+   * whatever it likes, and the address is where it really came from.
+   */
+  const site = $derived.by(() => {
+    const named = body?.site?.trim() ?? ''
+    return named && named.toLowerCase() !== sourceName.trim().toLowerCase() ? named : ''
+  })
+  /** "6 min read", for an article long enough for it to be worth saying. */
+  const minutes = $derived(!media && body ? minutesToRead(plainText(body.html)) : null)
 
   /** Stories put on the Library's shelf this session, so the button can say so. */
   let shelved = $state<Set<string>>(new Set())
@@ -256,6 +315,12 @@
           icon: 'play',
           run: () => listen(true),
         },
+      restyles && SEP,
+      restyles && {
+        label: 'Reading settings',
+        icon: 'heading',
+        run: () => (readingOpen = true),
+      },
       !!source && SEP,
       !!source && {
         label: 'Source settings',
@@ -381,8 +446,8 @@
           </button>
         {/if}
       {/if}
+      <span class="spacer"></span>
       {#if canFetch}
-        <span class="spacer"></span>
         <button
           class="btn btn-outline"
           disabled={feed.extracting}
@@ -393,12 +458,31 @@
           {feed.extracting ? 'Fetching…' : 'Fetch the full article'}
         </button>
       {/if}
+      {#if restyles}
+        <span class="anchor">
+          <button
+            class="btn btn-outline aa"
+            class:on={readingOpen}
+            data-reading-trigger
+            aria-haspopup="dialog"
+            aria-expanded={readingOpen}
+            aria-label="Reading settings"
+            title="Reading settings: the font, the size, the width and the page"
+            onclick={() => (readingOpen = !readingOpen)}
+          >
+            Aa
+          </button>
+          {#if readingOpen}
+            <ReadingSettings onclose={() => (readingOpen = false)} />
+          {/if}
+        </span>
+      {/if}
     </div>
   {/if}
 
   {#key story.id}
-    <div class="scroll">
-      <div class="column">
+    <div class="scroll" style={pane}>
+      <div class="column" style:max-width={columnPx ? `${columnPx}px` : null}>
         <header class="subject-block">
           <div class="head">
             {#if media}
@@ -425,9 +509,9 @@
                     {sourceName}
                   </span>
                 {/if}
-                {#if author}
+                {#if author || pageByline}
                   <span class="sep">·</span>
-                  <span>{author}</span>
+                  <span>{author || pageByline}</span>
                 {/if}
                 {#if published}
                   <span class="sep">·</span>
@@ -440,6 +524,14 @@
                 {#if numbering}
                   <span class="sep">·</span>
                   <span>{numbering}</span>
+                {/if}
+                {#if minutes}
+                  <span class="sep">·</span>
+                  <span>{minutes} min read</span>
+                {/if}
+                {#if site && !media}
+                  <span class="sep">·</span>
+                  <span>{site}</span>
                 {/if}
                 {#if host && !media}
                   <span class="sep">·</span>
@@ -525,6 +617,10 @@
   <SourceSettings source={source.source} onclose={() => (settings = false)} />
 {/if}
 
+{#if readingOpen && phone.on && restyles}
+  <ReadingSettings onclose={() => (readingOpen = false)} />
+{/if}
+
 <style>
   .story {
     flex: 1;
@@ -563,6 +659,18 @@
   .spacer {
     flex: 1;
   }
+  /* What the reading settings hang from: the popover is placed under it. */
+  .anchor {
+    position: relative;
+    display: inline-flex;
+  }
+  .aa {
+    min-width: 40px;
+    justify-content: center;
+    font-family: var(--font-read);
+    font-weight: 650;
+  }
+
   /* Save and the Library, once done: the accent, in colour alone. */
   .toolbar-row .btn.on {
     color: var(--accent);

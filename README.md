@@ -1201,8 +1201,12 @@ sanitised once, as it arrives, by the same pass that sanitises mail, and
 drawn in the same sandboxed frame. Pictures load when a story is opened,
 through the app's own protocol and into the blob store, never linked, and
 each source has a switch for them. **Fetch the full article** pulls the
-linked page through a Readability port for a feed that publishes only a
-teaser, and a source can do it for every story. News expires and saving
+linked page for a feed that publishes only a teaser -- through FiveFilters'
+rules for nearly two thousand sites, where they know the page, and a
+Readability port everywhere -- and a source can do it for every story. An
+article is set for reading, with who wrote it, the publication and how long
+it takes above it, and **Aa** chooses the face, the size, the spacing, the
+width and a white, sepia or night page, kept on this device. News expires and saving
 keeps it: a read story goes after thirty days and an unread one after ninety
 unless you say otherwise, a saved one stays, and the long-term home for
 anything worth keeping is the library's Articles shelf, one keystroke away.

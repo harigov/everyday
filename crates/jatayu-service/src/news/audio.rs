@@ -496,6 +496,8 @@ mod tests {
             "2026-03-09T12:00:00Z".parse().unwrap(),
         );
         let body = StoryBody {
+            byline: None,
+            site_name: None,
             story_id: story.id,
             html: html.into(),
             text: String::new(),

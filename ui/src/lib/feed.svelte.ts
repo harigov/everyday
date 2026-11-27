@@ -23,6 +23,7 @@ import { api, callCommand, isMock, isWeb } from './api'
 import {
   FEED_KINDS,
   KIND_LABELS,
+  bodyAboutOf,
   bodyOriginOf,
   filterStories,
   groupFolders,
@@ -42,6 +43,8 @@ import { seen, type Showing } from './onscreen'
 import { openExternal } from './open-external'
 import { schemeOrigin } from './platform'
 import { pref } from './prefs'
+import { readingPage, withReading } from './reading'
+import { reading } from './reading.svelte'
 import { app, errorMessage, handle, isLocked, quietly } from './state.svelte'
 import { debounce } from './store/debounce'
 import { latest } from './store/latest'
@@ -113,12 +116,16 @@ export interface FeedFolder {
 /**
  * A story's body as the pane draws it: the document, whether its pictures were
  * held back, and what it was written from -- `null` when the document does not
- * say, which is every document from a service that predates transcripts.
+ * say, which is every document from a service that predates transcripts. When
+ * the article was read from the page itself, who wrote it and what the
+ * publication calls itself, if the page said.
  */
 export interface LoadedBody {
   html: string
   imagesHidden: boolean
   origin: BodyOrigin | null
+  byline: string | null
+  site: string | null
 }
 
 /**
@@ -200,6 +207,37 @@ function applyNewsOrigin(html: string): string {
   return origin === 'jatayu://news'
     ? html
     : allowWebOrigin(html.split('jatayu://news/').join(`${origin}/`))
+}
+
+/** A body as it arrives, before it is drawn for this window: see `loadBody`. */
+type RawBody = Pick<LoadedBody, 'html' | 'imagesHidden' | 'origin'>
+
+/**
+ * The mock backend's stand-in for a story's document (`wrap_as` in
+ * `news/view.rs`): the head that says who wrote it, and enough of `STYLE` --
+ * the reading properties, the padding, the headings, quotes and pictures -- for
+ * the reading settings to be seen at work in a browser tab. Mock-only, and
+ * only an approximation: the real stylesheet is the service's.
+ */
+function mockStoryDocument(inner: string, byline: string | null, site: string | null): string {
+  const quote = (v: string) => v.replaceAll('&', '&amp;').replaceAll('"', '&quot;')
+  const about =
+    (byline ? `<meta name="news-byline" content="${quote(byline)}">` : '') +
+    (site ? `<meta name="news-site" content="${quote(site)}">` : '')
+  return (
+    `<!DOCTYPE html><html><head><meta charset="utf-8">${about}` +
+    `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob: https: http:; style-src 'unsafe-inline'">` +
+    `<base target="_blank"><style>` +
+    `:root{--read-font:sans-serif;--read-size:18px;--read-leading:1.6}` +
+    `body{margin:0;padding:20px clamp(16px,4vw,28px) 28px;font-family:var(--read-font);` +
+    `font-size:var(--read-size);line-height:var(--read-leading);overflow-wrap:break-word}` +
+    `body>:first-child{margin-top:0}h1,h2,h3{margin:1.5em 0 .5em;line-height:1.25;font-weight:650}` +
+    `h2{font-size:1.3em}h3{font-size:1.12em}img{max-width:100%;height:auto}figure{margin:1.5em 0}` +
+    `figure.lead{margin:0 0 1.5em}figcaption{margin-top:.5em;font-size:.8em;opacity:.72}` +
+    `blockquote{margin:1.25em 0;padding-left:1em;border-left:3px solid rgba(128,128,128,.4);opacity:.88}` +
+    `a{color:inherit;text-underline-offset:.18em}` +
+    `</style></head><body>${inner}</body></html>`
+  )
 }
 
 class FeedState {
@@ -1200,7 +1238,10 @@ class FeedState {
    *
    * The document is already drawn for the window's light or dark theme and
    * its picture addresses already point at this platform's origin, so the
-   * pane has only to assign it to `srcdoc`.
+   * pane has only to assign it to `srcdoc`. A story that is not a newsletter
+   * is also set in the reading settings' type, on their page when they chose
+   * one (`reading.ts`), so a pane loads its documents again when those change,
+   * as it does when the theme does.
    *
    * The pane asks again when the story's `hasBody` changes, which is what
    * `fetchFullArticle` flips: the address is the same and the body is not.
@@ -1209,10 +1250,16 @@ class FeedState {
   async loadBody(story: Story, part?: StoryPart): Promise<LoadedBody | null> {
     try {
       const loaded = isMock ? await this.#mockBody(story, part) : await this.#fetchBody(story, part)
+      // A newsletter is mail's document, designed down to its fonts as often
+      // as not, and keeps the window's theme and its own type.
+      const settings = story.mailMessage ? null : reading.settings
+      const page = settings ? readingPage(settings) : null
+      const themed = applyBodyTheme(loaded.html, page?.dark ?? app.dark, page?.frame ?? app.frame)
       return {
-        html: applyNewsOrigin(applyBodyTheme(loaded.html, app.dark, app.frame)),
+        html: applyNewsOrigin(settings ? withReading(themed, settings) : themed),
         imagesHidden: loaded.imagesHidden,
         origin: loaded.origin,
+        ...bodyAboutOf(loaded.html),
       }
     } catch (e) {
       await handle(e)
@@ -1240,7 +1287,7 @@ class FeedState {
    * the response, and an `<iframe src>` has no hook to read it. Not cached,
    * since whether they are held back can change between two requests.
    */
-  async #fetchBody(story: Story, part?: StoryPart): Promise<LoadedBody> {
+  async #fetchBody(story: Story, part?: StoryPart): Promise<RawBody> {
     const res = await fetch(this.bodyUrl(story, part), { cache: 'no-store' })
     if (!res.ok) throw new Error(`could not load the story (${res.status})`)
     const imagesHidden = res.headers.get('x-news-images-hidden') === '1'
@@ -1253,16 +1300,25 @@ class FeedState {
    * name, as the dev-only mail triggers are: no real command is behind it, so
    * the generated client has nothing to type it from.
    */
-  async #mockBody(story: Story, part?: StoryPart): Promise<LoadedBody> {
+  async #mockBody(story: Story, part?: StoryPart): Promise<RawBody> {
     const body = await callCommand<{
       html: string
       imagesHidden: boolean
       origin?: BodyOrigin | null
+      byline?: string | null
+      site?: string | null
     }>('mock_story_body', { id: story.id, part })
-    const framed = bodyDocument(story.id, { html: body.html, imagesHidden: body.imagesHidden })
+    if (story.mailMessage) {
+      const framed = bodyDocument(story.id, { html: body.html, imagesHidden: body.imagesHidden })
+      return {
+        html: framed.html ?? '',
+        imagesHidden: framed.imagesHidden ?? false,
+        origin: body.origin ?? null,
+      }
+    }
     return {
-      html: framed.html ?? '',
-      imagesHidden: framed.imagesHidden ?? false,
+      html: mockStoryDocument(body.html, body.byline ?? null, body.site ?? null),
+      imagesHidden: body.imagesHidden,
       origin: body.origin ?? null,
     }
   }

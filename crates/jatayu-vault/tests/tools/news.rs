@@ -331,6 +331,8 @@ fn reading_a_story_gives_its_text_capped_and_never_its_markup() {
     // Two-byte characters, so a cut on a byte would land inside one.
     vault
         .save_story_body(&StoryBody {
+            byline: None,
+            site_name: None,
             story_id: long.id,
             html: "<p>secret markup</p>".into(),
             text: "\u{e9}".repeat(13_000),
