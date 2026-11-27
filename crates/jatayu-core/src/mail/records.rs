@@ -368,6 +368,16 @@ pub struct Message {
     /// already means. Additive, so no schema-version bump is needed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invite: Option<Invite>,
+    /// What this message's `List-Unsubscribe` header offered (and
+    /// `List-Unsubscribe-Post` beside it), read when the headers arrived --
+    /// see [`super::unsubscribe`]. One with no `links` means the headers
+    /// were looked at and offered no way out. `None` means they never were:
+    /// a message synced before headers were kept, whose header
+    /// `jatayu-service` reads back from the message's own bytes when it is
+    /// wanted. Additive on the same terms as `invite`, so no schema-version
+    /// bump.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unsubscribe: Option<super::ListUnsubscribe>,
 }
 
 // ---- calendar invitations -------------------------------------------------
@@ -966,6 +976,14 @@ pub struct Draft {
     /// reappearing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub send_error: Option<String>,
+    /// The message whose list this draft asks to be taken off: set on the
+    /// email an unsubscribe queues (`jatayu-service`'s `mail::unsubscribe`),
+    /// so a send that fails for good can take back the "asked" that message
+    /// was marked with ([`super::ListUnsubscribe::asked_at`]) -- the thread
+    /// must not go on saying "Unsubscribed" about an email nobody received.
+    /// `None` on every other draft.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unsubscribes: Option<MailMessageId>,
 }
 
 impl Draft {
@@ -991,6 +1009,7 @@ impl Draft {
             updated_at: now,
             recipients_changed_by: None,
             send_error: None,
+            unsubscribes: None,
         }
     }
 }

@@ -117,6 +117,7 @@ fn seed_message(svc: &Arc<Service>, account: AccountId, mailbox: MailboxId, uid:
         pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
         gmail: None,
         invite: None,
+        unsubscribe: None,
     };
     vault.ingest_mail(account, vec![IngestMessage { message, mailbox, uid }]).unwrap();
     thread_id
@@ -352,6 +353,7 @@ fn seed_in_thread(
         pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
         gmail: None,
         invite: None,
+        unsubscribe: None,
     };
     vault.ingest_mail(account, vec![IngestMessage { message, mailbox, uid }]).unwrap();
     message_id
@@ -1013,6 +1015,7 @@ async fn gmail_archive_and_mark_read_never_touch_a_label_mailbox() {
         pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
         gmail: None,
         invite: None,
+        unsubscribe: None,
     };
     // One physical message, filed under three mailbox rows at once -- All
     // Mail, where it lives, and the two label memberships a real Gmail sync
@@ -1616,6 +1619,48 @@ async fn a_permanently_failed_invite_reply_reverts_my_response() {
     assert_eq!(vault.draft(draft_id).unwrap().state, DraftState::Editing);
 }
 
+/// An unsubscribe's email that fails for good takes back the "asked" it
+/// stamped on the newsletter it was about: the thread must not go on saying
+/// "Unsubscribed" when the list never heard.
+#[tokio::test]
+async fn a_permanently_failed_unsubscribe_email_takes_back_its_asked_mark() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let inbox = seed_mailbox(&svc, account, "INBOX", MailboxRole::Inbox);
+    let thread = seed_message(&svc, account, inbox, 1);
+
+    let vault = svc.get().unwrap();
+    let (_, messages) = vault.thread(thread).unwrap();
+    let message_id = messages[0].id;
+    let asked = jatayu_core::mail::ListUnsubscribe {
+        links: vec!["mailto:leave@list.example".into()],
+        one_click: false,
+        asked_at: Some(Timestamp::now()),
+    };
+    vault.set_message_unsubscribe(message_id, Some(asked.clone())).unwrap();
+
+    let mut draft = Draft::new(account, "me@example.com", Origin::Person);
+    draft.to = vec![Address::bare("leave@list.example")];
+    draft.subject = "Unsubscribe".into();
+    draft.unsubscribes = Some(message_id);
+    let draft_id = draft.id;
+    vault.save_draft(&draft).unwrap();
+    vault.queue_draft_send(draft_id, Timestamp::now(), Origin::Person).unwrap();
+
+    let mut session = FakeSession::default();
+    let sender = FakeSender {
+        fail: Some(MailError::Server("550 5.1.1 no such user".into())),
+        ..Default::default()
+    };
+    let report = drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
+    assert_eq!(report.failed, 1, "{report:?}");
+
+    let after = vault.mail_message(message_id).unwrap().unsubscribe.unwrap();
+    assert_eq!(after.asked_at, None, "a bounced unsubscribe email must not still say asked");
+    assert_eq!(after.links, asked.links, "the header itself is kept");
+    assert_eq!(vault.draft(draft_id).unwrap().state, DraftState::Editing);
+}
+
 /// The regression this bug report actually describes: a plain reply in an
 /// invitation's own thread sets `in_reply_to` just like an RSVP does --
 /// that field only names "the message this threads under", not "the
@@ -1773,6 +1818,7 @@ fn draft_copy(
         },
         gmail: None,
         invite: None,
+        unsubscribe: None,
     };
     vault.ingest_mail(account, vec![IngestMessage { message, mailbox, uid }]).unwrap();
     if let Some(text) = body {

@@ -1335,6 +1335,7 @@ fn a_version_19_database_moves_threads_you_replied_to_up_the_list() {
         pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
         gmail: None,
         invite: None,
+        unsubscribe: None,
     };
     let (answered, quiet, answered_back, trashed, sent_only) =
         (ThreadId::new(), ThreadId::new(), ThreadId::new(), ThreadId::new(), ThreadId::new());
@@ -1442,6 +1443,7 @@ fn a_version_18_database_fills_in_the_starred_and_attachment_columns() {
         pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
         gmail: None,
         invite: None,
+        unsubscribe: None,
     };
     let (plain, starred, attached) =
         (message("plain", false), message("starred", false), message("attached", true));
@@ -1534,6 +1536,7 @@ fn a_draft_does_not_make_its_thread_unread() {
         pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
         gmail: None,
         invite: None,
+        unsubscribe: None,
     };
     let read = message("read", MessageFlags { seen: true, ..Default::default() });
     let draft = message("draft", MessageFlags { draft: true, ..Default::default() });
@@ -1623,6 +1626,7 @@ fn the_database_file_contains_no_readable_mail_text() {
         pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
         gmail: None,
         invite: None,
+        unsubscribe: None,
     };
     store.ingest(account, vec![IngestMessage { message, mailbox: mailbox.id, uid: 1 }]).unwrap();
     store.flush().unwrap();

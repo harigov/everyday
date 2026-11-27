@@ -586,6 +586,19 @@ pub trait MailStore: Send + Sync {
     /// same terms `set_message_flags` already is.
     fn set_message_invite(&self, id: MailMessageId, invite: Option<Invite>) -> Result<()>;
 
+    /// Set what message `id` keeps of its `List-Unsubscribe` header -- what
+    /// an unsubscribe calls once it has asked the sender, to stamp
+    /// [`crate::mail::ListUnsubscribe::asked_at`], and to keep the header of
+    /// a message synced before headers were kept once it has been read from
+    /// the message itself. No thread recompute, as for
+    /// [`MailStore::set_message_invite`]. A message id this store has never
+    /// ingested is a no-op.
+    fn set_message_unsubscribe(
+        &self,
+        id: MailMessageId,
+        unsubscribe: Option<crate::mail::ListUnsubscribe>,
+    ) -> Result<()>;
+
     /// Hide `thread` from `mailbox`'s own list -- the optimistic half of
     /// [`crate::mail::OpKind::Archive`], [`crate::mail::OpKind::Trash`] and
     /// [`crate::mail::OpKind::Move`]: the `thread_mailboxes` row for
@@ -963,6 +976,20 @@ pub trait MailStore: Send + Sync {
         account: AccountId,
         target: crate::mail::CategoryMatch,
         category: Category,
+    ) -> Result<u32>;
+
+    /// [`MailStore::correct_category`] for several senders or domains at
+    /// once, in one sweep of the account rather than one each -- a sweep
+    /// decrypts every message the account has, so a person moving forty
+    /// senders out of Newsletters waits for one, not forty. A message is
+    /// matched the way [`crate::mail::CategoryRules::for_sender`] matches: an
+    /// exact address before a domain, and the last of either when two name
+    /// it. An empty `corrections` changes nothing. Returns how many messages
+    /// changed.
+    fn correct_categories(
+        &self,
+        account: AccountId,
+        corrections: &[(crate::mail::CategoryMatch, Category)],
     ) -> Result<u32>;
 
     // ---- sorting by a decision model ------------------------------------

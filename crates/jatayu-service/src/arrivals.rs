@@ -1323,6 +1323,7 @@ mod tests {
             },
             gmail: None,
             invite: Some(invite(InviteMethod::Request)),
+            unsubscribe: None,
         }
     }
 

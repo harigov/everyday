@@ -2639,6 +2639,68 @@ export interface MailMessage {
   /** TODO(i): see [[MailInvite]]. `undefined`/`null` for every message that
    *  is not an invitation. */
   invite?: MailInvite | null
+  /** What the message's `List-Unsubscribe` header offered -- see
+   *  [[ListUnsubscribe]]. Absent when it carried none, or arrived before
+   *  headers were kept (ask `unsubscribe_offer` rather than read this). */
+  unsubscribe?: ListUnsubscribe | null
+}
+
+/**
+ * What a message's `List-Unsubscribe` header offered, as
+ * `jatayu_core::mail::ListUnsubscribe` keeps it: the header's links in the
+ * sender's order, whether RFC 8058's one-click POST was offered, and when
+ * this person last asked to be taken off the list from this message.
+ */
+export interface ListUnsubscribe {
+  links?: string[]
+  oneClick?: boolean
+  askedAt?: string | null
+}
+
+/** Which way out a sender offers first: an RFC 8058 POST, an email to the
+ *  list, or a page to finish in the browser. */
+export type UnsubscribeVia = 'oneClick' | 'mail' | 'web'
+
+/** What `unsubscribe_offer` says unsubscribing from a conversation's sender
+ *  would do, before anybody is asked. `to` is where it goes: the host a POST
+ *  or page is on, or the address an email goes to. */
+export interface UnsubscribeOffer {
+  message: MailMessageId
+  account: AccountId
+  email: string
+  name: string
+  via: UnsubscribeVia
+  to: string
+  askedAt?: string | null
+}
+
+/** How unsubscribing from one sender went (`unsubscribe`,
+ *  `unsubscribe_news_sources`). `done` means the sender has been asked; a
+ *  `url` is a page left for the person to open, with `via: 'web'` (or after
+ *  a refused one-click POST); no `via` means their mail named no way out. */
+export interface UnsubscribeOutcome {
+  account: AccountId
+  email: string
+  name: string
+  via?: UnsubscribeVia | null
+  done: boolean
+  url?: string | null
+  error?: string | null
+}
+
+/** What `mark_not_newsletters` did: newsletters taken out of the Feed, their
+ *  messages moved in Mail, and those whose mail stayed because another
+ *  newsletter that stays comes from the same address. */
+export interface NotNewslettersReport {
+  removed: number
+  moved: number
+  shared: number
+}
+
+/** One sender of one account, as `set_sender_category` takes them. */
+export interface SenderRef {
+  account: AccountId
+  email: string
 }
 
 /**
@@ -3088,6 +3150,13 @@ export interface InboxSender {
   accounts: AccountId[]
   /** The newest of those messages, as an ISO instant. */
   latest: string
+  /** That newest message's id. */
+  newest: MailMessageId
+  /** How unsubscribing from them would go; absent when their mail names no
+   *  way out. */
+  unsubscribe?: UnsubscribeVia | null
+  /** When you last asked them to take you off their list. */
+  unsubscribedAt?: string | null
 }
 
 // ── Drafts and the outbox (phase 3) ─────────────────────────────────────
@@ -3149,6 +3218,9 @@ export interface Draft {
    *  for good and it came back to being written, and while a queued one is
    *  being tried again. Cleared when it is queued again or sent. */
   sendError?: string | null
+  /** The message whose list this asks to be taken off -- set on the email an
+   *  unsubscribe queues. */
+  unsubscribes?: MailMessageId | null
 }
 
 /** What an [[Op]] asks the account task to do. */

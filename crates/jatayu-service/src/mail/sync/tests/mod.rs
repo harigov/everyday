@@ -8,4 +8,5 @@ mod compaction;
 mod fixtures;
 mod notifications;
 mod sync;
+mod unsubscribe_header;
 mod wiring;

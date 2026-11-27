@@ -7,7 +7,8 @@
 //! checked here is only what the commands add: finding each account's Inbox
 //! (by role, or by the name `INBOX` on a server that gave no roles), counting
 //! only what is still in it, leaving you out, narrowing it to one kind of
-//! thread or one sender, and refusing what they say they refuse.
+//! thread or one sender, saying how unsubscribing from each sender would go,
+//! and refusing what they say they refuse.
 
 #[allow(dead_code)]
 mod support;
@@ -17,7 +18,7 @@ use std::sync::Arc;
 use jatayu_core::account::{Account, Provider};
 use jatayu_core::id::{AccountId, MailMessageId, MailboxId, PackId, ThreadId};
 use jatayu_core::mail::{
-    Address, Category, CategorySource, Mailbox, MailboxRole, Message, MessageFlags,
+    Address, Category, CategorySource, ListUnsubscribe, Mailbox, MailboxRole, Message, MessageFlags,
 };
 use jatayu_core::packstore::PackRef;
 use jatayu_core::store::mail::IngestMessage;
@@ -117,6 +118,7 @@ fn seed_into(
         pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
         gmail: None,
         invite: None,
+        unsubscribe: None,
     };
     svc.get().unwrap().ingest_mail(account, vec![IngestMessage { message, mailbox, uid }]).unwrap();
     id
@@ -316,6 +318,41 @@ async fn inbox_senders_older_than_leaves_recent_mail_and_its_conversations_alone
         let err = svc.call(Ctx::local(), "inbox_senders", args).await.expect_err(why);
         assert_eq!(err.code, codes::INVALID, "{why}: {err:?}");
     }
+}
+
+/// Each row says which of its messages is the newest, how unsubscribing
+/// would go -- from the newest counted message that kept a header, which
+/// need not be the newest message -- and when the person last asked.
+#[tokio::test]
+async fn inbox_senders_say_how_unsubscribing_from_each_would_go() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc, "me@example.com");
+    let inbox = seed_mailbox(&svc, account, "INBOX", MailboxRole::Inbox);
+    let (_, older) = seed_as(&svc, account, inbox, 1, "news@example.com", 3, None);
+    let (_, newest) = seed_as(&svc, account, inbox, 2, "news@example.com", 1, None);
+    let (_, asked) = seed_as(&svc, account, inbox, 3, "shop@example.com", 2, None);
+    seed(&svc, account, inbox, 4, "bob@example.com", 1);
+
+    let vault = svc.get().unwrap();
+    let both = ListUnsubscribe::parse("<https://example.com/u>, <mailto:leave@example.com>", None);
+    vault.set_message_unsubscribe(older, both).unwrap();
+    let when = Timestamp::from_second(1_790_000_000).unwrap();
+    let mut page = ListUnsubscribe::parse("<https://shop.example/u>", None).unwrap();
+    page.asked_at = Some(when);
+    vault.set_message_unsubscribe(asked, Some(page)).unwrap();
+
+    let senders = call(&svc, "inbox_senders", json!({})).await;
+    assert_eq!(emails(&senders), ["news@example.com", "bob@example.com", "shop@example.com"]);
+    let news = &senders[0];
+    assert_eq!(news["newest"], json!(newest), "{news}");
+    assert_eq!(news["unsubscribe"], "mail", "the older message kept the header: {news}");
+    assert!(news.get("unsubscribedAt").is_none(), "{news}");
+    let bob = &senders[1];
+    assert!(bob["newest"].is_string(), "{bob}");
+    assert!(bob.get("unsubscribe").is_none(), "no header kept and no bytes to read: {bob}");
+    let shop = &senders[2];
+    assert_eq!(shop["unsubscribe"], "web", "{shop}");
+    assert_eq!(shop["unsubscribedAt"], json!(when), "{shop}");
 }
 
 #[tokio::test]

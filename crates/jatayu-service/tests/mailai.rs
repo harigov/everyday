@@ -256,6 +256,7 @@ fn seed_message_at(
         invite: None,
         pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 1 },
         gmail: None,
+        unsubscribe: None,
     };
     vault
         .ingest_mail(account, vec![IngestMessage { message: message.clone(), mailbox, uid }])

@@ -57,6 +57,13 @@
 //! [`Origin::Person`]: "keep these out of my inbox" is their standing
 //! instruction, and calling it a routine's or the assistant's would put a
 //! run or a conversation in the thread's history that never existed.
+//!
+//! # Leaving a newsletter
+//!
+//! Unsubscribing from a newsletter in the Feed needs a message of its own to
+//! read the way out from, and a source keeps no header. `source_messages`
+//! finds the mail a source brought: through its stories while they last, and
+//! by asking `Homes` of recent mail once they have been cleaned up.
 
 use crate::domains::insights;
 use crate::domains::mailcleanup::{inbox_messages, inbox_of};
@@ -101,6 +108,15 @@ const NEWSLETTERS_LOOKBACK_DAYS: i64 = 3;
 /// stored under Newsletters are handed to the sources they belong to: a page
 /// of sealed stories and as many messages to read, then one write.
 const REHOME_BATCH: u32 = 200;
+
+/// How far back [`source_messages`] reads Mail for a newsletter whose
+/// stories no longer point at any of its mail, in days: the window Quick
+/// Cleanup and "From your mail" look over, which holds the last few issues
+/// of even a monthly.
+const SOURCE_MAIL_DAYS: i64 = 90;
+
+/// How many of a source's stories [`source_messages`] reads at once.
+const SOURCE_STORY_PAGE: u32 = 100;
 
 /// Someone who sends newsletters to one of this vault's inboxes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -318,6 +334,120 @@ fn followed_senders(vault: &Vault) -> jatayu_core::Result<HashSet<String>> {
             _ => None,
         })
         .collect())
+}
+
+// ---- the mail a source brought --------------------------------------------
+
+/// The mail each of `sources` has brought, newest first and at most `limit`
+/// messages each, keyed by source: what unsubscribing from a newsletter reads
+/// its way out from, and the display names a sender followed as a whole has
+/// sent under. Only [`SourceKind::Mail`] sources are answered for; a source
+/// with no mail found is absent from the map.
+///
+/// A source's stories are asked first, since each points at its message.
+/// One whose stories point at nothing -- every issue cleaned up, which
+/// leaves a tombstone that no longer says which message it was, or no turn
+/// taken yet -- has Mail read for it instead: the last
+/// [`SOURCE_MAIL_DAYS`] days, in every account with mail switched on, for
+/// what `Homes` says is that source's, which is how a turn decides it. Unlike
+/// a turn, the category is not asked: a newsletter somebody already moved out
+/// of Newsletters in Mail still comes from the same list, and its header still
+/// says how to leave it. One read of Mail serves every source that needs one.
+///
+/// Drafts and messages marked deleted are left out, as a turn leaves them
+/// out, and so is a message that has left Mail since its story was stored.
+pub(crate) fn source_messages(
+    svc: &Arc<Service>,
+    vault: &Vault,
+    sources: &[NewsSource],
+    limit: usize,
+) -> CommandResult<HashMap<NewsSourceId, Vec<Message>>> {
+    let mut found: HashMap<NewsSourceId, Vec<Message>> = HashMap::new();
+    if limit == 0 || !vault.supports_accounts() || !vault.supports_mail() {
+        return Ok(found);
+    }
+    let mut unpointed: HashSet<NewsSourceId> = HashSet::new();
+    for source in sources.iter().filter(|s| matches!(s.kind, SourceKind::Mail { .. })) {
+        let messages = stories_mail(vault, source.id, limit)?;
+        if messages.is_empty() {
+            unpointed.insert(source.id);
+        } else {
+            found.insert(source.id, messages);
+        }
+    }
+    if unpointed.is_empty() {
+        return Ok(found);
+    }
+
+    let to = svc.now();
+    let from = to - SignedDuration::from_hours(SOURCE_MAIL_DAYS * 24);
+    let homes = Homes::of(vault)?;
+    for account in vault.accounts()?.into_iter().filter(|a| a.services.mail) {
+        for message in vault.mail_between(account.id, from, to)? {
+            if message.flags.draft || message.flags.deleted {
+                continue;
+            }
+            let name = message.from.name.trim().to_lowercase();
+            let Some(claimed) = homes.lookup(&sender_of(&message), &name) else { continue };
+            if unpointed.contains(&claimed.source.id) {
+                found.entry(claimed.source.id).or_default().push(message);
+            }
+        }
+    }
+    for id in &unpointed {
+        if let Some(messages) = found.get_mut(id) {
+            messages.sort_by_key(|m| std::cmp::Reverse((m.date, m.id)));
+            messages.truncate(limit);
+        }
+    }
+    Ok(found)
+}
+
+/// Up to `limit` of the messages `source`'s stories point at, newest first,
+/// read a page of stories at a time until there are enough. A story whose
+/// message has left Mail is not listed by the store; one deleted in between
+/// is skipped here.
+fn stories_mail(
+    vault: &Vault,
+    source: NewsSourceId,
+    limit: usize,
+) -> jatayu_core::Result<Vec<Message>> {
+    let mut messages: Vec<Message> = Vec::new();
+    let mut seen: HashSet<MailMessageId> = HashSet::new();
+    let mut before = None;
+    loop {
+        let query = StoryQuery {
+            sources: vec![source],
+            before,
+            limit: SOURCE_STORY_PAGE,
+            ..Default::default()
+        };
+        let page = vault.stories(&query)?;
+        for id in page.stories.iter().filter_map(|s| s.mail_message) {
+            if messages.len() >= limit {
+                break;
+            }
+            if !seen.insert(id) {
+                continue;
+            }
+            let message = match vault.mail_message(id) {
+                Ok(message) => message,
+                Err(jatayu_core::Error::NotFound { .. }) => continue,
+                Err(e) => return Err(e),
+            };
+            if !message.flags.draft && !message.flags.deleted {
+                messages.push(message);
+            }
+        }
+        match page.next {
+            Some(next) if messages.len() < limit => before = Some(next),
+            _ => break,
+        }
+    }
+    // Stories are listed by the date they were published, which is their
+    // message's; sorted again so the order never rests on that.
+    messages.sort_by_key(|m| std::cmp::Reverse((m.date, m.id)));
+    Ok(messages)
 }
 
 // ---- reading what a source claims -----------------------------------------
@@ -813,6 +943,7 @@ mod tests {
             pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
             gmail: None,
             invite: None,
+            unsubscribe: None,
         }
     }
 

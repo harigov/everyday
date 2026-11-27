@@ -1,16 +1,18 @@
 //! The application's one HTTP client, and the two things every caller of it
 //! needs to get right.
 //!
-//! Five features in Jatayu send an ordinary web request through this
-//! client: refreshing a subscribed calendar ([`crate::feeds`]); syncing a
-//! calendar an account already has, over Google's or Microsoft's own API
-//! rather than CalDAV ([`crate::accountcal::google`],
+//! Six features in Jatayu send an ordinary web request through this
+//! module's clients: refreshing a subscribed calendar ([`crate::feeds`]);
+//! syncing a calendar an account already has, over Google's or Microsoft's
+//! own API rather than CalDAV ([`crate::accountcal::google`],
 //! [`crate::accountcal::graph`]); looking up what a book is called
 //! ([`crate::websearch`]); fetching a remote image a message asked to load
-//! ([`crate::mail::view::remote_image`]); and, once a call ends, sending a
-//! chunk of speech to whichever remote transcriber the person configured
+//! ([`crate::mail::view::remote_image`]); once a call ends, sending a chunk
+//! of speech to whichever remote transcriber the person configured
 //! ([`crate::speech::transcribe::openai`],
-//! [`crate::speech::transcribe::gemini`]). Sharing the client is not about
+//! [`crate::speech::transcribe::gemini`]); and, when a person asks to leave a
+//! mailing list that offers it, the one-click unsubscribe its mail named
+//! ([`crate::mail::unsubscribe`]). Sharing the client is not about
 //! connection pooling; it is about the settings below being decided once. A
 //! second `Client::builder()` elsewhere in the tree would be a second
 //! timeout, a second redirect policy and a second chance to forget the size
@@ -29,17 +31,19 @@
 //! WebDAV-verb client. Mail's IMAP and SMTP connections are not HTTP at all
 //! and never come near this module.
 //!
-//! What is *not* shared, among the five that do use this client, is the
+//! What is *not* shared, among the six that do use these clients, is the
 //! prose, or the extra caution one caller needs that the others do not. A
 //! 404 means "that subscription link has been revoked" to a calendar and
 //! "nothing was found" to a lookup, so each caller maps status codes itself.
-//! A remote image is the one address among them that a *stranger* chose
-//! rather than the person using this application, so [`crate::mail::view`]
-//! layers its own SSRF check and a generic `User-Agent` on top of this
-//! client's shared settings rather than trusting the far end the way a
-//! calendar subscription, an account sync or a transcription request is. See
-//! [`crate::feeds::fetch`], [`crate::websearch::get`] and
-//! [`crate::mail::view::remote_image`].
+//! A remote image and a one-click unsubscribe link are the two addresses
+//! among them that a *stranger* chose rather than the person using this
+//! application, so each goes through a client that stays on the open
+//! internet ([`public_client`], [`unsubscribe_client`]), with its own check
+//! of a literal address and a generic `User-Agent` on top, rather than
+//! trusting the far end the way a calendar subscription, an account sync or
+//! a transcription request is. See [`crate::feeds::fetch`],
+//! [`crate::websearch::get`], [`crate::mail::view::remote_image`] and
+//! [`crate::mail::unsubscribe`].
 //!
 //! # What this is allowed to talk to
 //!
@@ -47,7 +51,10 @@
 //! account they signed into; the search endpoint behind a button they
 //! pressed; an image address a message named -- fetched only once its
 //! sender is trusted or the person asks, and only after
-//! [`crate::mail::view`]'s own checks -- and, if they chose a remote
+//! [`crate::mail::view`]'s own checks; the https address a list's
+//! `List-Unsubscribe` header named for a one-click POST, only when the
+//! person presses Unsubscribe, carrying nothing but RFC 8058's one fixed
+//! line, and never a GET of any page -- and, if they chose a remote
 //! transcriber over a local one, that transcriber's endpoint: OpenAI's,
 //! Google's, or a base URL the person typed in for a compatible server of
 //! their own. What travels there is speech only -- VAD cuts silence out
@@ -152,6 +159,34 @@ pub fn public_client() -> CommandResult<&'static reqwest::Client> {
                 .no_proxy()
                 .dns_resolver(Arc::new(PublicOnly))
                 .redirect(public_redirect_policy(MAX_REDIRECTS, RedirectSchemes::HttpOrHttps))
+                .build()
+                .map_err(|e| e.to_string())
+        })
+        .as_ref()
+        .map_err(|e| CommandError::new(codes::NETWORK, format!("could not start the fetcher: {e}")))
+}
+
+/// The client for an RFC 8058 one-click unsubscribe: a POST to an address a
+/// stranger's mail named, so [`public_client`]'s guards -- [`PublicOnly`],
+/// no proxy -- and one more: no redirect is followed at all. RFC 8058 has
+/// the sender answer the POST itself, and a redirect after a POST turns into
+/// a GET of somewhere else, which is exactly the background fetch of an
+/// unsubscribe page this must never make. https only, as a one-click link
+/// always is, and no `Referer` (there is no page it came from); no cookie
+/// store is built in, so none is kept or sent either. See
+/// [`crate::mail::unsubscribe`].
+pub fn unsubscribe_client() -> CommandResult<&'static reqwest::Client> {
+    static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .timeout(FETCH_TIMEOUT)
+                .connect_timeout(CONNECT_TIMEOUT)
+                .no_proxy()
+                .dns_resolver(Arc::new(PublicOnly))
+                .redirect(reqwest::redirect::Policy::none())
+                .https_only(true)
+                .referer(false)
                 .build()
                 .map_err(|e| e.to_string())
         })
@@ -542,6 +577,15 @@ mod tests {
         let client = public_client().unwrap();
         let err = client.get(format!("http://localhost:{port}/")).send().await;
         assert!(err.is_err(), "localhost must not resolve through the public client");
+    }
+
+    #[tokio::test]
+    async fn the_unsubscribe_client_never_posts_over_plain_http() {
+        // Answers 200 to anything, so only the client itself can refuse.
+        let port = local_server("").await;
+        let client = unsubscribe_client().unwrap();
+        let sent = client.post(format!("http://127.0.0.1:{port}/")).body("x").send().await;
+        assert!(sent.is_err(), "a one-click POST is https only");
     }
 
     #[tokio::test]

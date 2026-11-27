@@ -25,7 +25,9 @@
   // newsletter that was found in Mail says so, quietly, and can be sent away
   // as "not a newsletter"; one from a sender may also say that an issue's
   // email goes to Trash when the issue is cleaned up, which nothing but its own
-  // setting can do.
+  // setting can do. Any newsletter can be unsubscribed from here, its sender
+  // asked to take you off the list -- the same question, in the same words, as
+  // the sidebar asks of one source or of many.
 
   import { onMount, untrack } from 'svelte'
   import {
@@ -42,12 +44,16 @@
   import { feed } from '../lib/feed.svelte'
   import {
     MAX_RETENTION_DAYS,
-    NOT_NEWSLETTER_DETAIL,
     folderNames,
     muteText,
+    notNewsletterChoices,
+    notNewslettersDetail,
+    notNewslettersTitle,
     parseMute,
     sourceLabel,
     unfollowDetail,
+    unsubscribeDetail,
+    unsubscribeTitle,
   } from '../lib/feed'
   import { focusOnMount, trapFocus } from '../lib/focus'
   import { closesOnBack } from '../lib/phone.svelte'
@@ -62,7 +68,8 @@
     type PodcastForm,
   } from '../lib/podcast'
   import { upnext } from '../lib/upnext.svelte'
-  import type { NewsSource } from '../lib/types'
+  import type { MailCategory, NewsSource } from '../lib/types'
+  import ChoiceDialog from './ChoiceDialog.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
 
   let { source, onclose }: { source: NewsSource; onclose: () => void } = $props()
@@ -81,7 +88,8 @@
   let trashMail = $state(original.trashMail === true)
 
   let saving = $state(false)
-  let confirming = $state(false)
+  /** Which question is over the dialog, if one is: each takes the source away. */
+  let asking = $state<'unfollow' | 'unsubscribe' | 'notNewsletter' | null>(null)
 
   const kind = original.kind
   const isWeb = kind.type === 'web'
@@ -183,9 +191,24 @@
   }
 
   async function unfollow() {
-    confirming = false
+    asking = null
     await feed.deleteSource(original.id)
     onclose()
+  }
+
+  // These two close at once rather than waiting: the source leaves the screen
+  // as soon as it is asked for, and asking a sender can take a while. How it
+  // went is the store's to say, after this dialog has gone.
+  function unsubscribe() {
+    asking = null
+    onclose()
+    void feed.unsubscribeSources([original.id])
+  }
+
+  function notNewsletter(category: MailCategory | null) {
+    asking = null
+    onclose()
+    void feed.markNotNewsletters([original.id], category)
   }
 
   // A phone's back button is its Escape.
@@ -218,7 +241,7 @@
 
 <svelte:window
   onkeydown={(e: KeyboardEvent) => {
-    if (e.key === 'Escape' && !confirming) onclose()
+    if (e.key === 'Escape' && asking === null) onclose()
   }}
 />
 
@@ -525,8 +548,16 @@
       Separated by commas. A story with one of them in its title is dropped as it arrives.
     </p>
 
-    <div class="sheet-row">
-      <button class="btn btn-ghost-danger" onclick={() => (confirming = true)}>
+    <div class="sheet-row ends">
+      {#if fromSender}
+        <button class="btn btn-ghost-danger" onclick={() => (asking = 'unsubscribe')}>
+          Unsubscribe…
+        </button>
+      {/if}
+      <button
+        class="btn btn-ghost-danger"
+        onclick={() => (asking = found ? 'notNewsletter' : 'unfollow')}
+      >
         {found ? 'Not a newsletter…' : 'Unfollow…'}
       </button>
       <span class="spacer"></span>
@@ -535,15 +566,32 @@
     </div>
   </div>
 
-  {#if confirming}
+  {#if asking === 'unfollow'}
     <ConfirmDialog
-      title={found
-        ? 'Take “' + sourceLabel(original) + '” out of the Feed?'
-        : 'Unfollow “' + sourceLabel(original) + '”?'}
-      detail={found ? NOT_NEWSLETTER_DETAIL : unfollowDetail(original)}
-      confirmLabel={found ? 'Not a newsletter' : 'Unfollow'}
+      title={'Unfollow “' + sourceLabel(original) + '”?'}
+      detail={unfollowDetail(original)}
+      confirmLabel="Unfollow"
       onconfirm={() => void unfollow()}
-      oncancel={() => (confirming = false)}
+      oncancel={() => (asking = null)}
+    />
+  {:else if asking === 'unsubscribe'}
+    <ConfirmDialog
+      title={unsubscribeTitle([original])}
+      detail={unsubscribeDetail([original])}
+      confirmLabel="Unsubscribe"
+      danger={false}
+      onconfirm={unsubscribe}
+      oncancel={() => (asking = null)}
+    />
+  {:else if asking === 'notNewsletter'}
+    <ChoiceDialog
+      title={notNewslettersTitle([sourceLabel(original)])}
+      detail={notNewslettersDetail(1)}
+      options={notNewsletterChoices(1).map((choice) => ({
+        label: choice.label,
+        run: () => notNewsletter(choice.category),
+      }))}
+      oncancel={() => (asking = null)}
     />
   {/if}
 </div>
@@ -551,6 +599,11 @@
 <style>
   .portal {
     display: contents;
+  }
+  /* A newsletter's two ways out beside Cancel and Save can be more than a
+     narrow window's width: the row wraps rather than squeezing them. */
+  .ends {
+    flex-wrap: wrap;
   }
   /* Centred rather than hung from the shared sheet's 22%: nine fields would
      otherwise run off the bottom of the window before the max-height made

@@ -51,7 +51,7 @@ globalThis.open = (url) => {
 }
 
 const {
-  modules: [feedModule, stateModule, apiModule, notifyModule, rulesModule],
+  modules: [feedModule, stateModule, apiModule, notifyModule, rulesModule, unsubscribeModule],
   close,
 } = await load(
   [
@@ -60,11 +60,13 @@ const {
     '/src/lib/api.ts',
     '/src/lib/notify.svelte.ts',
     '/src/lib/feed.ts',
+    '/src/lib/unsubscribe.ts',
   ],
   { svelte: true },
 )
 const { feed } = feedModule
 const { kindOf } = rulesModule
+const { summarize } = unsubscribeModule
 const { app } = stateModule
 const { api } = apiModule
 const { notify } = notifyModule
@@ -631,6 +633,161 @@ assert.equal((await api.story('st-2')).saved, false)
   assert.deepEqual(report, { added: 1, skipped: 0 })
   assert.equal(sourceNamed('New One').source.folder, 'Fold', 'a folder in the file is a folder')
   await until('the refresh an import starts finishes', () => !feed.refreshing)
+}
+
+// ── picking several sources, and stopping them ───────────────────────
+
+{
+  const idOf = (title) => sourceNamed(title).source.id
+  const download = idOf('The Download')
+  const algorithm = idOf('The Algorithm')
+  const tldr = idOf('TLDR')
+  const radio = idOf('The Old Radio Blog')
+  const newOne = idOf('New One')
+  const catchAll = feed.sources.find((s) => s.source.kind.type === 'newsletters').source.id
+  const followed = (id) => feed.sources.some((s) => s.source.id === id)
+
+  assert.equal(feed.selecting, false, 'the sidebar opens sources until somebody picks')
+  feed.startSelecting()
+  assert.equal(feed.selecting, true)
+  feed.toggleSource(download)
+  feed.toggleSource(tldr)
+  assert.deepEqual([...feed.checkedSources].sort(), [download, tldr].sort())
+  feed.toggleSource(tldr)
+  assert.deepEqual([...feed.checkedSources], [download], 'ticking again puts it back')
+  feed.toggleSource(catchAll)
+  assert.ok(!feed.checkedSources.has(catchAll), 'the Newsletters source cannot be picked')
+
+  feed.checkAllShown([tldr, algorithm, download, catchAll])
+  assert.deepEqual(
+    feed.checkedSummaries.map((s) => s.source.id),
+    [download, algorithm, tldr],
+    'every row shown is picked, in the sidebar’s order, but the Newsletters source',
+  )
+  feed.clearChecked()
+  assert.equal(feed.checkedSources.size, 0)
+  assert.equal(feed.selecting, true, 'clearing is not stopping')
+
+  // Unfollowed somewhere else while it was picked: the next reload lets it go.
+  feed.checkAllShown([download, newOne])
+  await api.deleteNewsSource(newOne)
+  await feed.refreshSources()
+  assert.deepEqual([...feed.checkedSources], [download], 'a source that went is no longer picked')
+  feed.stopSelecting()
+  assert.equal(feed.selecting, false)
+  assert.equal(feed.checkedSources.size, 0, 'and stopping lets go of the rest')
+
+  // Not newsletters: out of the Feed and not found again, their emails moved
+  // in Mail. A web feed among them was never a newsletter, and stays.
+  feed.startSelecting()
+  feed.checkAllShown([tldr, radio])
+  await feed.markNotNewsletters([...feed.checkedSources], 'other')
+  assert.equal(feed.selecting, false, 'picking ends with what was done')
+  assert.ok(!followed(tldr), 'the newsletter leaves the Feed')
+  assert.ok(!feed.stories.some((s) => s.sourceId === tldr), 'and its issues with it')
+  assert.ok(followed(radio), 'the web feed stays')
+  assert.deepEqual(
+    (await api.feedSettings()).notNewsletters,
+    [{ sender: 'dan@tldrnewsletter.com', name: 'TLDR' }],
+    'the newsletter is not found again',
+  )
+  const moved = notify.toasts.find((t) => t.key === 'feed-not-newsletters')
+  assert.ok(moved, 'it says so')
+  assert.equal(moved.title, 'Took “TLDR” out of the Feed')
+  assert.equal(moved.body, 'Its emails are now under Other in Mail.')
+  notify.dismiss(moved.id)
+
+  // Unsubscribing: each newsletter's sender asked and the newsletter gone, a
+  // feed unfollowed, the Newsletters source never taken. An issue open from
+  // one of them goes with it, and so does the place on screen.
+  await feed.select({ kind: 'source', id: algorithm })
+  const issue = feed.stories[0]
+  assert.ok(issue, 'The Algorithm has an issue to open')
+  await feed.open(issue.id)
+  const outcomes = await feed.unsubscribeSources([download, algorithm, radio, catchAll])
+  assert.deepEqual(
+    outcomes.map((o) => [o.name, o.via, o.done]),
+    [
+      ['The Download', 'oneClick', true],
+      ['The Algorithm', 'web', false],
+    ],
+    'one outcome for each newsletter, and none for the feed',
+  )
+  assert.match(outcomes[1].url, /^https:\/\//, 'a sender who only takes a page leaves its address')
+  for (const id of [download, algorithm, radio]) assert.ok(!followed(id), `${id} is gone`)
+  assert.ok(followed(catchAll), 'the Newsletters source stays')
+  assert.equal(feed.selected, null, 'the open issue went with its source')
+  assert.deepEqual(feed.scope, { kind: 'all' }, 'and the list went back to everything')
+  assert.ok(!feed.stories.some((s) => [download, algorithm, radio].includes(s.sourceId)))
+  assert.deepEqual(feed.unsubscribeResults, outcomes, 'the page left to open is kept to show')
+  assert.deepEqual(
+    (await api.feedSettings()).notNewsletters,
+    [
+      { sender: 'dan@tldrnewsletter.com', name: 'TLDR' },
+      { sender: 'newsletters@technologyreview.com', name: 'The Download' },
+      { sender: 'newsletters@technologyreview.com', name: 'The Algorithm' },
+    ],
+    'the newsletters unsubscribed from are not found again either',
+  )
+
+  // The toast is Mail's words for how the asking went, and the unfollowing after.
+  const expected = summarize(outcomes)
+  const said = notify.toasts.find((t) => t.key === 'feed-unsubscribed')
+  assert.ok(said, 'it says how it went')
+  assert.equal(said.title, expected.title)
+  assert.equal(said.level, expected.ok ? 'success' : 'warning')
+  assert.ok(said.body.endsWith('Also unfollowed 1 other source.'), said.body)
+  notify.dismiss(said.id)
+  feed.dismissUnsubscribeResults()
+  assert.equal(feed.unsubscribeResults, null)
+
+  // Asked to take only the Newsletters source, nothing is asked or taken.
+  assert.deepEqual(await feed.unsubscribeSources([catchAll]), [])
+  await feed.markNotNewsletters([catchAll], null)
+  assert.ok(followed(catchAll))
+}
+
+// What the sidebar's questions say before any of that is done: one source is
+// named, feeds alone are only unfollowed, and Mail is spoken of only when a
+// newsletter is among them.
+{
+  const {
+    NOT_NEWSLETTER_DETAIL,
+    notNewsletterChoices,
+    notNewslettersDetail,
+    notNewslettersTitle,
+    unsubscribeDetail,
+    unsubscribeTitle,
+    unsubscribeVerb,
+  } = rulesModule
+  const letter = (title) => ({ title, kind: { type: 'mail', sender: 'a@b.example' } })
+  const web = (title) => ({ title, kind: { type: 'web', url: 'https://a.example/feed.xml' } })
+
+  assert.equal(unsubscribeTitle([letter('TLDR')]), 'Unsubscribe from “TLDR”?')
+  assert.equal(unsubscribeTitle([letter('A'), letter('B')]), 'Unsubscribe from 2 newsletters?')
+  assert.equal(unsubscribeTitle([letter('A'), web('B')]), 'Unsubscribe from 2 sources?')
+  assert.equal(unsubscribeTitle([web('A'), web('B')]), 'Unfollow 2 sources?')
+  assert.equal(unsubscribeVerb([web('A')]), 'Unfollow')
+  assert.equal(unsubscribeVerb([web('A'), letter('B')]), 'Unsubscribe')
+  assert.equal(
+    unsubscribeDetail([letter('A'), letter('B')]),
+    'Their senders are asked to take you off their lists, and they leave the Feed. Emails you already have stay in Mail.',
+  )
+  assert.match(
+    unsubscribeDetail([letter('A'), web('B')]),
+    /^The newsletter’s sender is asked .* The other source is unfollowed/,
+  )
+  assert.doesNotMatch(unsubscribeDetail([web('A'), web('B')]), /Mail/, 'feeds have no emails')
+
+  assert.equal(notNewslettersTitle(['TLDR']), '“TLDR” isn’t a newsletter?')
+  assert.equal(notNewslettersTitle(['A', 'B', 'C']), '3 sources aren’t newsletters?')
+  assert.equal(notNewslettersDetail(1), NOT_NEWSLETTER_DETAIL)
+  assert.deepEqual(
+    notNewsletterChoices(2).map((c) => c.category),
+    ['other', 'important', null],
+    'out of Newsletters to Other or Important, or left where they are',
+  )
+  assert.equal(notNewsletterChoices(1)[0].label, 'Move its emails to Other')
 }
 
 // ── locking ──────────────────────────────────────────────────────────

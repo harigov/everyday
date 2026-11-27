@@ -26,6 +26,7 @@ import type {
   FollowUpList,
   InboxSender,
   InboxSendersArgs,
+  ListUnsubscribe,
   MailActionByOrigin,
   MailAddress,
   MailAgentOriginKind,
@@ -55,6 +56,10 @@ import type {
   ThreadPage,
   OutboxItem,
   ScheduledSend,
+  SenderRef,
+  UnsubscribeOffer,
+  UnsubscribeOutcome,
+  UnsubscribeVia,
 } from './types'
 import { VaultError } from './types'
 import { senderMatches } from './mail'
@@ -184,6 +189,67 @@ const AUTOMATED: MailAddress[] = [
   addr('National Rail', 'noreply@nationalrail.example.com'),
   addr('Companies House', 'no-reply@companieshouse.example.com'),
 ]
+
+/**
+ * Who sends the seed's newsletters, and what their `List-Unsubscribe`
+ * header offers: one of each way out `jatayu_core::mail::unsubscribe`
+ * chooses between -- one click (with an email beside it, as most lists
+ * have), an email only, a page only -- and a shop's shipping notices with
+ * no header at all, filed under Newsletters by mistake, which is what Quick
+ * Cleanup's "Move to…" is for. So the thread's Unsubscribe and every row of
+ * Quick Cleanup's Newsletters have something different to say.
+ */
+const NEWSLETTERS: { from: MailAddress; subject: string; list: ListUnsubscribe | null }[] = [
+  {
+    from: addr('The Economist', 'newsletter@economist.example.com'),
+    subject: 'The week in five stories',
+    list: {
+      links: [
+        'mailto:unsubscribe@economist.example.com?subject=unsubscribe',
+        'https://economist.example.com/unsubscribe?u=8f2c41',
+      ],
+      oneClick: true,
+    },
+  },
+  {
+    from: addr('The Morning Edition', 'hello@morning-edition.example.com'),
+    subject: 'Your weekday briefing',
+    list: { links: ['mailto:leave-8f2c41@lists.morning-edition.example.com?subject=unsubscribe'] },
+  },
+  {
+    from: addr('Northwind Outfitters', 'offers@northwind.example.com'),
+    subject: 'Up to 40% off, this weekend only',
+    list: { links: ['https://northwind.example.com/email-preferences?u=8f2c41'] },
+  },
+  {
+    from: addr('Amazon', 'shipment-tracking@amazon.example.com'),
+    subject: 'Your order has shipped',
+    list: null,
+  },
+]
+
+/** Which of `NEWSLETTERS` sends each newsletter thread, in the order the
+ *  generator makes them (every eighth thread from the fifth). The Inbox gets
+ *  one from each of the four, and a second from The Economist that is
+ *  snoozed; the rest land in Spam and Sent. */
+const NEWSLETTER_RUN = [0, 1, 2, 0, 1, 3, 0]
+
+/** GitHub's header, on every other notification thread: one click, and an
+ *  email beside it. The rest carry none, so GitHub -- who writes to both
+ *  accounts -- can be asked from one and not the other. */
+const GITHUB_LIST: ListUnsubscribe = {
+  links: [
+    'mailto:unsub-8f2c41@reply.github.com',
+    'https://github.com/notifications/unsubscribe-auth/8f2c41',
+  ],
+  oneClick: true,
+}
+
+/** A message's own copy of a sender's header, so stamping one message's
+ *  `askedAt` leaves every other message's alone. */
+function listHeader(list: ListUnsubscribe): ListUnsubscribe {
+  return { ...list, links: [...(list.links ?? [])] }
+}
 
 const WORK_SUBJECTS = [
   'Re: Q3 numbers — one more pass',
@@ -444,12 +510,31 @@ function buildSeed(): Seeded {
       : i % 5 === 0
         ? 'other'
         : 'important'
-    const from = automated ? pick(AUTOMATED, i) : role === 'sent' ? ME : pick(PEOPLE, i)
-    const subject = automated
-      ? pick(AUTOMATED_SUBJECTS, i)
-      : i % 3 === 0
-        ? pick(PERSONAL_SUBJECTS, i)
-        : pick(WORK_SUBJECTS, i)
+    // Which newsletter, or notification, this is among its own kind.
+    const nth = Math.floor(i / 8)
+    const letter = category === 'newsletter' ? NEWSLETTERS[pick(NEWSLETTER_RUN, nth)] : undefined
+    const from = letter
+      ? letter.from
+      : automated
+        ? pick(AUTOMATED, i)
+        : role === 'sent'
+          ? ME
+          : pick(PEOPLE, i)
+    const subject = letter
+      ? letter.subject
+      : automated
+        ? pick(AUTOMATED_SUBJECTS, i)
+        : i % 3 === 0
+          ? pick(PERSONAL_SUBJECTS, i)
+          : pick(WORK_SUBJECTS, i)
+    // What every message of the thread says about leaving the list: the
+    // newsletter's own header, GitHub's on every other notification, and
+    // nothing from a person.
+    const list = letter
+      ? letter.list
+      : category === 'notification' && nth % 2 === 0
+        ? GITHUB_LIST
+        : null
 
     const threadId: ThreadId = nextId('th')
     const messageCount = 1 + (i % 3)
@@ -500,6 +585,7 @@ function buildSeed(): Seeded {
         // clicked open, which is a poor thing for seed data whose whole job
         // is to make the feature visible.
         invite: !automated && m === 0 ? inviteFor(i, sender) : null,
+        ...(list ? { unsubscribe: listHeader(list) } : {}),
       }
       messages.set(msgId, message)
       bodies.set(
@@ -1003,6 +1089,10 @@ export function mockListThreadsAcross(
  * before `limit` cuts it. The seed's automated senders (The Economist,
  * GitHub) and its regular correspondents each have several such messages,
  * so every period has somebody worth cleaning out.
+ *
+ * `unsubscribe` is how the newest counted message that kept a header would
+ * be used, and `unsubscribedAt` the latest `askedAt` on any counted message
+ * -- what `jatayu_core::mail::cleanup::inbox_senders` reads them from.
  */
 export function mockInboxSenders({
   days,
@@ -1031,9 +1121,15 @@ export function mockInboxSenders({
     messages: number
     unread: number
     latest: string
+    newest: MailMessageId
     /** Thread id to its `lastDate`, for the newest-first order at the end. */
     threads: Map<ThreadId, string>
     accounts: Set<AccountId>
+    /** How the newest message with a usable header would be used, and its
+     *  date, so a newer one can take its place. */
+    unsubscribe: UnsubscribeVia | null
+    headerDate: string
+    unsubscribedAt: string | null
   }
   const bySender = new Map<string, Tally>()
   for (const t of seed.threads) {
@@ -1051,14 +1147,30 @@ export function mockInboxSenders({
         messages: 0,
         unread: 0,
         latest: m.date,
+        newest: m.id,
         threads: new Map(),
         accounts: new Set(),
+        unsubscribe: null,
+        headerDate: '',
+        unsubscribedAt: null,
       }
       tally.messages += 1
       if (!m.flags.seen) tally.unread += 1
       // The newest name wins, the way `mockMailActivity` keeps it.
       if (m.from.name && (m.date >= tally.latest || !tally.name)) tally.name = m.from.name
-      if (m.date > tally.latest) tally.latest = m.date
+      if (m.date > tally.latest) {
+        tally.latest = m.date
+        tally.newest = m.id
+      }
+      const way = unsubscribeWay(m.unsubscribe)
+      if (way && m.date > tally.headerDate) {
+        tally.unsubscribe = way.via
+        tally.headerDate = m.date
+      }
+      const asked = m.unsubscribe?.askedAt
+      if (asked && (!tally.unsubscribedAt || asked > tally.unsubscribedAt)) {
+        tally.unsubscribedAt = asked
+      }
       tally.threads.set(t.id, t.lastDate)
       tally.accounts.add(t.accountId)
       bySender.set(email, tally)
@@ -1073,6 +1185,10 @@ export function mockInboxSenders({
       threads: [...tally.threads].sort((a, b) => b[1].localeCompare(a[1])).map(([id]) => id),
       accounts: [...tally.accounts],
       latest: tally.latest,
+      newest: tally.newest,
+      // Left out when there is nothing to say, as the real answer leaves them.
+      ...(tally.unsubscribe ? { unsubscribe: tally.unsubscribe } : {}),
+      ...(tally.unsubscribedAt ? { unsubscribedAt: tally.unsubscribedAt } : {}),
     }))
     .sort(
       (a, b) => b.messages - a.messages || b.unread - a.unread || a.email.localeCompare(b.email),
@@ -2019,3 +2135,211 @@ export function mockRemoteImagesAllowedOnce(messageId: MailMessageId): boolean {
 }
 
 export type { RemoteImageSettings }
+
+// ── Unsubscribing and re-filing senders ──────────────────────────────
+//
+// The rules `jatayu_core::mail::unsubscribe` and the service's
+// `mail::unsubscribe` keep, over the seed's headers (`NEWSLETTERS`,
+// `GITHUB_LIST`): one click when offered with an https link, then an email,
+// then a page left for the person to open. Nothing is sent anywhere; a
+// sender "asked" has `askedAt` stamped on the message used, as the real
+// command stamps it, so Quick Cleanup and the thread say so afterwards.
+
+/** One way out of a list, as `ListUnsubscribe::method` would take it: `to`
+ *  is where it goes, for a person to read, and `url` the page or POST
+ *  address when there is one. */
+interface Way {
+  via: UnsubscribeVia
+  to: string
+  url?: string
+}
+
+/** The host a link is on, or `''` for one that does not parse. */
+function hostOf(link: string): string {
+  try {
+    return new URL(link).hostname
+  } catch {
+    return ''
+  }
+}
+
+/** The first https link, or with `plain` the first http one when there is
+ *  no https -- `web_link` in `jatayu_core::mail::unsubscribe`. */
+function webLinkOf(header: ListUnsubscribe, plain: boolean): string | undefined {
+  const links = header.links ?? []
+  const secure = links.find((l) => l.startsWith('https://'))
+  return secure ?? (plain ? links.find((l) => l.startsWith('http://')) : undefined)
+}
+
+/** The one address a header's first usable `mailto:` link writes to. Any
+ *  `to`, `cc` or `bcc` in the link is ignored, as the real reading ignores
+ *  them. */
+function mailtoOf(header: ListUnsubscribe): string | undefined {
+  for (const link of header.links ?? []) {
+    if (!link.startsWith('mailto:')) continue
+    let to = ''
+    try {
+      to = decodeURIComponent(link.slice('mailto:'.length).split('?')[0] ?? '')
+    } catch {
+      continue
+    }
+    const first = to.split(',')[0]?.trim().toLowerCase()
+    if (first && first.includes('@')) return first
+  }
+  return undefined
+}
+
+/** How `header` would be used, best first, or `null` when it names no way
+ *  out at all. One click needs an https link to POST to; a page may be
+ *  plain http. */
+function unsubscribeWay(header: ListUnsubscribe | null | undefined): Way | null {
+  if (!header) return null
+  const secure = webLinkOf(header, false)
+  if (header.oneClick && secure) return { via: 'oneClick', to: hostOf(secure), url: secure }
+  const address = mailtoOf(header)
+  if (address) return { via: 'mail', to: address }
+  const page = webLinkOf(header, true)
+  if (page) return { via: 'web', to: hostOf(page), url: page }
+  return null
+}
+
+/** A message whose header offers a way out, with both to hand. */
+interface Usable {
+  message: MailMessage
+  header: ListUnsubscribe
+  way: Way
+}
+
+/** `m`, when its header offers a way out. */
+function withWay(m: MailMessage): Usable | null {
+  const header = m.unsubscribe
+  const way = unsubscribeWay(header)
+  return header && way ? { message: m, header, way } : null
+}
+
+/** `threadId`'s messages from anybody but the person, drafts left out,
+ *  newest first: the ones an unsubscribe can be about. */
+function othersNewestFirst(threadId: ThreadId): MailMessage[] {
+  return messagesOf(threadId)
+    .filter((m) => !m.flags.draft && !OWN.has(m.from.email.toLowerCase()))
+    .reverse()
+}
+
+/** `unsubscribe_offer {thread}`: what unsubscribing from the thread's
+ *  sender would do -- the newest message in it, not a draft and not the
+ *  person's own, whose header offers a way out -- or `null` when none
+ *  does. */
+export function mockUnsubscribeOffer(id: ThreadId): UnsubscribeOffer | null {
+  // An unknown thread is an error, as it is to every other thread command.
+  thread(id)
+  for (const m of othersNewestFirst(id)) {
+    const found = withWay(m)
+    if (!found) continue
+    const email = m.from.email.toLowerCase()
+    return {
+      message: m.id,
+      account: m.accountId,
+      email,
+      name: m.from.name || email,
+      via: found.way.via,
+      to: found.way.to,
+      ...(found.header.askedAt ? { askedAt: found.header.askedAt } : {}),
+    }
+  }
+  return null
+}
+
+/**
+ * `unsubscribe {threads, senders}`: one outcome per (account, sender), as
+ * the service's `targets_in_threads` groups them. With `senders`, only
+ * their messages count, each one sender however many threads it wrote in;
+ * without, each thread names one sender -- the newest message, not a draft
+ * and not the person's own, that offers a way out, or failing that the
+ * newest such message at all, which is then told it named none.
+ *
+ * One click and an email always "work" here, and stamp `askedAt` on the
+ * message used; a page is handed back to open, unasked. Senders asked come
+ * first and senders who named no way out after, each by name, in the real
+ * command's order.
+ * No change is raised: the real one is this window's own write, which its
+ * live router ignores.
+ */
+export function mockUnsubscribe(
+  threads: ThreadId[],
+  senders: string[] | null,
+): UnsubscribeOutcome[] {
+  const only = senders ? new Set(senders.map((s) => s.trim().toLowerCase())) : null
+  /** By account and sender, the messages that might say how to leave. */
+  const groups = new Map<string, MailMessage[]>()
+  const add = (m: MailMessage) => {
+    const key = `${m.accountId}\n${m.from.email.toLowerCase()}`
+    groups.set(key, [...(groups.get(key) ?? []), m])
+  }
+  for (const id of new Set(threads)) {
+    const others = othersNewestFirst(id)
+    if (only) {
+      for (const m of others) if (only.has(m.from.email.toLowerCase())) add(m)
+    } else {
+      const named = others.find((m) => withWay(m)) ?? others[0]
+      if (named) add(named)
+    }
+  }
+
+  const now = new Date().toISOString()
+  const asked: UnsubscribeOutcome[] = []
+  const unoffered: UnsubscribeOutcome[] = []
+  for (const list of groups.values()) {
+    list.sort((a, b) => b.date.localeCompare(a.date))
+    const newest = list[0]
+    if (!newest) continue
+    const email = newest.from.email.toLowerCase()
+    const found = list.map(withWay).find((w) => w !== null)
+    if (!found) {
+      unoffered.push({
+        account: newest.accountId,
+        email,
+        name: newest.from.name || email,
+        done: false,
+        error: 'their mail names no way to unsubscribe',
+      })
+      continue
+    }
+    const { message, header, way } = found
+    const who = { account: message.accountId, email, name: message.from.name || email }
+    if (way.via === 'web') {
+      // Opening a page is not asking: what happens there is the person's.
+      asked.push({ ...who, via: 'web', done: false, url: way.url ?? null })
+      continue
+    }
+    message.unsubscribe = { ...header, askedAt: now }
+    asked.push({ ...who, via: way.via, done: true })
+  }
+  const order = (a: UnsubscribeOutcome, b: UnsubscribeOutcome) =>
+    a.name.toLowerCase().localeCompare(b.name.toLowerCase()) ||
+    a.email.localeCompare(b.email) ||
+    a.account.localeCompare(b.account)
+  return [...asked.sort(order), ...unoffered.sort(order)]
+}
+
+/**
+ * `set_sender_category {senders, category}`: every message from each
+ * (account, sender) filed under `category`, and every thread whose newest
+ * message from somebody else is theirs moved there with it -- as
+ * `mockSetThreadCategory` moves one, the model's own label dropped, since a
+ * person filed it. Answers how many messages are from them.
+ */
+export function mockSetSenderCategory(senders: SenderRef[], category: MailCategory): number {
+  const named = new Set(senders.map((s) => `${s.account}\n${s.email.trim().toLowerCase()}`))
+  const theirs = (m: MailMessage) => named.has(`${m.accountId}\n${m.from.email.toLowerCase()}`)
+  let moved = 0
+  for (const m of seed.messages.values()) {
+    if (m.flags.draft || !theirs(m)) continue
+    m.category = category
+    moved += 1
+  }
+  for (const t of seed.threads) {
+    const newest = othersNewestFirst(t.id)[0]
+    if (newest && theirs(newest)) Object.assign(t, { category, sortedAs: null })
+  }
+  return moved
+}

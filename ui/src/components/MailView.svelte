@@ -39,11 +39,21 @@
   } from '../lib/mail'
   import { listening } from '../lib/listen.svelte'
   import { mail } from '../lib/mail.svelte'
+  import * as mailApi from '../lib/mail-api'
   import { notify } from '../lib/notify.svelte'
+  import { openExternal } from '../lib/open-external'
   import { panels } from '../lib/panels.svelte'
   import { closesOnBack, details, phone } from '../lib/phone.svelte'
   import { sorting } from '../lib/sorting.svelte'
-  import { app } from '../lib/state.svelte'
+  import { app, handle } from '../lib/state.svelte'
+  import {
+    askedLine,
+    manyDetail,
+    needsAttention,
+    offerDetail,
+    summarize,
+    unsubscribeLabel,
+  } from '../lib/unsubscribe'
   import { todo } from '../lib/todo.svelte'
   import { calendar } from '../lib/calendar.svelte'
   import { notes } from '../lib/notes.svelte'
@@ -62,7 +72,10 @@
     Thread,
     ThreadDetail,
     ThreadId,
+    UnsubscribeOffer,
+    UnsubscribeOutcome,
   } from '../lib/types'
+  import ChoiceDialog from './ChoiceDialog.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import EmptyState from './EmptyState.svelte'
   import Loading from './Loading.svelte'
@@ -78,6 +91,7 @@
   import MailThreadDrafts from './MailThreadDrafts.svelte'
   import PaneResizer from './PaneResizer.svelte'
   import PhoneBack from './PhoneBack.svelte'
+  import UnsubscribeResults from './UnsubscribeResults.svelte'
   import VirtualList from './VirtualList.svelte'
 
   void mail.start()
@@ -214,6 +228,36 @@
   })
 
   let cleaning = $state(false)
+  /** What kind of mail Quick cleanup opens on: everything, or -- from the
+   *  Newsletters tab's bar -- that tab's (`'tab:newsletter'`). */
+  let cleaningKind = $state<string | undefined>(undefined)
+
+  /** Open Quick cleanup, on one kind of mail or on all of it. */
+  function openCleanup(kind?: string) {
+    cleaningKind = kind
+    cleaning = true
+  }
+
+  /** Where the Newsletters tab's bar remembers being put away, per device. */
+  const NEWSLETTER_BAR_KEY = 'jatayu.mail.newsletterBarHidden'
+  function readBarHidden(): boolean {
+    try {
+      return localStorage.getItem(NEWSLETTER_BAR_KEY) === '1'
+    } catch {
+      return false
+    }
+  }
+  let newsletterBarHidden = $state(readBarHidden())
+  const NEWSLETTER_TIP =
+    "Too many newsletters? Unsubscribe from their senders all at once. Some aren't newsletters? Select them and choose Not newsletters."
+  function hideNewsletterBar() {
+    newsletterBarHidden = true
+    try {
+      localStorage.setItem(NEWSLETTER_BAR_KEY, '1')
+    } catch {
+      // Storage refused (a private window): put away for this visit only.
+    }
+  }
 
   /** What the platform calls the key Ctrl+click is held with. */
   const modKey = userAgentMac ? '⌘' : 'Ctrl'
@@ -311,6 +355,12 @@
    *  Archive, a label) shows everything in it, uncategorised or not. */
   const showTabs = $derived(mail.mailbox?.role === 'inbox')
 
+  /** The Newsletters tab's tip: over that tab, not over a search, and not
+   *  once it has been put away on this device. */
+  const newsletterTipShown = $derived(
+    showTabs && mail.category === 'newsletter' && !mail.searchQuery.trim() && !newsletterBarHidden,
+  )
+
   const openAccount = $derived(
     mail.openThread ? accounts.account(mail.openThread.thread.accountId) : undefined,
   )
@@ -357,8 +407,45 @@
     return CATEGORY_TABS.map((tab) => ({
       label: tab.label,
       checked: current === tab.key,
-      run: () => void mail.setCategoryForMany(ids, tab.key),
+      run: () => void mail.moveToCategory(ids, tab.key),
     }))
+  }
+
+  /** Where mail filed as a newsletter by mistake usually belongs: the tabs a
+   *  "Not a newsletter" offers, in the strip's own order. Priority is left
+   *  to its own "Always priority from…", and Newsletters is where it is. */
+  const NOT_NEWSLETTER_TABS = CATEGORY_TABS.filter(
+    (tab) => tab.key === 'important' || tab.key === 'other' || tab.key === 'notification',
+  )
+
+  /** "Not a newsletter"'s choices, each `prefix` + the tab's name. */
+  function notNewsletterItems(ids: ThreadId[], prefix = ''): MenuItem[] {
+    return NOT_NEWSLETTER_TABS.map((tab) => ({
+      label: `${prefix}${tab.label}`,
+      icon: TAB_ICONS[tab.key],
+      run: () => void refile(ids, tab.key, tab.label),
+    }))
+  }
+
+  /**
+   * Move threads out of Newsletters, and say so. It is a rule for each
+   * sender rather than a move of these threads alone (`set_thread_category`
+   * files all their mail), which the toast says, since otherwise their
+   * other newsletters vanishing from the tab would be a surprise.
+   */
+  async function refile(ids: ThreadId[], category: MailCategory, label: string) {
+    const count = new Set(ids).size
+    if (!(await mail.moveToCategory(ids, category))) return
+    notify.success(
+      count === 1 ? `Moved to ${label}` : `Moved ${plural(count, 'conversation')} to ${label}`,
+      {
+        key: 'mail-refile',
+        body:
+          count === 1
+            ? 'New mail from this sender goes there too.'
+            : 'New mail from their senders goes there too.',
+      },
+    )
   }
 
   function moveMailboxItems(ids: ThreadId[], accountId: string): MenuItem[] {
@@ -434,11 +521,25 @@
         icon: 'inbox',
         items: categoryMoveItems([t.id], t.category ?? null),
       },
+      t.category === 'newsletter' && {
+        label: 'Not a newsletter',
+        icon: 'newspaper',
+        items: notNewsletterItems([t.id]),
+      },
       SEP,
+      unsubscribable && {
+        label: 'Unsubscribe…',
+        icon: 'mail-x',
+        run: () => (mail.wantsUnsubscribe = [t.id]),
+      },
       { label: 'Archive', icon: 'layers', run: () => void mail.archive(t.id) },
       ...deleteItems([t.id]),
     ])
   }
+
+  /** Is there anybody else's mail to unsubscribe from in this list? Not in
+   *  Sent or Drafts, whose threads are the person's own words. */
+  const unsubscribable = $derived(mail.mailbox?.role !== 'sent' && mail.mailbox?.role !== 'drafts')
 
   /**
    * The end of a row's menu and the bulk one: to Trash, and -- in Trash or
@@ -529,11 +630,33 @@
         items: moveMailboxItems(ids, [...accounts][0]!),
       },
       { label: 'Move to category', icon: 'inbox', items: categoryMoveItems(ids, null) },
+      pickedNewsletters && {
+        label: 'Not newsletters',
+        icon: 'newspaper',
+        items: notNewsletterItems(ids),
+      },
       SEP,
+      unsubscribable && {
+        label: 'Unsubscribe…',
+        icon: 'mail-x',
+        run: () => (mail.wantsUnsubscribe = ids),
+      },
       { label: 'Archive', icon: 'layers', run: () => void mail.archiveMany(ids) },
       ...deleteItems(ids),
     ])
   }
+
+  /** Are the picked threads newsletters -- the Newsletters tab's, or every
+   *  one of them anywhere else? What offers "Not newsletters" for them. */
+  const pickedNewsletters = $derived(
+    (showTabs && mail.category === 'newsletter' && !mail.searchQuery.trim()) ||
+      (pickedThreads.length > 0 && pickedThreads.every((t) => t.category === 'newsletter')),
+  )
+  /** Is any picked thread the kind of mail one unsubscribes from? Then the
+   *  bulk bar offers it as a button, not only under More. */
+  const pickedBulkMail = $derived(
+    pickedThreads.some((t) => t.category === 'newsletter' || t.category === 'notification'),
+  )
 
   /** A row's own menu -- the bulk one when it is one of several picked. */
   function menuFor(t: Thread): MenuItem[] {
@@ -584,6 +707,182 @@
     const ids = mail.wantsLabel
     mail.wantsLabel = null
     if (ids) void mail.labelMany(ids, labelName)
+  }
+
+  // ── Unsubscribing ────────────────────────────────────────────────────
+  //
+  // Always asked first, since it writes to somebody in the person's name and
+  // cannot be taken back: one conversation's sender, with what their mail
+  // offers said in words (`offerDetail`), or the senders of several. The
+  // question is raised from the toolbar here, or through
+  // `mail.wantsUnsubscribe` by a row's menu, the bulk bar and Mod+U.
+
+  /** The question on screen: one sender, from what their mail offers, or the
+   *  senders of several conversations -- counted, and named when they turn
+   *  out to be one. */
+  type UnsubscribeAsk =
+    | { kind: 'one'; ids: ThreadId[]; offer: UnsubscribeOffer }
+    | { kind: 'many'; ids: ThreadId[]; senders: number; name: string | null }
+  let unsubscribeAsk = $state.raw<UnsubscribeAsk | null>(null)
+  /** What is left once it is done -- pages to open, senders it could not
+   *  reach -- for `UnsubscribeResults`. */
+  let unsubscribeLeft = $state.raw<readonly UnsubscribeOutcome[] | null>(null)
+
+  // Taken off the store at once, so the same request is never asked twice,
+  // and turned into the question here.
+  $effect(() => {
+    const ids = mail.wantsUnsubscribe
+    if (ids === null) return
+    untrack(() => {
+      mail.wantsUnsubscribe = null
+      void askToUnsubscribe(ids)
+    })
+  })
+
+  /**
+   * Who sent these conversations, as far as their rows tell: each thread's
+   * sender is the last voice in it that is not the account's own, as for
+   * "Always priority from…". A thread with no row on screen counts as a
+   * sender of its own -- more said than fewer.
+   */
+  function sendersOf(ids: readonly ThreadId[]): { senders: number; name: string | null } {
+    const rows = new Map(mail.shownThreads.map((t): [ThreadId, Thread] => [t.id, t]))
+    const named = new Map<string, MailAddress>()
+    let unknown = 0
+    for (const id of ids) {
+      const row = rows.get(id)
+      const who = row ? vipSenderFor(row) : null
+      if (!row || !who) unknown += 1
+      else named.set(`${row.accountId}\n${who.email.toLowerCase()}`, who)
+    }
+    const [only] = named.values()
+    const senders = named.size + unknown
+    return { senders, name: senders === 1 && only ? only.name || only.email : null }
+  }
+
+  /** Raise the question for `ids`: what one conversation's sender offers,
+   *  read from their mail first, or the many-senders one. */
+  async function askToUnsubscribe(ids: readonly ThreadId[]) {
+    const unique = [...new Set(ids)]
+    const [only] = unique
+    if (only === undefined) return
+    if (unique.length > 1) {
+      unsubscribeAsk = { kind: 'many', ids: unique, ...sendersOf(unique) }
+      return
+    }
+    let offer = mail.openThread?.thread.id === only ? mail.openOffer : null
+    if (!offer) {
+      try {
+        offer = await mailApi.unsubscribeOffer(only)
+      } catch (e) {
+        await handle(e)
+        return
+      }
+    }
+    if (!offer) {
+      notify.info('This conversation names no way to unsubscribe.', { key: 'mail-unsubscribe' })
+      return
+    }
+    unsubscribeAsk = { kind: 'one', ids: [only], offer }
+  }
+
+  /** The toolbar's Unsubscribe: the open thread's own offer, already read. */
+  function unsubscribeOpen(id: ThreadId, offer: UnsubscribeOffer) {
+    unsubscribeAsk = { kind: 'one', ids: [id], offer }
+  }
+
+  /** The question's words and answers, for `ChoiceDialog`. The narrower
+   *  answer first, the one that also archives after it, as that dialog
+   *  stacks them. */
+  const unsubscribeDialog = $derived.by(() => {
+    const ask = unsubscribeAsk
+    if (!ask) return null
+    if (ask.kind === 'one') {
+      const { ids, offer } = ask
+      const who = offer.name || offer.email
+      const web = offer.via === 'web'
+      return {
+        title: offer.askedAt ? `Unsubscribe from ${who} again?` : `Unsubscribe from ${who}?`,
+        detail: [askedLine(offer.askedAt), offerDetail(offer)].filter(Boolean).join('. '),
+        options: [
+          {
+            label: web ? 'Open their page' : unsubscribeLabel(offer.via),
+            run: () => void unsubscribeOne(ids, offer, false),
+          },
+          {
+            label: web ? 'Open their page and archive' : 'Unsubscribe and archive',
+            run: () => void unsubscribeOne(ids, offer, true),
+          },
+        ],
+      }
+    }
+    const { ids, senders, name } = ask
+    return {
+      title: name
+        ? `Unsubscribe from ${name}?`
+        : `Unsubscribe from the senders of ${plural(ids.length, 'conversation')}?`,
+      detail: manyDetail(senders),
+      options: [
+        { label: 'Unsubscribe only', run: () => void unsubscribeMany(ids, false) },
+        { label: 'Unsubscribe and archive', run: () => void unsubscribeMany(ids, true) },
+      ],
+    }
+  })
+
+  /**
+   * One sender, as their offer said. A page is opened in the browser as the
+   * answer promised -- shown to copy when the browser will not take it --
+   * and anything else is said in a toast, with what is left to do after.
+   */
+  async function unsubscribeOne(ids: ThreadId[], offer: UnsubscribeOffer, archive: boolean) {
+    unsubscribeAsk = null
+    const who = offer.name || offer.email
+    const pending =
+      offer.via === 'web'
+        ? null
+        : notify.info(`Unsubscribing from ${who}…`, { key: 'mail-unsubscribe', timeout: null })
+    const outcomes = await mail.unsubscribeThreads(ids, { archive, senders: [offer.email] })
+    if (pending !== null) notify.dismiss(pending)
+    const [page] = outcomes
+    // Opened straight away only when a page was the way out the question
+    // named. After a refused one-click request it is listed instead: the
+    // question said nothing would open.
+    const promised = offer.via === 'web'
+    if (promised && outcomes.length === 1 && page && !page.done && page.url) {
+      if (await openExternal(page.url)) {
+        notify.info('Their page is open in your browser', {
+          key: 'mail-unsubscribe',
+          body: 'Finish unsubscribing there.',
+        })
+      } else {
+        unsubscribeLeft = [page]
+      }
+      return
+    }
+    report(outcomes)
+  }
+
+  /** The senders of several conversations at once, then what came of it. */
+  async function unsubscribeMany(ids: ThreadId[], archive: boolean) {
+    unsubscribeAsk = null
+    const pending = notify.info('Unsubscribing…', { key: 'mail-unsubscribe', timeout: null })
+    const outcomes = await mail.unsubscribeThreads(ids, { archive })
+    notify.dismiss(pending)
+    // Done with, so let go -- unless the ask failed, when the same pick is
+    // there to try again.
+    if (outcomes.length > 0) mail.clearChecked()
+    report(outcomes)
+  }
+
+  /** How it went, in a toast, and what is left in a sheet. Nothing when the
+   *  ask itself failed: that has been said already. */
+  function report(outcomes: readonly UnsubscribeOutcome[]) {
+    if (outcomes.length === 0) return
+    const { title, body, ok } = summarize(outcomes)
+    const opts = { key: 'mail-unsubscribe', body }
+    if (ok) notify.success(title, opts)
+    else notify.warn(title, opts)
+    if (needsAttention(outcomes)) unsubscribeLeft = outcomes
   }
 
   /** Is the reading pane there at all? Only with one thread open, or a new
@@ -741,6 +1040,7 @@
   /** What a thread's toolbar has no room for on a phone. */
   function threadMenu(open: ThreadDetail, newest: MailMessageDetail | undefined): MenuItem[] {
     const priority = open.thread.category === 'priority'
+    const offer = mail.openOffer
     return tidyMenu([
       newest && {
         label: 'Reply all',
@@ -760,6 +1060,11 @@
         run: () => void mail.markUnread(open.thread.id),
       },
       { label: 'Label…', icon: 'tag', run: () => (mail.wantsLabel = [open.thread.id]) },
+      !!offer && {
+        label: offer.askedAt ? 'Unsubscribed' : 'Unsubscribe',
+        icon: 'mail-x',
+        run: () => unsubscribeOpen(open.thread.id, offer),
+      },
       SEP,
       ...bridgeItems(open, newest),
       SEP,
@@ -906,7 +1211,7 @@
         title="Quick cleanup"
         aria-label="Quick cleanup"
         aria-haspopup="dialog"
-        onclick={() => (cleaning = true)}
+        onclick={() => openCleanup()}
       >
         <Icon name="broom" size={17} />
       </button>
@@ -983,6 +1288,27 @@
                 <Icon name="clock" size={14} /> Snooze… <kbd>H</kbd>
               </button>
             {/if}
+            {#if pickedNewsletters}
+              <!-- Filed as newsletters by mistake: out of the tab, and their
+                   senders' new mail with them. -->
+              <button
+                class="btn btn-sm btn-outline"
+                aria-haspopup="menu"
+                onclick={(e) => menu.show(e, notNewsletterItems(mail.targets, 'Move to '))}
+              >
+                <Icon name="newspaper" size={14} /> Not newsletters
+              </button>
+            {/if}
+            {#if unsubscribable && pickedBulkMail}
+              <button
+                class="btn btn-sm btn-outline"
+                aria-haspopup="dialog"
+                onclick={() => (mail.wantsUnsubscribe = mail.targets)}
+              >
+                <Icon name="mail-x" size={14} /> Unsubscribe…
+                <kbd>{keysLabel('mod+u', userAgentMac)}</kbd>
+              </button>
+            {/if}
             <button class="btn btn-sm btn-outline" onclick={(e) => menu.show(e, bulkMenu())}>
               More…
             </button>
@@ -1054,6 +1380,35 @@
               {label}
             </button>
           {/each}
+        </div>
+      {/if}
+
+      {#if newsletterTipShown}
+        <!-- The two things worth doing with a tab full of newsletters, said
+           once where they are wanted, in the follow-up notice's quiet shape:
+           stop the ones nobody reads, and take out the ones that are not
+           newsletters at all. Put away for good with its cross. -->
+        <div class="follow-note">
+          <Icon name="newspaper" size={13} />
+          <span class="follow-note-text" title={NEWSLETTER_TIP}>{NEWSLETTER_TIP}</span>
+          <!-- "Clean up", not the list's own "Quick cleanup" again: one name
+               for one button, to a screen reader and to the phone checks. -->
+          <button
+            class="follow-note-link"
+            aria-haspopup="dialog"
+            title="Open Quick cleanup on your newsletters"
+            onclick={() => openCleanup('tab:newsletter')}
+          >
+            Clean up
+          </button>
+          <button
+            class="follow-note-dismiss"
+            aria-label="Hide this tip"
+            title="Hide this tip"
+            onclick={hideNewsletterBar}
+          >
+            <Icon name="close" size={12} />
+          </button>
         </div>
       {/if}
 
@@ -1305,6 +1660,37 @@
             <Icon name="tag" size={12} />
             {sorting.categoryOf(open.thread)?.name}
           </span>
+        {/if}
+        {#if mail.openOffer}
+          <!-- Only when the sender's mail names a way out, and in the line
+               rather than the toolbar, where one more pill pushed Summarise
+               onto a second row at an ordinary window width. Once asked it
+               says so, and pressing it offers to ask again. -->
+          {@const offer = mail.openOffer}
+          <span class="sep">·</span>
+          <button
+            class="meta-link unsub"
+            aria-haspopup="dialog"
+            title={askedLine(offer.askedAt) ??
+              `${unsubscribeLabel(offer.via)} (${keysLabel('mod+u', userAgentMac)})`}
+            onclick={() => unsubscribeOpen(open.thread.id, offer)}
+          >
+            <Icon name="mail-x" size={12} />
+            {offer.askedAt ? 'Unsubscribed' : 'Unsubscribe'}
+          </button>
+        {/if}
+        {#if open.thread.category === 'newsletter'}
+          <!-- Filed as a newsletter, which plenty of mail is by mistake: the
+               way out is a word away rather than under Move to category. -->
+          <span class="sep">·</span>
+          <button
+            class="meta-link"
+            aria-haspopup="menu"
+            title="File this sender's mail somewhere else"
+            onclick={(e) => menu.show(e, notNewsletterItems([open.thread.id], 'Move to '))}
+          >
+            Not a newsletter?
+          </button>
         {/if}
       </p>
       {#if open.thread.snoozedUntil && new Date(open.thread.snoozedUntil) > new Date()}
@@ -1668,8 +2054,21 @@
   />
 {/if}
 
+{#if unsubscribeDialog}
+  <ChoiceDialog
+    title={unsubscribeDialog.title}
+    detail={unsubscribeDialog.detail}
+    options={unsubscribeDialog.options}
+    oncancel={() => (unsubscribeAsk = null)}
+  />
+{/if}
+
+{#if unsubscribeLeft}
+  <UnsubscribeResults outcomes={unsubscribeLeft} onclose={() => (unsubscribeLeft = null)} />
+{/if}
+
 {#if cleaning}
-  <MailCleanup accountId={scopeAccount} onclose={() => (cleaning = false)} />
+  <MailCleanup accountId={scopeAccount} kind={cleaningKind} onclose={() => (cleaning = false)} />
 {/if}
 
 <style>
@@ -2291,6 +2690,21 @@
     height: 8px;
     border-radius: 50%;
   }
+  /* "Not a newsletter?": a word in the line, in the accent, not a button's
+     box -- the snoozed banner's Unsnooze is the same kind of thing. */
+  .meta-link {
+    color: var(--journal-accent, var(--accent));
+    font-size: var(--text-xs);
+    font-weight: 600;
+  }
+  .meta-link:hover {
+    text-decoration: underline;
+  }
+  .meta-link.unsub {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
   .recent-actions {
     display: flex;
     gap: var(--sp-2);
@@ -2571,7 +2985,8 @@
   :global([data-phone]) .subject-block h1 {
     font-size: var(--text-lg);
   }
-  :global([data-phone]) .snoozed-banner .link {
+  :global([data-phone]) .snoozed-banner .link,
+  :global([data-phone]) .meta-link {
     min-height: 32px;
     padding: 0 var(--sp-1);
   }

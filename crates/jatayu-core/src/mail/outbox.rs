@@ -220,6 +220,7 @@ mod tests {
             },
             gmail: None,
             invite: None,
+            unsubscribe: None,
         }
     }
 

@@ -67,6 +67,7 @@ fn seed_thread(
         pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
         gmail: None,
         invite: None,
+        unsubscribe: None,
     };
     vault.ingest_mail(account, vec![IngestMessage { message, mailbox, uid }]).unwrap();
     thread_id

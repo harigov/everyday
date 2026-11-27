@@ -826,7 +826,7 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     when: () => anywhere() && inApp('mail')() && mailListShowing(),
     run: () => mail.checkAll(),
   },
-  // From here to `v`, each acts on every picked thread when there are
+  // From here to Mod+U, each acts on every picked thread when there are
   // some, and on the selected one otherwise -- see `mail.targets`.
   {
     keys: 'e',
@@ -911,6 +911,23 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     group: 'Mail',
     when: () => anywhere() && inApp('mail')() && mail.targets.length > 0,
     run: () => moveMenu(),
+  },
+  // Superhuman's key for it, and free here. Not while typing, like every
+  // chord without `whileTyping`: in a reply Mod+U is the editor's underline,
+  // which takes the key before this table sees it.
+  {
+    keys: 'mod+u',
+    label: 'Unsubscribe…',
+    group: 'Mail',
+    // Not in Sent or Drafts, whose conversations are the person's own words
+    // -- as the menus have it.
+    when: () =>
+      anywhere() &&
+      inApp('mail')() &&
+      mail.targets.length > 0 &&
+      mail.mailbox?.role !== 'sent' &&
+      mail.mailbox?.role !== 'drafts',
+    run: () => (mail.wantsUnsubscribe = mail.targets),
   },
   {
     keys: 'r',

@@ -437,14 +437,16 @@ const KNOWN_MISMATCHES: &[&str] = &[
     "add_health_reading",
     "delete_health_samples",
     "cancel_apple_import",
-    // Declares `Thread/Updated` with the clicked threads' own ids, but its
-    // body (`Vault::correct_mail_category`) never touches a `Thread` row at
-    // all: it rewrites the sender's `CategoryRules` (no `RecordKind` of its
-    // own) and sweeps `MailMessage.category` for every message from that
-    // sender, which can be a different, larger set than the threads a
-    // person actually clicked. The declared ids are the plan's own choice
-    // -- "as a batch, to that sender's existing threads" -- not a byproduct
-    // of what got written; see `set_thread_category`'s own doc.
+    // Declares `Thread/Updated` with the clicked threads' own ids, but most
+    // of what its body writes is not recorded against them: the sender sweep
+    // (`Vault::correct_mail_categories`) rewrites the senders' `CategoryRules`
+    // (no `RecordKind` of its own) and `MailMessage.category` for every
+    // message from them, which can be a different, larger set than the
+    // threads a person clicked; and `Vault::set_thread_category_by_hand`
+    // records a thread only when the sweep had not already moved it. The
+    // declared ids are the plan's own choice -- "as a batch, to that sender's
+    // existing threads" -- not a byproduct of what got written; see
+    // `set_thread_category`'s own doc.
     "set_thread_category",
     // Declares `Draft/Created` with no id at all -- unlike `new_journal`,
     // `new_task` and every other `new_*`, which are plain reads that mint a
@@ -471,6 +473,18 @@ const KNOWN_MISMATCHES: &[&str] = &[
     // is touched on that path, the same shape `seed_areas` already
     // documents above.
     "run_routine",
+    // The Feed's bulk commands declare `NewsSource/Deleted` for every id they
+    // were handed, and delete only some of them: both pass over an id that is
+    // gone already and the Newsletters source, which is never one to leave,
+    // and `mark_not_newsletters` leaves a web feed or a podcast where it is,
+    // since it is not a newsletter to say no to. The declared set is still
+    // the right thing to announce -- it is what the sidebar removed -- and
+    // which ids were passed over is only known once the sources are read.
+    // Mail that `mark_not_newsletters` re-files and the senders
+    // `unsubscribe_news_sources` asks raise their own `Thread` change by
+    // hand. See `domains::news`.
+    "unsubscribe_news_sources",
+    "mark_not_newsletters",
 ];
 
 /// Deserialise a command's arguments, saying which command and which field.

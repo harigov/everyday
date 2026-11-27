@@ -21,22 +21,26 @@
 //! and each of those is a button.
 
 use crate::command;
-use crate::ctx::Ctx;
+use crate::ctx::{Ctx, Scope};
 use crate::error::{CommandError, CommandResult, codes};
 use crate::events::{Change, Kind, Op};
+use crate::mail::unsubscribe::{self, Target, UnsubscribeOutcome};
 use crate::news::{FoundFeed, RefreshReport, canonical, extract, fetch, newsletters, refresh};
 use crate::service::{Service, blocking};
+use jatayu_core::id::AccountId;
 use jatayu_core::library::Item;
-use jatayu_core::mail::Category;
+use jatayu_core::mail::{Category, Message};
 use jatayu_core::news::opml::Outline;
 use jatayu_core::news::{
     HnList, NewsSource, NewsletterRef, PodcastSettings, SourceKind, SourceSummary, Story,
 };
+use jatayu_core::packstore::PackStore;
 use jatayu_core::store::library::ItemQuery;
 use jatayu_core::store::news::{StoryPage, StoryQuery};
 use jatayu_core::{ItemId, KindId, NewsSourceId, StoryId, Vault};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use super::Nothing;
@@ -502,7 +506,7 @@ async fn delete_news_source(svc: Arc<Service>, _ctx: Ctx, args: SourceRef) -> Co
     svc.on_vault(move |vault| {
         match vault.news_source(id) {
             Ok(NewsSource { found: true, kind: SourceKind::Mail { sender, name }, .. }) => {
-                turn_down(vault, &sender, &name)?;
+                turn_down(vault, &[NewsletterRef { sender, name }])?;
             }
             Ok(_) | Err(jatayu_core::Error::NotFound { .. }) => {}
             Err(e) => return Err(e),
@@ -515,18 +519,431 @@ async fn delete_news_source(svc: Arc<Service>, _ctx: Ctx, args: SourceRef) -> Co
     Ok(())
 }
 
-/// Put a newsletter on the list of those somebody said are not newsletters,
-/// so the Newsletters source does not find it again. Once: a sender and name
-/// already listed, whatever its case, are not listed twice.
-fn turn_down(vault: &Vault, sender: &str, name: &str) -> jatayu_core::Result<()> {
-    let mut settings = vault.feed_settings()?;
-    let (sender, name) = (sender.trim().to_lowercase(), name.trim().to_string());
-    let listed = settings
-        .not_newsletters
+// ---- leaving many at once -------------------------------------------------
+
+/// How many of a newsletter's newest messages are looked through for one
+/// whose header says how to leave its list. Only a few of them have their
+/// own bytes read for it ([`unsubscribe::MAX_READS`]); the rest are what
+/// their records kept.
+const UNSUBSCRIBE_CANDIDATES: usize = 20;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceIds {
+    pub ids: Vec<NewsSourceId>,
+}
+
+/// Stop getting each of `ids`: a newsletter's sender is asked to take this
+/// person off their list (see [`crate::mail::unsubscribe`]) and the source
+/// leaves the Feed, turned down so it is not found again; a web feed or a
+/// podcast is unfollowed. Needs `Mail` as well as `News` when any of them is
+/// a newsletter, since asking sends a request in the person's name.
+///
+/// An id that is not there any more is passed over, and so is the
+/// Newsletters source, which is every newsletter at once and never one to
+/// leave. The answer is one outcome for each newsletter in each account its
+/// mail reached; a web feed has nobody to ask, and gets none.
+///
+/// Everything asking needs is read before anything is deleted, since
+/// deleting a source takes the stories that say which mail it brought. The
+/// senders are asked next, and only then are the sources removed: a sender
+/// who refused is still a source gone, as the person asked, and their
+/// outcome says what is left for them to do.
+///
+/// A newsletter is turned down whether it was found or followed by hand,
+/// unlike [`delete_news_source`], which turns down only what was found:
+/// either way its mail goes on being filed under Newsletters for a while --
+/// issues already sent, and a followed sender's correction in Mail -- and
+/// with nothing left to claim it the Newsletters source would find it again.
+async fn unsubscribe_news_sources(
+    svc: Arc<Service>,
+    ctx: Ctx,
+    args: SourceIds,
+) -> CommandResult<Vec<UnsubscribeOutcome>> {
+    // The lock screen is not a place requests leave the machine from: see
+    // `domains::mailunsub`.
+    let vault = svc.require_unlocked()?;
+    let sources = {
+        let vault = vault.clone();
+        let ids = args.ids;
+        blocking(move || Ok(leavable(&vault, &ids)?)).await?
+    };
+    let letters: Vec<NewsSource> =
+        sources.iter().filter(|s| matches!(s.kind, SourceKind::Mail { .. })).cloned().collect();
+    if !letters.is_empty() {
+        ctx.require(Scope::Mail)?;
+    }
+
+    let Leaving { targets, mut unoffered, refused } = if letters.is_empty() {
+        Leaving::default()
+    } else {
+        let (asker, vault, packs) = (svc.clone(), vault.clone(), svc.packs());
+        blocking(move || ways_out(&asker, &vault, packs.as_deref(), &letters)).await?
+    };
+    let mut outcomes = unsubscribe::unsubscribe_all(&svc, &vault, targets).await;
+    outcomes.append(&mut unoffered);
+
+    let gone: Vec<NewsSourceId> = sources.iter().map(|s| s.id).collect();
+    remove_sources(&svc, &vault, gone, refused).await?;
+    // Mail says "you asked on ..." from the message each sender was asked
+    // from, which this command's own change says nothing about. Raised for
+    // every window, the one that asked included: its Mail is not its Feed.
+    if outcomes.iter().any(|o| o.done) {
+        svc.events().changed(Change::new(Kind::Thread, Op::Updated));
+    }
+    Ok(outcomes)
+}
+
+/// The sources among `ids` that can be left, in the sidebar's order: each
+/// once, passing over one that is not there any more and the Newsletters
+/// source.
+fn leavable(vault: &Vault, ids: &[NewsSourceId]) -> jatayu_core::Result<Vec<NewsSource>> {
+    let mut sources = vault.news_sources()?;
+    sources.retain(|s| ids.contains(&s.id) && !matches!(s.kind, SourceKind::Newsletters));
+    Ok(sources)
+}
+
+/// What leaving some newsletters needs, read before any of them is deleted.
+#[derive(Default)]
+struct Leaving {
+    /// The message whose header says how to leave each newsletter's list, in
+    /// each account its mail reached.
+    targets: Vec<Target>,
+    /// An outcome for each account where a newsletter's mail named no way
+    /// out, or for a newsletter with no mail left at all.
+    unoffered: Vec<UnsubscribeOutcome>,
+    /// What turning them down puts on the list of non-newsletters
+    /// ([`refusals`]).
+    refused: Vec<NewsletterRef>,
+}
+
+/// [`Leaving`] for each newsletter in `letters`.
+///
+/// Each target is named as the Feed names the newsletter, so the outcomes
+/// read as the sidebar did. Two newsletters whose mail names the very same
+/// way out in one account are one list: it is asked once, under both names,
+/// rather than sent the same email twice.
+///
+/// A newsletter with no mail left at all -- no story pointing at any, and
+/// nothing in the last ninety days -- is answered for under the first account
+/// with mail switched on, so the person hears that nothing could be asked
+/// rather than nothing at all. With no such account there is nobody to answer
+/// for, and it is only removed.
+fn ways_out(
+    svc: &Arc<Service>,
+    vault: &Vault,
+    packs: Option<&dyn PackStore>,
+    letters: &[NewsSource],
+) -> CommandResult<Leaving> {
+    let mail = newsletters::source_messages(svc, vault, letters, UNSUBSCRIBE_CANDIDATES)?;
+    let first_account: Option<AccountId> = if vault.supports_accounts() {
+        vault.accounts()?.into_iter().find(|a| a.services.mail).map(|a| a.id)
+    } else {
+        None
+    };
+    let mut targets: Vec<Target> = Vec::new();
+    let mut unoffered: Vec<UnsubscribeOutcome> = Vec::new();
+    let mut refused: Vec<NewsletterRef> = Vec::new();
+    for source in letters {
+        let SourceKind::Mail { sender, .. } = &source.kind else { continue };
+        let messages = mail.get(&source.id).map_or(&[][..], Vec::as_slice);
+        refused.extend(refusals(source, messages));
+        let label = source.title.trim();
+        if messages.is_empty() {
+            if let Some(account) = first_account {
+                unoffered.push(unsubscribe::nothing_offered(account, sender, label));
+            }
+            continue;
+        }
+        // Newest first within each account, as `first_target` wants them,
+        // and the accounts in the order their newest issue arrived.
+        let mut accounts: Vec<AccountId> = Vec::new();
+        for message in messages {
+            if !accounts.contains(&message.account_id) {
+                accounts.push(message.account_id);
+            }
+        }
+        for account in accounts {
+            let theirs: Vec<Message> =
+                messages.iter().filter(|m| m.account_id == account).cloned().collect();
+            let Some(mut target) =
+                unsubscribe::first_target(packs, &theirs, unsubscribe::MAX_READS)
+            else {
+                unoffered.push(unsubscribe::nothing_offered(account, sender, label));
+                continue;
+            };
+            let same = targets
+                .iter_mut()
+                .find(|t| t.account == target.account && t.header.links == target.header.links);
+            match same {
+                Some(same) => same.name = format!("{}, {label}", same.name),
+                None => {
+                    target.name = label.to_string();
+                    targets.push(target);
+                }
+            }
+        }
+    }
+    Ok(Leaving { targets, unoffered, refused })
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotNewsletters {
+    pub ids: Vec<NewsSourceId>,
+    /// Where their mail goes in Mail instead of Newsletters; left in
+    /// Newsletters when absent. Needs the `Mail` scope when given.
+    #[serde(default)]
+    pub category: Option<Category>,
+}
+
+/// "These are not newsletters": every newsletter among `ids` is turned down
+/// (in one save of the Feed's settings) and removed from the Feed, and, with
+/// `category`, its sender's mail is moved there in Mail -- unless another
+/// newsletter that stays in the Feed comes from the same address.
+///
+/// Anything among `ids` that is not a newsletter of one sender's -- a web
+/// feed, a podcast, the Newsletters source -- is left alone: none of them is
+/// what this is saying no to. A newsletter is turned down whether it was
+/// found or followed by hand, since the person says it is not one either way.
+///
+/// The `Mail` scope is asked for whenever a category is given, before
+/// anything is written, so a connection that may not touch Mail cannot get
+/// halfway.
+async fn mark_not_newsletters(
+    svc: Arc<Service>,
+    ctx: Ctx,
+    args: NotNewsletters,
+) -> CommandResult<NotNewslettersReport> {
+    let NotNewsletters { ids, category } = args;
+    if category.is_some() {
+        ctx.require(Scope::Mail)?;
+    }
+    let vault = svc.require()?;
+    let NotOnes { letters, kept, refused } = {
+        let (reader, vault) = (svc.clone(), vault.clone());
+        blocking(move || not_newsletters(&reader, &vault, &ids)).await?
+    };
+    let mut report = NotNewslettersReport { removed: letters.len() as u32, ..Default::default() };
+    if letters.is_empty() {
+        return Ok(report);
+    }
+    let gone: Vec<NewsSourceId> = letters.iter().map(|s| s.id).collect();
+    remove_sources(&svc, &vault, gone, refused).await?;
+
+    let Some(category) = category else { return Ok(report) };
+    let (moved, shared) = blocking(move || Ok(refile(&vault, &letters, &kept, category)?)).await?;
+    (report.moved, report.shared) = (moved, shared);
+    // Mail's lists are drawn from what moved, which this command's own change
+    // says nothing about. Raised for every window, the one that asked
+    // included: its Mail is not its Feed.
+    if moved > 0 {
+        svc.events().changed(Change::new(Kind::Thread, Op::Updated));
+    }
+    Ok(report)
+}
+
+/// What [`mark_not_newsletters`] did, so the interface says what happened
+/// rather than what was asked: mail stays put when another newsletter still
+/// comes from its address, or when nothing in Mail was theirs.
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotNewslettersReport {
+    /// How many newsletters left the Feed.
+    pub removed: u32,
+    /// How many of their messages moved to the category asked for in Mail.
+    pub moved: u32,
+    /// How many of them share an address with a newsletter that stays, so
+    /// their mail was left where it was.
+    pub shared: u32,
+}
+
+/// The newsletters somebody said are not, read before any is deleted.
+struct NotOnes {
+    /// The newsletters among the ids given.
+    letters: Vec<NewsSource>,
+    /// Every other newsletter, as it stands.
+    kept: Vec<NewsSource>,
+    /// What turning `letters` down puts on the list of non-newsletters.
+    refused: Vec<NewsletterRef>,
+}
+
+/// [`NotOnes`] for `ids`.
+fn not_newsletters(
+    svc: &Arc<Service>,
+    vault: &Vault,
+    ids: &[NewsSourceId],
+) -> CommandResult<NotOnes> {
+    let (letters, kept): (Vec<NewsSource>, Vec<NewsSource>) = vault
+        .news_sources()?
+        .into_iter()
+        .filter(|s| matches!(s.kind, SourceKind::Mail { .. }))
+        .partition(|s| ids.contains(&s.id));
+    // Only a sender followed as a whole needs its mail read, for the names it
+    // sent under; every other newsletter is one name already.
+    let wholes: Vec<NewsSource> = letters.iter().filter(|s| followed_whole(s)).cloned().collect();
+    let seen = if wholes.is_empty() {
+        HashMap::new()
+    } else {
+        newsletters::source_messages(svc, vault, &wholes, UNSUBSCRIBE_CANDIDATES)?
+    };
+    let refused: Vec<NewsletterRef> = letters
         .iter()
-        .any(|n| n.sender == sender && n.name.to_lowercase() == name.to_lowercase());
-    if !listed {
-        settings.not_newsletters.push(NewsletterRef { sender, name });
+        .flat_map(|s| refusals(s, seen.get(&s.id).map_or(&[][..], Vec::as_slice)))
+        .collect();
+    Ok(NotOnes { letters, kept, refused })
+}
+
+/// File the mail of every sender among `letters` that no newsletter in
+/// `kept` still claims under `category`, in every account with mail
+/// switched on -- nothing says which of them a sender writes to, as
+/// [`file_as_newsletter`] found -- with one sweep of each account for all of
+/// them. Returns how many messages moved, and how many of `letters` were
+/// left alone because a newsletter in `kept` still reads their address.
+///
+/// Mail files by address and the Feed by address and display name, so one
+/// address can be several newsletters: MIT Technology Review sends The
+/// Download and The Algorithm from one. Moving that address's mail because
+/// one of them is not a newsletter would move the other's too, while it is
+/// still in the Feed, so an address any remaining newsletter reads is left
+/// where it is. A remaining one that has been turned down claims nothing.
+///
+/// Over a correction already made, too: following a sender filed it as a
+/// newsletter, and the person now says otherwise.
+fn refile(
+    vault: &Vault,
+    letters: &[NewsSource],
+    kept: &[NewsSource],
+    category: Category,
+) -> jatayu_core::Result<(u32, u32)> {
+    if !vault.supports_accounts() || !vault.supports_mail() {
+        return Ok((0, 0));
+    }
+    let refused = vault.feed_settings()?.not_newsletters;
+    let turned_down = |sender: &str, name: &str| {
+        refused.iter().any(|n| n.sender == sender && n.name.trim().to_lowercase() == name)
+    };
+    let claimed: HashSet<String> = kept
+        .iter()
+        .filter_map(|s| match &s.kind {
+            SourceKind::Mail { sender, name } => {
+                let (sender, name) = (sender.trim().to_lowercase(), name.trim().to_lowercase());
+                (!turned_down(&sender, &name)).then_some(sender)
+            }
+            _ => None,
+        })
+        .collect();
+    let shared =
+        letters.iter().filter_map(newsletter_sender).filter(|s| claimed.contains(s)).count() as u32;
+    let senders: BTreeSet<String> = letters
+        .iter()
+        .filter_map(newsletter_sender)
+        .filter(|sender| !claimed.contains(sender))
+        .collect();
+    if senders.is_empty() {
+        return Ok((0, shared));
+    }
+    let corrections: Vec<(String, Category)> =
+        senders.into_iter().map(|sender| (sender, category)).collect();
+    let mut moved: u32 = 0;
+    for account in vault.accounts()?.into_iter().filter(|a| a.services.mail) {
+        moved = moved.saturating_add(vault.correct_mail_categories(account.id, &corrections)?);
+    }
+    Ok((moved, shared))
+}
+
+/// Take `gone` out of the Feed as [`delete_news_source`] does, having put
+/// `refused` on the list of non-newsletters first, in one save: a failure to
+/// write the list leaves every source where it was rather than gone and back
+/// with the next issue.
+async fn remove_sources(
+    svc: &Arc<Service>,
+    vault: &Arc<Vault>,
+    gone: Vec<NewsSourceId>,
+    refused: Vec<NewsletterRef>,
+) -> CommandResult<()> {
+    let listed = !refused.is_empty();
+    {
+        let (vault, gone) = (vault.clone(), gone.clone());
+        blocking(move || {
+            turn_down(&vault, &refused)?;
+            for id in gone {
+                vault.delete_news_source(id)?;
+            }
+            Ok(())
+        })
+        .await?;
+    }
+    for id in gone {
+        svc.news_recovered(id);
+    }
+    // Settings → Feed lists what has been turned down, and it is drawn from
+    // the settings record, which neither command's own change names.
+    if listed {
+        svc.events().changed(Change::new(Kind::Settings, Op::Updated));
+    }
+    Ok(())
+}
+
+/// The sender a newsletter of one sender's reads, lower-cased and trimmed;
+/// `None` for any other source.
+fn newsletter_sender(source: &NewsSource) -> Option<String> {
+    match &source.kind {
+        SourceKind::Mail { sender, .. } => Some(sender.trim().to_lowercase()),
+        _ => None,
+    }
+}
+
+/// A sender followed by hand as a whole, rather than one newsletter of
+/// theirs: it takes every display name they send under.
+fn followed_whole(source: &NewsSource) -> bool {
+    !source.found && matches!(&source.kind, SourceKind::Mail { name, .. } if name.trim().is_empty())
+}
+
+/// What turning `source` down puts on the list of non-newsletters: its
+/// sender and name -- and, for a sender followed as a whole, each display
+/// name `messages` came under as well. A name turned down is matched exactly,
+/// so with the source gone the Newsletters source would otherwise find each
+/// of those again, as a newsletter of its own, with the next issue.
+fn refusals(source: &NewsSource, messages: &[Message]) -> Vec<NewsletterRef> {
+    let SourceKind::Mail { sender, name } = &source.kind else { return Vec::new() };
+    let mut refs = vec![NewsletterRef { sender: sender.clone(), name: name.clone() }];
+    if followed_whole(source) {
+        for message in messages {
+            let shown = message.from.name.trim();
+            let listed = refs.iter().any(|r| r.name.to_lowercase() == shown.to_lowercase());
+            if !shown.is_empty() && !listed {
+                refs.push(NewsletterRef { sender: sender.clone(), name: shown.to_string() });
+            }
+        }
+    }
+    refs
+}
+
+/// Put newsletters on the list of those somebody said are not newsletters,
+/// so the Newsletters source does not find them again -- in one save of the
+/// Feed's settings however many there are, since the Settings page saves the
+/// same record and a save for each would race it. Once: a sender and name
+/// already listed, whatever its case, are not listed twice, and nothing is
+/// saved when every one of them already was.
+fn turn_down(vault: &Vault, refs: &[NewsletterRef]) -> jatayu_core::Result<()> {
+    if refs.is_empty() {
+        return Ok(());
+    }
+    let mut settings = vault.feed_settings()?;
+    let before = settings.not_newsletters.len();
+    for newsletter in refs {
+        let sender = newsletter.sender.trim().to_lowercase();
+        let name = newsletter.name.trim().to_string();
+        let listed = settings
+            .not_newsletters
+            .iter()
+            .any(|n| n.sender == sender && n.name.to_lowercase() == name.to_lowercase());
+        if !listed {
+            settings.not_newsletters.push(NewsletterRef { sender, name });
+        }
+    }
+    if settings.not_newsletters.len() != before {
         vault.save_feed_settings(&settings)?;
     }
     Ok(())
@@ -990,6 +1407,22 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: SourceRef, returns: "void",
         signature: &[("id", "NewsSourceId", true)],
         run: delete_news_source,
+    },
+    command! {
+        name: "unsubscribe_news_sources", scope: News, effect: Destructive,
+        change: NewsSource / Deleted,
+        ids: |a: &SourceIds| a.ids.iter().map(|id| id.to_string()).collect(),
+        args: SourceIds, returns: "UnsubscribeOutcome[]",
+        signature: &[("ids", "NewsSourceId[]", true)],
+        run: unsubscribe_news_sources,
+    },
+    command! {
+        name: "mark_not_newsletters", scope: News, effect: Destructive,
+        change: NewsSource / Deleted,
+        ids: |a: &NotNewsletters| a.ids.iter().map(|id| id.to_string()).collect(),
+        args: NotNewsletters, returns: "NotNewslettersReport",
+        signature: &[("ids", "NewsSourceId[]", true), ("category", "MailCategory | null", false)],
+        run: mark_not_newsletters,
     },
     command! {
         name: "list_stories", scope: News, effect: Read,

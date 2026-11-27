@@ -200,6 +200,7 @@ mod mail_route_tests {
             invite: None,
             pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
             gmail: None,
+            unsubscribe: None,
         };
         vault
             .ingest_mail(account, vec![IngestMessage { message, mailbox: mailbox.id, uid: 1 }])

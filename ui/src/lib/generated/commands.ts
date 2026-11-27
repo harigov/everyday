@@ -224,6 +224,7 @@ import type {
   NewsSource,
   NewsSourceId,
   NewsletterSender,
+  NotNewslettersReport,
   Note,
   NoteId,
   NoteQuery,
@@ -310,6 +311,7 @@ import type {
   SearchMailResult,
   SearchRequest,
   SearchResult,
+  SenderRef,
   SeriesQuery,
   SeriesResult,
   SeriesScope,
@@ -357,6 +359,8 @@ import type {
   TxnPage,
   TxnPatch,
   TxnQuery,
+  UnsubscribeOffer,
+  UnsubscribeOutcome,
   UploadTicket,
   VaultStatus,
   VerificationAnswer,
@@ -833,6 +837,10 @@ export interface Commands {
   mailWriting: { args: Record<string, never>; result: MailWriting }
   markAllStoriesRead: { args: { sources: NewsSourceId[]; upTo: string }; result: StoryId[] }
   markJobsSeen: { args: { ids?: JobId[] }; result: void }
+  markNotNewsletters: {
+    args: { ids: NewsSourceId[]; category?: MailCategory | null }
+    result: NotNewslettersReport
+  }
   markProposalsSeen: { args: { ids?: ProposalId[] }; result: void }
   markRead: { args: { threads: ThreadId[] }; result: Op[] }
   markRunsSeen: { args: { ids?: RoutineRunId[] }; result: void }
@@ -1172,6 +1180,7 @@ export interface Commands {
   setModelKey: { args: { tier: ModelSlot; key: string }; result: ModelSettingsView }
   setPronunciation: { args: { word: string; say: string }; result: AgentSettings }
   setQuickAsk: { args: { name: string; on: boolean }; result: QuickAskRow[] }
+  setSenderCategory: { args: { senders: SenderRef[]; category: MailCategory }; result: number }
   setThisComputer: { args: { on: boolean }; result: void }
   setThreadCategory: { args: { threads: ThreadId[]; category: MailCategory }; result: void }
   setThreadPriority: { args: { threads: ThreadId[]; priority: boolean }; result: void }
@@ -1236,6 +1245,12 @@ export interface Commands {
   unsnooze: { args: { threads: ThreadId[] }; result: void }
   unstackFiles: { args: { ids: string[] }; result: void }
   unstar: { args: { threads: ThreadId[] }; result: Op[] }
+  unsubscribe: {
+    args: { threads: ThreadId[]; senders?: string[] | null }
+    result: UnsubscribeOutcome[]
+  }
+  unsubscribeNewsSources: { args: { ids: NewsSourceId[] }; result: UnsubscribeOutcome[] }
+  unsubscribeOffer: { args: { thread: ThreadId }; result: UnsubscribeOffer | null }
   untrustSite: { args: { site: string }; result: AgentSettings }
   updateConnection: { args: { connection: McpConnection }; result: ConnectionView }
   updateEvent: { args: { id: EventId; draft: EventDraft; scope?: EventScope }; result: void }
@@ -1553,6 +1568,7 @@ export const COMMAND_NAMES = {
   mailWriting: 'mail_writing',
   markAllStoriesRead: 'mark_all_stories_read',
   markJobsSeen: 'mark_jobs_seen',
+  markNotNewsletters: 'mark_not_newsletters',
   markProposalsSeen: 'mark_proposals_seen',
   markRead: 'mark_read',
   markRunsSeen: 'mark_runs_seen',
@@ -1766,6 +1782,7 @@ export const COMMAND_NAMES = {
   setModelKey: 'set_model_key',
   setPronunciation: 'set_pronunciation',
   setQuickAsk: 'set_quick_ask',
+  setSenderCategory: 'set_sender_category',
   setThisComputer: 'set_this_computer',
   setThreadCategory: 'set_thread_category',
   setThreadPriority: 'set_thread_priority',
@@ -1821,6 +1838,9 @@ export const COMMAND_NAMES = {
   unsnooze: 'unsnooze',
   unstackFiles: 'unstack_files',
   unstar: 'unstar',
+  unsubscribe: 'unsubscribe',
+  unsubscribeNewsSources: 'unsubscribe_news_sources',
+  unsubscribeOffer: 'unsubscribe_offer',
   untrustSite: 'untrust_site',
   updateConnection: 'update_connection',
   updateEvent: 'update_event',
@@ -2148,6 +2168,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'mail_writing',
   'mark_all_stories_read',
   'mark_jobs_seen',
+  'mark_not_newsletters',
   'mark_proposals_seen',
   'mark_read',
   'mark_runs_seen',
@@ -2360,6 +2381,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'set_model_key',
   'set_pronunciation',
   'set_quick_ask',
+  'set_sender_category',
   'set_this_computer',
   'set_thread_category',
   'set_thread_priority',
@@ -2415,6 +2437,9 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'unsnooze',
   'unstack_files',
   'unstar',
+  'unsubscribe',
+  'unsubscribe_news_sources',
+  'unsubscribe_offer',
   'untrust_site',
   'update_connection',
   'update_event',
@@ -2586,6 +2611,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'log_reading',
   'mark_all_stories_read',
   'mark_jobs_seen',
+  'mark_not_newsletters',
   'mark_proposals_seen',
   'mark_read',
   'mark_runs_seen',
@@ -2715,6 +2741,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'set_model_key',
   'set_pronunciation',
   'set_quick_ask',
+  'set_sender_category',
   'set_this_computer',
   'set_thread_category',
   'set_thread_priority',
@@ -2752,6 +2779,8 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'unsnooze',
   'unstack_files',
   'unstar',
+  'unsubscribe',
+  'unsubscribe_news_sources',
   'untrust_site',
   'update_connection',
   'update_event',
@@ -2888,6 +2917,7 @@ export const CHANGE_KINDS = {
   log_reading: 'reading',
   mark_all_stories_read: 'story',
   mark_jobs_seen: 'job',
+  mark_not_newsletters: 'newsSource',
   mark_proposals_seen: 'proposal',
   mark_read: 'thread',
   mark_runs_seen: 'routineRun',
@@ -3004,6 +3034,7 @@ export const CHANGE_KINDS = {
   set_model_key: 'settings',
   set_pronunciation: 'settings',
   set_quick_ask: 'settings',
+  set_sender_category: 'thread',
   set_this_computer: 'calendar',
   set_thread_category: 'thread',
   set_thread_priority: 'thread',
@@ -3029,6 +3060,8 @@ export const CHANGE_KINDS = {
   unsnooze: 'thread',
   unstack_files: 'file',
   unstar: 'thread',
+  unsubscribe: 'thread',
+  unsubscribe_news_sources: 'newsSource',
   untrust_site: 'settings',
   update_connection: 'settings',
   update_event: 'event',

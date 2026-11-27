@@ -399,6 +399,14 @@ export const ICONS = {
   // is the tray a thing lands in rather than the thing itself.
   mail: '<rect width="18" height="14" x="3" y="5" rx="2.5"/>' + '<path d="m4 7 8 6 8-6"/>',
 
+  // Lucide's "mail-x" on `mail`'s own envelope: the corner left open for a
+  // cross, for unsubscribing -- no more of this mail, rather than "delete".
+  'mail-x':
+    '<path d="M21 12.5v-5A2.5 2.5 0 0 0 18.5 5h-13A2.5 2.5 0 0 0 3 7.5v9"/>' +
+    '<path d="M3 16.5A2.5 2.5 0 0 0 5.5 19H13"/>' +
+    '<path d="m4 7 8 6 8-6"/>' +
+    '<path d="m17 16 4 4"/><path d="m21 16-4 4"/>',
+
   // ── Feed ───────────────────────────────────────────────────────────────
 
   // Lucide's "rss": two arcs spreading from a dot, the mark every feed reader

@@ -489,6 +489,18 @@
       ]
     },
     {
+      "command": "set_sender_category",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "thread",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
       "command": "set_thread_priority",
       "events": [
         {
@@ -3090,6 +3102,10 @@
     {
       "name": "transcribe_file",
       "reason": "starts background work that needs a speech model"
+    },
+    {
+      "name": "unsubscribe",
+      "reason": "asks a sender's server, or queues mail to them"
     },
     {
       "name": "update_event",

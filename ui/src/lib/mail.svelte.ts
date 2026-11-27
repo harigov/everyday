@@ -91,6 +91,8 @@ import type {
   ThreadFilter,
   ThreadId,
   ThreadPage,
+  UnsubscribeOffer,
+  UnsubscribeOutcome,
 } from './types'
 
 /** How long an unread recount waits after the last optimistic action before
@@ -229,6 +231,10 @@ class MailState {
   /** The Trash or Spam "Empty" is asking about: one account's, or an "All
    *  accounts" row. */
   wantsEmpty = $state<Mailbox | null>(null)
+  /** The threads whose senders the unsubscribe question is about -- one, or
+   *  every thread picked. Raised by a row's menu, the bulk bar or Mod+U, and
+   *  taken by `MailView`, which asks before anybody is written to. */
+  wantsUnsubscribe = $state<ThreadId[] | null>(null)
   /**
    * The list of sends `MailView`'s list column is showing in place of a
    * mailbox's threads, or `null`: one account's Scheduled, or the Outbox --
@@ -278,6 +284,15 @@ class MailState {
   loadingMore = $state(false)
   loading = $state(false)
   openThread = $state<ThreadDetail | null>(null)
+  /**
+   * `unsubscribe_offer`'s last answer, kept with the thread it was asked
+   * for, so a thread opened since never wears the one before's button for
+   * the moment its own answer is on its way. Read through `openOffer`.
+   */
+  #offer = $state.raw<{ thread: ThreadId; offer: UnsubscribeOffer | null } | null>(null)
+  /** Bumped by every ask and every close, so an answer overtaken by either
+   *  is dropped rather than drawn. */
+  #offerAsk = 0
   /** Unread count per mailbox, refreshed after any action that could move
    *  one. Approximate at scale -- see the module doc -- fine at a mailbox's
    *  worth of mock data. */
@@ -349,6 +364,9 @@ class MailState {
     this.wantsLabel = null
     this.wantsForever = null
     this.wantsEmpty = null
+    this.wantsUnsubscribe = null
+    this.#offer = null
+    this.#offerAsk += 1
     this.sendsView = null
     this.summary = null
     if (this.#undoTimer) clearInterval(this.#undoTimer)
@@ -982,6 +1000,9 @@ class MailState {
     this.#listPicked = false
     this.#openVersion++
     this.summary = null
+    // Asked beside the thread rather than after it: the toolbar's Unsubscribe
+    // can then be there as soon as the thread is.
+    void this.#loadOffer(id)
     // Opening one thread is leaving the many behind -- see `checked`.
     this.clearChecked()
     this.#anchor = id
@@ -1071,6 +1092,36 @@ class MailState {
     this.selectedThread = null
     this.openThread = null
     this.summary = null
+    this.#offer = null
+    this.#offerAsk += 1
+  }
+
+  /**
+   * How unsubscribing from the open thread's sender would go, or `null`:
+   * nothing open, its mail names no way out, or the answer has not come
+   * yet. Only ever the open thread's own -- see `#offer`.
+   */
+  get openOffer(): UnsubscribeOffer | null {
+    const open = this.openThread?.thread.id
+    const held = this.#offer
+    return open && held?.thread === open ? held.offer : null
+  }
+
+  /**
+   * Ask what unsubscribing from `id`'s sender would do, for the toolbar.
+   * Quiet on failure: the button is an extra, and a thread that cannot say
+   * is read just the same. An answer for a thread somebody has since left
+   * is dropped.
+   */
+  async #loadOffer(id: ThreadId): Promise<void> {
+    const ask = ++this.#offerAsk
+    try {
+      const offer = await mailApi.unsubscribeOffer(id)
+      if (ask !== this.#offerAsk || this.selectedThread !== id) return
+      this.#offer = { thread: id, offer }
+    } catch (e) {
+      await quietly(e)
+    }
   }
 
   /** Whichever list is on screen, in the order it is drawn -- see
@@ -1748,14 +1799,74 @@ class MailState {
     return this.setCategoryForMany([id], category)
   }
   setCategoryForMany(ids: readonly ThreadId[], category: MailCategory) {
-    return this.#act(ids, { category }, (t) => mailApi.setThreadCategory(t, category))
+    return this.moveToCategory(ids, category)
+  }
+
+  /**
+   * File these threads under `category` -- a standing rule for each one's
+   * sender, as `set_thread_category` always is, so their other mail and
+   * their new mail go there too. Answers whether it went.
+   *
+   * In a tab that is not `category`, the rows leave the list at once, the
+   * way an archive takes them out of the Inbox, and come back where they
+   * were if it fails: patched in place, a thread moved out of Newsletters
+   * went on being listed under Newsletters until the next reload. Anywhere
+   * else -- All, a search, a mailbox with no tabs -- the row stays and says
+   * where it went. The tabs' counts are read again either way.
+   */
+  async moveToCategory(ids: readonly ThreadId[], category: MailCategory): Promise<boolean> {
+    const unique = [...new Set(ids)]
+    if (unique.length === 0) return false
+    const tab = mailboxHasTabs(this.mailbox) && !this.searchQuery.trim() ? this.category : null
+    let ok = false
+    const call = async (t: ThreadId[]) => {
+      await mailApi.setThreadCategory(t, category)
+      ok = true
+    }
+    if (tab !== null && tab !== category) await this.#remove(unique, call)
+    else await this.#act(unique, { category }, call)
+    void this.refreshCategoryCounts()
+    return ok
+  }
+
+  /**
+   * Ask the senders of these threads to take the person off their lists --
+   * only `senders` among them when given, the one an offer named -- and with
+   * `archive`, archive the threads afterwards, with archiving's own Undo.
+   * One outcome per sender, for the caller to say how it went and to open
+   * any page left to finish; empty, having said why, when the ask itself
+   * failed, in which case nothing is archived either.
+   *
+   * The open thread's offer is asked for again when it was among them, so
+   * its button turns to "Unsubscribed".
+   */
+  async unsubscribeThreads(
+    ids: readonly ThreadId[],
+    opts: { archive?: boolean; senders?: string[] } = {},
+  ): Promise<UnsubscribeOutcome[]> {
+    const unique = [...new Set(ids)]
+    if (unique.length === 0) return []
+    let outcomes: UnsubscribeOutcome[]
+    try {
+      outcomes = await mailApi.unsubscribe(unique, opts.senders ?? null)
+    } catch (e) {
+      await handle(e)
+      return []
+    }
+    if (opts.archive) {
+      await this.archiveMany(unique)
+    } else {
+      const open = this.openThread?.thread.id
+      if (open && unique.includes(open)) void this.#loadOffer(open)
+    }
+    return outcomes
   }
 
   /**
    * `!`: flag or unflag this one thread as priority -- never the standing
    * per-sender rule `setCategoryFor(id, 'priority')` is. Patches the same
-   * `category` field `setCategoryFor` does, and so leaves a row on screen
-   * exactly the way that one already does -- see its own TODO(p) above.
+   * `category` field `setCategoryFor` does, in place even in a tab: a flag
+   * is a mark on the row, where a sender's rule files their mail away.
    */
   setPriority(id: ThreadId, on: boolean) {
     return this.setPriorityMany([id], on)
@@ -2436,6 +2547,9 @@ class MailState {
     this.openThread = detail
     const arrived = messages.filter((m) => !known.has(m.id))
     if (arrived.length === 0) return
+    // The offer is read off the newest message from the sender, which may
+    // be the one that just came.
+    void this.#loadOffer(detail.thread.id)
     this.expanded = new Set([...this.expanded, ...arrived.map((m) => m.id)])
     if (detail.thread.unreadCount > 0) {
       this.#unseenIn = detail.thread.id

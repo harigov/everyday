@@ -34,6 +34,7 @@ pub fn run_mail_suite(store: &dyn JournalStore) {
     an_op_held_back_by_its_elder_waits_for_the_elders_time(store);
     due_unthreaded_ops_leave_out_every_thread_op(store);
     optimistic_writes_and_snooze_round_trip(store);
+    an_unsubscribe_header_is_set_on_its_own(store);
     draft_round_trips(store);
     a_uidvalidity_reset_forgets_uids_but_keeps_messages(store);
     merge_threads_migrates_messages_and_deletes_the_others(store);
@@ -44,6 +45,7 @@ pub fn run_mail_suite(store: &dyn JournalStore) {
     html_stored_before_the_rename_reads_in_the_current_scheme(store);
     category_rules_and_recategorize_round_trip(store);
     correction_reaches_only_the_named_sender(store);
+    corrections_for_several_senders_are_one_sweep(store);
     a_model_set_category_survives_the_backfill(store);
     a_persons_own_mark_outranks_the_model_and_the_backfill(store);
     priority_asked_marker_round_trips(store);
@@ -128,6 +130,7 @@ fn message(
         pack: MailPackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
         gmail: None,
         invite: None,
+        unsubscribe: None,
     }
 }
 
@@ -714,6 +717,66 @@ fn optimistic_writes_and_snooze_round_trip(store: &dyn JournalStore) {
     cleanup_account(store, account);
 }
 
+/// [`MailStore::set_message_unsubscribe`]: what a message keeps of its
+/// `List-Unsubscribe` header is set, replaced and cleared by message id, and
+/// nothing else about the message -- its category and where it came from,
+/// its flags, its labels -- moves with it, since an unsubscribe stamps
+/// `asked_at` long after a person or a model may have refiled or read it.
+fn an_unsubscribe_header_is_set_on_its_own(store: &dyn JournalStore) {
+    use crate::mail::{Category, ListUnsubscribe};
+
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&inbox).unwrap();
+
+    let thread_id = ThreadId::new();
+    let mut msg = message(account, thread_id, "Weekly", "news@example.com", Timestamp::now());
+    msg.category = Some(Category::Newsletter);
+    msg.labels = vec!["Reading".into()];
+    m.ingest(account, vec![IngestMessage { message: msg.clone(), mailbox: inbox.id, uid: 1 }])
+        .unwrap();
+    m.set_message_category_with_source(msg.id, Category::Other, CategorySource::Person).unwrap();
+    let mut flags = msg.flags;
+    flags.seen = true;
+    m.set_message_flags(msg.id, flags).unwrap();
+    let before = m.get_message(msg.id).unwrap();
+    assert_eq!(before.unsubscribe, None, "nothing kept until something is set");
+
+    let header = ListUnsubscribe {
+        links: vec![
+            "mailto:leave@example.com?subject=unsubscribe".into(),
+            "https://example.com/u/abc".into(),
+        ],
+        one_click: true,
+        asked_at: None,
+    };
+    m.set_message_unsubscribe(msg.id, Some(header.clone())).unwrap();
+    let after = m.get_message(msg.id).unwrap();
+    assert_eq!(after.unsubscribe.as_ref(), Some(&header));
+    let mut expected = before.clone();
+    expected.unsubscribe = Some(header.clone());
+    assert_eq!(after, expected, "only the header changed");
+    let (thread, _) = m.thread(thread_id).unwrap();
+    assert_eq!(thread.category, Some(Category::Other), "the thread is filed where it was");
+    assert_eq!(thread.unread_count, 0);
+
+    // Asking the sender stamps `asked_at` over the header already kept.
+    let asked = ListUnsubscribe { asked_at: Some(Timestamp::now()), ..header };
+    m.set_message_unsubscribe(msg.id, Some(asked.clone())).unwrap();
+    let (_, messages) = m.thread(thread_id).unwrap();
+    assert_eq!(messages[0].unsubscribe.as_ref(), Some(&asked));
+    assert_eq!(messages[0].category_source, CategorySource::Person);
+
+    m.set_message_unsubscribe(msg.id, None).unwrap();
+    assert_eq!(m.get_message(msg.id).unwrap(), before, "cleared, the message is as it was");
+
+    // A message id this store has never ingested is a no-op, not an error.
+    m.set_message_unsubscribe(MailMessageId::new(), Some(asked)).unwrap();
+
+    cleanup_account(store, account);
+}
+
 fn draft_round_trips(store: &dyn JournalStore) {
     let m = mail_store(store);
     let account = AccountId::new();
@@ -1209,6 +1272,78 @@ fn correction_reaches_only_the_named_sender(store: &dyn JournalStore) {
         m.get_message(msg_b.id).unwrap().category,
         Some(Category::Newsletter),
         "a correction on sender A must never reach sender B's mail"
+    );
+
+    cleanup_account(store, account);
+}
+
+/// [`MailStore::correct_categories`]: several corrections in one sweep,
+/// each message given the category of the one that names its sender the
+/// way [`crate::mail::CategoryRules::for_sender`] would -- an exact address
+/// before a domain whatever their order, and the last of two for the same
+/// sender -- stamped [`CategorySource::Person`], with every sender none of
+/// them names left exactly as it was. An empty list changes nothing.
+fn corrections_for_several_senders_are_one_sweep(store: &dyn JournalStore) {
+    use crate::mail::{Category, CategoryMatch};
+
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    let now = Timestamp::now();
+    let mut uid = 0;
+    let mut seed = |from: &str| {
+        uid += 1;
+        let mut msg = message(account, ThreadId::new(), "Weekly", from, now);
+        msg.category = Some(Category::Newsletter);
+        m.ingest(account, vec![IngestMessage { message: msg.clone(), mailbox: mailbox.id, uid }])
+            .unwrap();
+        msg
+    };
+    let plain = seed("plain@lists.example");
+    // Stored as the sender wrote it; a correction names it lower-cased.
+    let twice = seed("Twice@Lists.Example");
+    let by_domain = seed("anyone@shop.example");
+    let exact = seed("orders@shop.example");
+    let untouched = seed("keep@lists.example");
+
+    assert_eq!(m.correct_categories(account, &[]).unwrap(), 0, "nothing to correct");
+    assert_eq!(m.get_message(plain.id).unwrap().category, Some(Category::Newsletter));
+
+    let corrections = [
+        (CategoryMatch::Sender("plain@lists.example".into()), Category::Other),
+        (CategoryMatch::Sender("twice@lists.example".into()), Category::Notification),
+        (CategoryMatch::Sender("orders@shop.example".into()), Category::Other),
+        // After the exact address above, and still not what that address
+        // gets: an exact address always beats a domain.
+        (CategoryMatch::Domain("shop.example".into()), Category::Important),
+        // The second correction for the same sender is the one that holds.
+        (CategoryMatch::Sender("twice@lists.example".into()), Category::Important),
+    ];
+    let changed = m.correct_categories(account, &corrections).unwrap();
+    assert_eq!(changed, 4, "every named sender's one message, and nobody else's");
+
+    for (msg, category) in [
+        (&plain, Category::Other),
+        (&twice, Category::Important),
+        (&by_domain, Category::Important),
+        (&exact, Category::Other),
+    ] {
+        let stored = m.get_message(msg.id).unwrap();
+        assert_eq!(stored.category, Some(category), "{}", msg.from.email);
+        assert_eq!(stored.category_source, CategorySource::Person, "{}", msg.from.email);
+        let (thread, _) = m.thread(msg.thread_id).unwrap();
+        assert_eq!(thread.category, Some(category), "the thread follows: {}", msg.from.email);
+    }
+    let kept = m.get_message(untouched.id).unwrap();
+    assert_eq!(kept.category, Some(Category::Newsletter), "a sender nobody named stays put");
+    assert_eq!(kept.category_source, CategorySource::Rules);
+
+    assert_eq!(
+        m.correct_categories(account, &corrections).unwrap(),
+        0,
+        "the same corrections again find everything already where they put it"
     );
 
     cleanup_account(store, account);

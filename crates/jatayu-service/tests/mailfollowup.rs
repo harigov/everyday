@@ -532,6 +532,7 @@ fn mail(
             len: 1,
         },
         gmail: None,
+        unsubscribe: None,
     }
 }
 

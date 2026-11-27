@@ -14,21 +14,25 @@
 // between two modules that both construct things when they load.
 
 import type { FeedFilter, FeedFolder, FeedScope, FeedSort } from './feed.svelte'
-import { friendlyDate } from './format'
+import { friendlyDate, plural } from './format'
 import type { IconName } from './icons'
 import { episodeProgress, type EpisodeProgress } from './podcast'
 import { isoDate } from './time'
 import type { ArticleType } from './reading'
+import { summarize } from './unsubscribe'
 import type {
   Consumption,
   FeedKind,
   FeedSettings,
   HnList,
+  MailCategory,
   NewsSource,
   NewsSourceId,
+  NotNewslettersReport,
   RankingStatus,
   SourceSummary,
   Story,
+  UnsubscribeOutcome,
 } from './types'
 
 // ── Words ────────────────────────────────────────────────────────────────
@@ -372,6 +376,173 @@ export function unfollowDetail(source: NewsSource): string {
         ? 'Episodes already downloaded stay in your files, and so does anything you added to the Library.'
         : 'Anything you added to the Library stays there.'
   return `Its stories are removed from this device, saved ones included. ${kept}`
+}
+
+// ── Stopping several at once ─────────────────────────────────────────────
+//
+// The sidebar can pick sources and do one of two things to all of them:
+// unsubscribe -- each newsletter's sender is asked to take you off the list,
+// and each feed or show is unfollowed -- or say that newsletters are not
+// newsletters, which the Feed gets wrong often enough to need saying in bulk.
+// A source's own menu and settings ask the same questions about one, in the
+// same words, so one and many behave alike.
+
+/** Mail's tabs, by the names they have there: where a newsletter's emails can be moved. */
+const MAIL_TABS: Record<MailCategory, string> = {
+  priority: 'Priority',
+  important: 'Important',
+  other: 'Other',
+  newsletter: 'Newsletters',
+  notification: 'Notifications',
+}
+
+/**
+ * Can this source be picked? Every one but the Newsletters source, which is
+ * how newsletters are found rather than one of them: it has no sender to ask,
+ * and saying it is not a newsletter would mean nothing.
+ */
+export function isPickable(source: NewsSource): boolean {
+  return source.kind.type !== 'newsletters'
+}
+
+/** How many of `sources` are one sender's newsletter, and how many are feeds or shows. */
+function countKinds(sources: readonly NewsSource[]): { letters: number; others: number } {
+  const letters = sources.filter((s) => s.kind.type === 'mail').length
+  return { letters, others: sources.length - letters }
+}
+
+/**
+ * What the button that unsubscribes from `sources` says: a newsletter is
+ * unsubscribed from, and feeds and shows on their own are only unfollowed.
+ */
+export function unsubscribeVerb(sources: readonly NewsSource[]): 'Unsubscribe' | 'Unfollow' {
+  return countKinds(sources).letters > 0 ? 'Unsubscribe' : 'Unfollow'
+}
+
+/** The question before unsubscribing from `sources`. One is named. */
+export function unsubscribeTitle(sources: readonly NewsSource[]): string {
+  const { letters, others } = countKinds(sources)
+  const [only] = sources
+  if (sources.length === 1 && only) {
+    const name = `“${sourceLabel(only)}”`
+    return letters > 0 ? `Unsubscribe from ${name}?` : `Unfollow ${name}?`
+  }
+  if (letters === 0) return `Unfollow ${plural(others, 'source')}?`
+  return `Unsubscribe from ${plural(sources.length, others === 0 ? 'newsletter' : 'source')}?`
+}
+
+/**
+ * What unsubscribing from `sources` will do, said before anybody is asked.
+ *
+ * Not how each sender is asked -- a request, an email from your address or a
+ * page to finish in the browser -- which is the service's to choose and each
+ * outcome's to say afterwards.
+ */
+export function unsubscribeDetail(sources: readonly NewsSource[]): string {
+  const { letters, others } = countKinds(sources)
+  const said: string[] = []
+  if (letters > 0) said.push(askedSentence(letters, others === 0))
+  if (others > 0) said.push(unfollowedSentence(others, letters === 0))
+  if (letters > 0) said.push('Emails you already have stay in Mail.')
+  return said.join(' ')
+}
+
+/** What happens to `count` newsletters; `alone` when nothing else was picked with them. */
+function askedSentence(count: number, alone: boolean): string {
+  if (count === 1) {
+    const who = alone ? 'Its sender' : 'The newsletter’s sender'
+    return `${who} is asked to take you off the list, and it leaves the Feed.`
+  }
+  const who = alone ? 'Their senders' : 'The newsletters’ senders'
+  return `${who} are asked to take you off their lists, and they leave the Feed.`
+}
+
+/** What happens to `count` feeds and shows; `alone` when no newsletter was picked with them. */
+function unfollowedSentence(count: number, alone: boolean): string {
+  if (count === 1) {
+    const what = alone ? 'It is' : 'The other source is'
+    return `${what} unfollowed, and its stories are removed from this device, saved ones included.`
+  }
+  const what = alone ? 'They are' : 'The other sources are'
+  return `${what} unfollowed, and their stories are removed from this device, saved ones included.`
+}
+
+/**
+ * What the toast says once `newsletters` newsletters have been unsubscribed
+ * from and `unfollowed` feeds and shows unfollowed: how the asking went, in
+ * the words Mail uses for it, and the unfollowing after that.
+ */
+export function unsubscribedNote(
+  outcomes: readonly UnsubscribeOutcome[],
+  newsletters: number,
+  unfollowed: number,
+): { title: string; body?: string; ok: boolean } {
+  if (newsletters === 0) return { title: `Unfollowed ${plural(unfollowed, 'source')}`, ok: true }
+  const said = summarize(outcomes)
+  if (unfollowed === 0) return said
+  const also = `Also unfollowed ${plural(unfollowed, 'other source')}.`
+  return { ...said, body: said.body ? `${said.body} ${also}` : also }
+}
+
+/** The question before saying the newsletters named are not newsletters. One is named. */
+export function notNewslettersTitle(names: readonly string[]): string {
+  const [only] = names
+  if (names.length === 1 && only !== undefined) return `“${only}” isn’t a newsletter?`
+  return `${plural(names.length, 'source')} aren’t newsletters?`
+}
+
+/** What saying `count` newsletters are not newsletters does, before choosing where emails go. */
+export function notNewslettersDetail(count: number): string {
+  return count === 1
+    ? NOT_NEWSLETTER_DETAIL
+    : 'They go from the Feed and will not be found again. Their emails stay in Mail.'
+}
+
+/** One answer to "not newsletters?": where their emails go in Mail, `null` for nowhere. */
+export interface NotNewsletterChoice {
+  label: string
+  category: MailCategory | null
+}
+
+/**
+ * The answers to "not newsletters?". Their emails move out of Mail's
+ * Newsletters to Other or Important, or stay where they are: the Feed lets
+ * them go either way, and only the person knows which tab they belong in.
+ */
+export function notNewsletterChoices(count: number): NotNewsletterChoice[] {
+  const their = count === 1 ? 'its' : 'their'
+  return [
+    { label: `Move ${their} emails to ${MAIL_TABS.other}`, category: 'other' },
+    { label: `Move ${their} emails to ${MAIL_TABS.important}`, category: 'important' },
+    { label: `Leave ${their} emails where they are`, category: null },
+  ]
+}
+
+/** What the toast says once the newsletters named have been said not to be newsletters. */
+export function notNewslettersNote(
+  names: readonly string[],
+  category: MailCategory | null,
+  report: Pick<NotNewslettersReport, 'moved' | 'shared'> = { moved: 0, shared: 0 },
+): { title: string; body: string } {
+  const [only] = names
+  const title =
+    names.length === 1 && only !== undefined
+      ? `Took “${only}” out of the Feed`
+      : `Took ${plural(names.length, 'source')} out of the Feed`
+  const its = names.length === 1 ? 'Its' : 'Their'
+  // Says what happened in Mail, not what was asked: mail stays put when
+  // another newsletter in the Feed comes from the same address, or when
+  // there was nothing of theirs to move.
+  let body: string
+  if (!category) body = `${its} emails stay where they were in Mail.`
+  else if (report.moved > 0 && report.shared === 0)
+    body = `${its} emails are now under ${MAIL_TABS[category]} in Mail.`
+  else if (report.moved > 0)
+    body = `Moved ${plural(report.moved, 'email')} to ${MAIL_TABS[category]} in Mail. Mail from an address another newsletter in the Feed still uses stays in Newsletters.`
+  else if (report.shared > 0)
+    body = `${its} emails stay in Newsletters in Mail: another newsletter in the Feed comes from the same address.`
+  else body = `${names.length === 1 ? 'It' : 'They'} had no emails in Mail to move.`
+  return { title, body }
 }
 
 // ── The list ─────────────────────────────────────────────────────────────

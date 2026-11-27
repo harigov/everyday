@@ -223,6 +223,7 @@ fn seed_sent(vault: &Vault, account: AccountId, mailbox: MailboxId, from: &str, 
         invite: None,
         pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 1 },
         gmail: None,
+        unsubscribe: None,
     };
     vault
         .ingest_mail(account, vec![IngestMessage { message: message.clone(), mailbox, uid: 1 }])

@@ -27,12 +27,16 @@ import {
   bodyOriginOf,
   filterStories,
   groupFolders,
+  isPickable,
   isWebUrl,
   listedSources,
+  notNewslettersNote,
   sameFeedAddress,
   scopeSources,
   scopeUnread,
   sortStories,
+  sourceLabel,
+  unsubscribedNote,
   type BodyOrigin,
   type KindChoice,
 } from './feed'
@@ -50,12 +54,15 @@ import { debounce } from './store/debounce'
 import { latest } from './store/latest'
 import { optimisticRemove } from './store/optimistic-remove'
 import { guardedRefresh } from './store/refresh'
+import { needsAttention } from './unsubscribe'
 import { upnext } from './upnext.svelte'
 import type {
   FeedHit,
   FoundFeed,
   OpmlImportReport,
   ItemId,
+  MailCategory,
+  NotNewslettersReport,
   NewSource,
   NewsSource,
   NewsSourceId,
@@ -71,6 +78,7 @@ import type {
   StoryId,
   StoryPage,
   StoryQuery,
+  UnsubscribeOutcome,
 } from './types'
 
 /** How many stories a page holds. The service allows 500; a screen shows far fewer. */
@@ -282,6 +290,22 @@ class FeedState {
    */
   bodyStamps = $state<Record<StoryId, number>>({})
 
+  // -- picking several sources ------------------------------------------
+  /**
+   * The sidebar is picking sources rather than opening them, for what is done
+   * to several at once: unsubscribing, or saying they are not newsletters.
+   */
+  selecting = $state(false)
+  /** The sources picked. Raw, and replaced whole rather than changed in place. */
+  checkedSources = $state.raw<ReadonlySet<NewsSourceId>>(new Set())
+  /**
+   * What unsubscribing left for the person to do: pages to finish in the
+   * browser, and senders it could not reach. Kept here and not by whoever
+   * asked, since a source's settings close as the source goes; the sidebar
+   * shows it until it is put away.
+   */
+  unsubscribeResults = $state.raw<readonly UnsubscribeOutcome[] | null>(null)
+
   // -- the directory: podcasts and feeds to follow ----------------------
   /** The directory sheet is open. */
   directoryOpen = $state(false)
@@ -407,6 +431,9 @@ class FeedState {
     this.extracting = false
     this.note = null
     this.bodyStamps = {}
+    this.selecting = false
+    this.checkedSources = new Set()
+    this.unsubscribeResults = null
     this.#detached = null
     this.#refreshes = 0
     // The directory's answers are public, but which of them are already
@@ -879,18 +906,166 @@ class FeedState {
   /** Unfollow, taking its stories with it. */
   async deleteSource(id: NewsSourceId): Promise<void> {
     await optimisticRemove({
-      optimistic: () => {
-        // The pane goes with its source: a story with nothing to belong to
-        // would be the last of it left on screen.
-        if (this.story?.sourceId === id) this.close()
-        this.sources = this.sources.filter((s) => s.source.id !== id)
-        this.stories = this.stories.filter((s) => s.sourceId !== id)
-        if (this.scope.kind === 'source' && this.scope.id === id) this.scope = { kind: 'all' }
-      },
+      optimistic: () => this.#dropSources([id]),
       call: () => this.#track(api.deleteNewsSource(id)),
       onSuccess: () => void this.#reloadAll(),
       rollback: () => this.#reloadAll(),
     })
+  }
+
+  /**
+   * Stop getting each of `ids`: a newsletter's sender is asked to take you
+   * off the list and it leaves the Feed, and a feed or a show is unfollowed.
+   *
+   * Off the screen at once, the way `deleteSource` is, and put back if the
+   * service refuses -- then the answer is an empty list, and the reason has
+   * been said. Asking can take a while, since each sender is asked over the
+   * network, so the toast saying how it went comes when it is over, and
+   * whatever is left for the person to do is kept in `unsubscribeResults`.
+   * Picking ends either way: what was picked has been dealt with.
+   */
+  async unsubscribeSources(ids: readonly NewsSourceId[]): Promise<UnsubscribeOutcome[]> {
+    const wanted = this.#bulkTargets(ids)
+    this.stopSelecting()
+    if (wanted.length === 0) return []
+    // Counted before they leave the screen, which is where their kinds are read from.
+    const letters = wanted.filter((id) => this.#isNewsletter(id)).length
+    this.#dropSources(wanted)
+    let outcomes: UnsubscribeOutcome[]
+    try {
+      outcomes = await this.#track(api.unsubscribeNewsSources(wanted))
+    } catch (e) {
+      await handle(e, () => this.#reloadAll())
+      return []
+    }
+    await this.#reloadAll()
+    const said = unsubscribedNote(outcomes, letters, wanted.length - letters)
+    const opts = { body: said.body, key: 'feed-unsubscribed' }
+    if (said.ok) notify.success(said.title, opts)
+    else notify.warn(said.title, opts)
+    if (needsAttention(outcomes)) this.unsubscribeResults = outcomes
+    return outcomes
+  }
+
+  /** Put away what `unsubscribeSources` left for the person to do. */
+  dismissUnsubscribeResults(): void {
+    this.unsubscribeResults = null
+  }
+
+  /**
+   * Say these newsletters are not newsletters: out of the Feed, not found
+   * again, and with a `category` their emails moved there in Mail.
+   *
+   * Only one sender's newsletter can be said not to be one, so anything else
+   * among `ids` is left where it is. Off the screen at once, and back if the
+   * service refuses. Picking ends either way.
+   */
+  async markNotNewsletters(
+    ids: readonly NewsSourceId[],
+    category: MailCategory | null,
+  ): Promise<void> {
+    const wanted = this.#bulkTargets(ids).filter((id) => this.#isNewsletter(id))
+    this.stopSelecting()
+    if (wanted.length === 0) return
+    const names = this.sources
+      .filter((s) => wanted.includes(s.source.id))
+      .map((s) => sourceLabel(s.source))
+    this.#dropSources(wanted)
+    let report: NotNewslettersReport
+    try {
+      report = await this.#track(api.markNotNewsletters(wanted, category))
+    } catch (e) {
+      await handle(e, () => this.#reloadAll())
+      return
+    }
+    await this.#reloadAll()
+    const said = notNewslettersNote(names, category, report)
+    notify.success(said.title, { body: said.body, key: 'feed-not-newsletters' })
+  }
+
+  /**
+   * Take sources off the screen before the service has been asked: their
+   * rows, their stories, the pane if it shows one of theirs, the place on
+   * screen if it was one of them, and the picking of them.
+   */
+  #dropSources(ids: readonly NewsSourceId[]): void {
+    const gone = new Set(ids)
+    // The pane goes with its source: a story with nothing to belong to
+    // would be the last of it left on screen.
+    const open = this.story
+    if (open && gone.has(open.sourceId)) this.close()
+    this.sources = this.sources.filter((s) => !gone.has(s.source.id))
+    this.stories = this.stories.filter((s) => !gone.has(s.sourceId))
+    const scope = this.scope
+    if (scope.kind === 'source' && gone.has(scope.id)) this.scope = { kind: 'all' }
+    this.#pruneChecked()
+  }
+
+  /** `ids` once each, without the Newsletters source, which no bulk action takes. */
+  #bulkTargets(ids: readonly NewsSourceId[]): NewsSourceId[] {
+    return [...new Set(ids)].filter((id) => {
+      const known = this.sources.find((s) => s.source.id === id)
+      return !known || isPickable(known.source)
+    })
+  }
+
+  /** Is `id` one sender's newsletter, as the sidebar knows it? */
+  #isNewsletter(id: NewsSourceId): boolean {
+    return this.sources.some((s) => s.source.id === id && s.source.kind.type === 'mail')
+  }
+
+  // ── picking several sources ──────────────────────────────────────────
+
+  /** Start picking sources in the sidebar instead of opening them. */
+  startSelecting(): void {
+    this.selecting = true
+  }
+
+  /** Stop picking, and let go of whatever was picked. */
+  stopSelecting(): void {
+    this.selecting = false
+    this.clearChecked()
+  }
+
+  /** Pick a source, or put it back. The Newsletters source cannot be picked. */
+  toggleSource(id: NewsSourceId): void {
+    const next = new Set(this.checkedSources)
+    if (next.has(id)) next.delete(id)
+    else if (this.#pickable(id)) next.add(id)
+    else return
+    this.checkedSources = next
+  }
+
+  /** Pick exactly these: the rows the sidebar is showing, for its "all" box. */
+  checkAllShown(ids: readonly NewsSourceId[]): void {
+    this.checkedSources = new Set(ids.filter((id) => this.#pickable(id)))
+  }
+
+  /** Let go of every source picked, and go on picking. */
+  clearChecked(): void {
+    if (this.checkedSources.size > 0) this.checkedSources = new Set()
+  }
+
+  /** The sources picked, in the sidebar's order. */
+  get checkedSummaries(): SourceSummary[] {
+    return this.sources.filter((s) => this.checkedSources.has(s.source.id))
+  }
+
+  /** Is `id` a source the sidebar has, and one that can be picked? */
+  #pickable(id: NewsSourceId): boolean {
+    const known = this.sources.find((s) => s.source.id === id)
+    return !!known && isPickable(known.source)
+  }
+
+  /**
+   * Let go of picked sources that are no longer followed -- unfollowed here
+   * or on another machine -- so nothing is done to one that is not there.
+   */
+  #pruneChecked(): void {
+    if (this.checkedSources.size === 0) return
+    const kept = new Set<NewsSourceId>()
+    for (const s of this.sources) if (this.checkedSources.has(s.source.id)) kept.add(s.source.id)
+    if (kept.size !== this.checkedSources.size) this.checkedSources = kept
   }
 
   async importOpml(xml: string): Promise<OpmlImportReport | null> {
@@ -1376,6 +1551,7 @@ class FeedState {
       const sources = await api.newsSources()
       if (!this.#sourcesGeneration.isCurrent(token)) return
       this.sources = sources
+      this.#pruneChecked()
       if (this.#scopeGone()) {
         // Unfollowed on another machine, or a folder emptied by a move.
         // Everything, rather than a list of nothing under a name that is no

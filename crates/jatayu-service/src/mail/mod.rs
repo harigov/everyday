@@ -39,6 +39,7 @@ pub mod preview;
 pub mod sort;
 pub mod sync;
 pub(crate) mod text;
+pub mod unsubscribe;
 pub mod view;
 pub mod voice;
 pub mod voicelearn;

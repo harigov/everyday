@@ -322,4 +322,88 @@ function finish(kind, story) {
 }
 
 await close()
+
+// ── stopping many at once ─────────────────────────────────────────────────
+//
+// On a seed of its own, loaded afresh, since the section above has taken the
+// found newsletters away -- and each of them offers a different way out.
+
+{
+  const { module: fresh, close: closeFresh } = await load('/src/lib/mock-feed.ts')
+  const {
+    mockAddNewsSource: follow,
+    mockFeedSettings: settings,
+    mockListNewsSources: list,
+    mockListStories: listStories,
+    mockMarkNotNewsletters,
+    mockUnsubscribeNewsSources,
+  } = fresh
+  const followedIds = () => list().map((s) => s.source.id)
+  const issuesOf = (id) => listStories({ sources: [id], limit: 500 }).stories
+  const google = 'acct-google'
+  const technology = 'newsletters@technologyreview.com'
+
+  assert.ok(issuesOf('src-download').length > 0, 'the fresh seed has its newsletters back')
+
+  // Unsubscribing: an outcome for each newsletter, in the order asked, each
+  // the way its sender offers -- a one-click request, a page on their site,
+  // an email to the list. A feed is unfollowed and says nothing; the
+  // Newsletters source and an id nobody follows are passed over.
+  const outcomes = mockUnsubscribeNewsSources([
+    'src-download',
+    'src-algorithm',
+    'src-tldr',
+    'src-radio',
+    'src-newsletters',
+    'src-nope',
+    'src-download',
+  ])
+  assert.deepEqual(outcomes, [
+    { account: google, email: technology, name: 'The Download', via: 'oneClick', done: true },
+    {
+      account: google,
+      email: technology,
+      name: 'The Algorithm',
+      via: 'web',
+      done: false,
+      url: 'https://technologyreview.example/unsubscribe/the-algorithm',
+    },
+    { account: google, email: 'dan@tldrnewsletter.com', name: 'TLDR', via: 'mail', done: true },
+  ])
+  for (const id of ['src-download', 'src-algorithm', 'src-tldr', 'src-radio']) {
+    assert.ok(!followedIds().includes(id), `${id} is no longer followed`)
+    assert.equal(issuesOf(id).length, 0, `and ${id}'s stories went with it`)
+  }
+  assert.ok(followedIds().includes('src-newsletters'), 'the Newsletters source is never taken')
+  assert.deepEqual(
+    settings().notNewsletters,
+    [
+      { sender: technology, name: 'The Download' },
+      { sender: technology, name: 'The Algorithm' },
+      { sender: 'dan@tldrnewsletter.com', name: 'TLDR' },
+    ],
+    'each newsletter unsubscribed from is turned down, so it is not found again',
+  )
+
+  // A sender whose mail names no way out: still out of the Feed and turned
+  // down, with an outcome that says it could not be asked.
+  const long = follow({ type: 'mail', sender: 'letters@longletter.example' })
+  assert.deepEqual(mockUnsubscribeNewsSources([long.id]), [
+    { account: google, email: 'letters@longletter.example', name: 'The Long Letter', done: false },
+  ])
+  assert.ok(!followedIds().includes(long.id))
+  assert.deepEqual(settings().notNewsletters.at(-1), { sender: 'letters@longletter.example' })
+
+  // Not newsletters: a newsletter, followed or found, turned down and out of
+  // the Feed; a web feed and the Newsletters source left where they are.
+  const field = follow({ type: 'mail', sender: 'weekly@fieldnotes.example' })
+  mockMarkNotNewsletters([field.id, 'src-longform', 'src-newsletters', 'src-nope'], 'important')
+  assert.ok(!followedIds().includes(field.id), 'the newsletter leaves the Feed')
+  assert.ok(followedIds().includes('src-longform'), 'a web feed is not one to say it of')
+  assert.ok(followedIds().includes('src-newsletters'), 'and nor is the Newsletters source')
+  assert.deepEqual(settings().notNewsletters.at(-1), { sender: 'weekly@fieldnotes.example' })
+
+  await closeFresh()
+}
+
 console.log('feed-mock: all checks passed')

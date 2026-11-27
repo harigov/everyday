@@ -895,6 +895,7 @@ mod tests {
             },
             gmail: None,
             invite: None,
+            unsubscribe: None,
         };
         vault
             .ingest_mail(account.id, vec![IngestMessage { message, mailbox: mailbox.id, uid: 1 }])
