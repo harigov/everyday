@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { BOX, FEATHERS, GOLD, ROOT, along } from '../lib/wing'
+  import { BOX, FEATHERS, ROOT, along } from '../lib/wing'
 
   let {
     size = 18,
@@ -8,13 +8,18 @@
     size?: number
   } = $props()
 
+  // A step deeper than the icon's gold, and edged: the icon's palest front
+  // feather sits on midnight there, but here it may sit on a white page,
+  // where it would all but vanish.
+  const WARM = ['#ffd24d', '#ffa536', '#ff7424', '#e65a1c'] as const
+
   // Back feather first. Each one closes and opens a little further than the
   // one in front of it, and a beat after it, so the change runs out through
   // the wing like a breath rather than the fan swinging as one piece.
   const STACK = FEATHERS.map((d, i) => ({
     d,
     i,
-    fill: along(GOLD, i / (FEATHERS.length - 1)),
+    fill: along(WARM, i / (FEATHERS.length - 1)),
     style:
       `--close: ${(1.2 + 2.3 * i).toFixed(1)}deg; --open: ${(-1.2 - 1.5 * i).toFixed(1)}deg; ` +
       `animation-delay: ${(i * 0.06 - 2.4).toFixed(2)}s`,
@@ -59,6 +64,9 @@
     overflow: visible;
   }
   .feather {
+    stroke: #b4530f;
+    stroke-opacity: 0.4;
+    stroke-width: 0.35;
     transform-box: view-box;
     transform-origin: var(--root-x) var(--root-y);
     animation: breathe 2.4s ease-in-out infinite;

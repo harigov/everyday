@@ -4325,7 +4325,7 @@ export interface QuickPolicy {
 /**
  * What young Jatayu, the bird beside the assistant, looks like: one word from
  * the list in `companion.ts`. One this build does not know, or one left out,
- * is drawn as the default. Mirrors `karmayoga_core::agent::Companion`.
+ * is drawn as the default. Mirrors `jatayu_core::agent::Companion`.
  */
 export interface Companion {
   plumage?: string

@@ -47,8 +47,8 @@
   The icon's shadows and lit edges are left out; at these sizes they are a
   smudge.
 
-  Bare, in currentColor: the feathers in steps of the ink's strength, front
-  strongest, or the flat shape when small.
+  Bare, in currentColor: the flat shape, its feathers told apart by thin
+  channels -- one ink, so nothing overlaps into darker bands.
 -->
 <svg
   class="logo"
@@ -90,13 +90,7 @@
     {/if}
   {:else}
     <g transform={fit} fill="currentColor">
-      {#if fine}
-        {#each STACK as feather (feather.i)}
-          <path d={feather.d} opacity={1 - 0.55 * (feather.i / (FEATHERS.length - 1))} />
-        {/each}
-      {:else}
-        <path d={MARK} />
-      {/if}
+      <path d={MARK} />
     </g>
   {/if}
 </svg>
