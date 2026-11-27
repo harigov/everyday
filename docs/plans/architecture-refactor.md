@@ -26,7 +26,7 @@
 > - **The three transient-error classifiers stayed separate** (Phase 9.3).
 >   They give opposite verdicts on every code either names, which a pinning
 >   test now proves. Only the delay schedules were unified.
-> - **`karmayoga-app`'s reconnect backoff now shares `RetryPolicy` too.**
+> - **`jatayu-app`'s reconnect backoff now shares `RetryPolicy` too.**
 >   Sharing it meant making the type `pub`, which the plan below originally
 >   ruled out for this reason alone; only the delay math moved, pinned by a
 >   test first, and the banner state machine it interleaves with
@@ -78,7 +78,7 @@ for a reason that still holds:
 | A generic search-index step | `save_note` reindexes through `reindex_note` so transcript words stay searchable. A generic step silently drops them. |
 | Declarative cascades replacing SQL | Set-based deletes in one transaction would become per-row. Purpose deliberately *refuses* to cascade. |
 | Capabilities derived from a domain registry | `MemStore` would claim domains it lacks. `Capabilities` also crosses the wire. |
-| One `DomainModule` trait in `karmayoga-core` | Core cannot name the service's `Command`, and `transfer` sits between the two. It would create crate cycles. |
+| One `DomainModule` trait in `jatayu-core` | Core cannot name the service's `Command`, and `transfer` sits between the two. It would create crate cycles. |
 | Generated CRUD tools; merging tools with commands | Tools take partial updates, refuse unsafe edits, gate `Destructive`/`Outward` effects, and hide secret domains. Generated tools could skip confirmation. |
 | Retiring `mock.ts` for a dev server | `MemStore` holds journals only, the browser has no HTTP transport, and four UI tests use the mock as their backend. |
 | Renaming fields (`title`/`name`, `starred`/`pinned`/`favourite`, …) | The names are in sealed JSON, exported front matter, the wire and model prompts. The gain is cosmetic, and some differences are intentional. |
@@ -90,12 +90,12 @@ Everything later depends on this. Each item is a test that passes on today's
 
 **Already in place (keep, do not weaken):**
 
-- `crates/karmayoga-service/tests/surface.rs`: the command surface
+- `crates/jatayu-service/tests/surface.rs`: the command surface
   (`surface.json`), argument spelling, and signature ↔ struct agreement.
-- `crates/karmayoga-service/tests/mcp.rs`: the tool surface: names, effects,
+- `crates/jatayu-service/tests/mcp.rs`: the tool surface: names, effects,
   domains, scopes, sensitivity and parameters.
 - The command test that every write has a `change:` or is in `INVISIBLE`.
-- `crates/karmayoga-core/src/store/conformance/`: run against SQLite, plaintext
+- `crates/jatayu-core/src/store/conformance/`: run against SQLite, plaintext
   SQLite, `MemStore` and, in CI only, Postgres.
 - `ui/scripts/*.test.mjs`: the `conflict`, `autosave`, `live`, `live-apply`,
   `editor`, `library` and `assistant` suites in particular.
@@ -103,7 +103,7 @@ Everything later depends on this. Each item is a test that passes on today's
 
 **To add:**
 
-0.1 **Pinned persisted strings** (`karmayoga-core`, one test file). Assert
+0.1 **Pinned persisted strings** (`jatayu-core`, one test file). Assert
 literally, one line per value, with no derivation from enum names:
 
 - every `*_aad` function's output for a fixed id, all ~40 labels
@@ -131,7 +131,7 @@ purpose-bearing kind, routine, run, proposal, conversation, message, memory,
 account, secret, mailbox, mail message, thread, draft, op, recording,
 transcript, voiceprint and profile.
 
-- Check it in under `crates/karmayoga-vault/tests/fixtures/` (password in the
+- Check it in under `crates/jatayu-vault/tests/fixtures/` (password in the
   test).
 - The test opens it and compares a canonical JSON dump of every record, read
   through the public `Vault` API, with a checked-in golden file.
@@ -142,7 +142,7 @@ table, serde shape or migrations. A later phase that changes the golden file
 has changed persistence.
 
 0.4 **The change events each command emits.** An integration test in
-`karmayoga-service/tests/` with a recording `EventSink`. It runs a scripted
+`jatayu-service/tests/` with a recording `EventSink`. It runs a scripted
 sequence covering every write command in `surface.json` (reusing the
 `placeholder` argument builder where possible) and snapshots the ordered list
 of `(command, kind, op, id?, ids.len, origin)`.
@@ -155,9 +155,9 @@ of `(command, kind, op, id?, ids.len, origin)`.
 This catches phase 7's risk directly.
 
 0.5 **The assistant's safety properties, as explicit tests.** Some exist
-already, spread across `crates/karmayoga-core/src/agent/tools/mod.rs`,
-`crates/karmayoga-service/src/agent.rs` and
-`crates/karmayoga-service/tests/mail_agent_tools.rs`. Inventory them first,
+already, spread across `crates/jatayu-core/src/agent/tools/mod.rs`,
+`crates/jatayu-service/src/agent.rs` and
+`crates/jatayu-service/tests/mail_agent_tools.rs`. Inventory them first,
 then add whatever is missing:
 
 - `Destructive` tools ask when `confirm_destructive` is on
@@ -267,17 +267,17 @@ drift worth fixing in its own PR.
 **As built:** `schemars` 1.x, not `specta`/`ts-rs` — it was already in
 `Cargo.lock` (via `rig`), so nothing new was added to `THIRD-PARTY-NOTICES.md`
 (which lists what ships in the binary; this doesn't, being behind an
-off-by-default feature). `karmayoga-core` gained an optional `schema` feature
-(`cargo tree -p karmayoga-core` shows `schemars` only with `--features
+off-by-default feature). `jatayu-core` gained an optional `schema` feature
+(`cargo tree -p jatayu-core` shows `schemars` only with `--features
 schema`) deriving `JsonSchema`, via `cfg_attr`, on the ~170 record and
-value types reachable from the 31 record kinds `crates/karmayoga-core/schema/
-record-schema.json` covers — the ones `crates/karmayoga-vault/tests/fixtures`
+value types reachable from the 31 record kinds `crates/jatayu-core/schema/
+record-schema.json` covers — the ones `crates/jatayu-vault/tests/fixtures`
 (0.3) enumerates, not every embedded value type. `AccountSecret` is the one
 0.3 kind with no entry: a secret never crosses the wire, so there is nothing
 in `types.ts` to compare it against.
 
-The schema is generated by `crates/karmayoga-core/tests/schema.rs`
-(`UPDATE_SCHEMA=1 cargo test -p karmayoga-core --features schema --test
+The schema is generated by `crates/jatayu-core/tests/schema.rs`
+(`UPDATE_SCHEMA=1 cargo test -p jatayu-core --features schema --test
 schema`, the same pattern `surface.rs` already uses) and checked in, so
 `ui/scripts/check-types-drift.mjs` — wired into `npm run check` — reads it
 and `types.ts` without a Rust build. `schemars`' `rust-version` is 1.74,
@@ -307,7 +307,7 @@ types-drift-allowlist.json`, one reason each:
 
 ## Phase 6 — the `Record` descriptor in core
 
-- Move the *identity* half of `store-sql`'s `Record` into `karmayoga-core`: a
+- Move the *identity* half of `store-sql`'s `Record` into `jatayu-core`: a
   `RecordDescriptor` trait with `const KIND: RecordKind`, `type Id`, `fn id()`,
   and `fn aad(id)`.
   - `aad` stays a **literal per record**, pointing at the existing `*_aad`
@@ -402,12 +402,12 @@ A PR in this plan merges only when all of these are true:
       belongs to phase 0 or phase 1.
 - [ ] `make test` green locally, **with `--no-fail-fast`**. A red test binary
       otherwise hides every later one.
-- [ ] `make test-postgres` green for any PR touching `karmayoga-core/src/store*`,
-      `karmayoga-store-*` or `karmayoga-vault`. CI runs it too, but finding out
+- [ ] `make test-postgres` green for any PR touching `jatayu-core/src/store*`,
+      `jatayu-store-*` or `jatayu-vault`. CI runs it too, but finding out
       there is late.
 - [ ] Clippy with CI's toolchain, not the local 1.93:
       `PATH=$HOME/.cache/ed-rust/1.98/bin:$PATH CARGO_TARGET_DIR=$HOME/.cache/ed-rust/target cargo clippy --all-targets -- -D warnings`,
-      plus `-p karmayoga-app` and the `speech` feature run where touched.
+      plus `-p jatayu-app` and the `speech` feature run where touched.
 - [ ] `npm --prefix ui run check` green for any UI change.
 - [ ] Any UI change: a headless before/after screenshot of the affected app in
       mock mode.

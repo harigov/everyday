@@ -23,7 +23,7 @@ Read-only review. Line numbers are for the worktree at `round-alpacka` (main at 
 | 13 | Expected-word lists, hotwords, false insertions | core speech/words.rs, speech/expect.rs, speech/hotwords.rs | (recognisers) | App names are boosted without the everyday-word filter. Wake needs a faint-audio guard. |
 | 14 | utterance.rs | speech/utterance.rs | — | No prompt. It applies `clean_line` only; the false-wake gap in §13 runs through it. |
 | 15 | `generate_image` / `draw_illustration` descriptions | images/tools.rs (illustrate/ has only feedback strings) | (main assistant) | They do not say the image model is stateless and sees nothing else, and nothing forbids invented chart data. |
-| 16 | MCP server instructions | karmayoga-mcp/src/instructions.rs | (external client) | Undersells the vault, treats only mail as untrusted, gives no time zone or owner, says nothing about the lack of confirmation, and has a slightly contradictory rule on ids. |
+| 16 | MCP server instructions | jatayu-mcp/src/instructions.rs | (external client) | Undersells the vault, treats only mail as untrusted, gives no time zone or owner, says nothing about the lack of confirmation, and has a slightly contradictory rule on ids. |
 | 17 | `Profile::describe` | core/src/profile.rs | (main assistant) | Fine. Small polish. The bigger gain is reusing the profile where it is missing (§8, §16). |
 
 ### Cross-cutting seams (outside my files; flag to their owners)
@@ -706,7 +706,7 @@ These names and words may come up; if you hear one, spell it this way. They are 
 - Cleaning: `core/meeting/hallucination.rs:81-110`. Wake matcher: `speech/wake.rs:66+`.
 
 ### What each recogniser is told (examples, from the tests)
-- Conversation: "Hari Govardhanam talks to Karma or Jarvis. People: Priya Shah and Ramesh Iyer. Places: Konark Café. Coming up: Design review with Acme and Dentist. Working on: Ship the Q3 launch and Home renovation. Also: Obsidian, Spotify, Morning brief, Karma Yoga and Siddhis. Words: OKR and Konark." Up to 40 boosts: names, first names, unusual title words, apps.
+- Conversation: "Hari Govardhanam talks to Karma or Jarvis. People: Priya Shah and Ramesh Iyer. Places: Konark Café. Coming up: Design review with Acme and Dentist. Working on: Ship the Q3 launch and Home renovation. Also: Obsidian, Spotify, Morning brief, Jatayu and Siddhis. Words: OKR and Konark." Up to 40 boosts: names, first names, unusual title words, apps.
 - Wake: "Hari Govardhanam talks to Karma or Jarvis." Boosts are the assistant's names only.
 - Dictation: "Written by Hari Govardhanam. People: … Also: Karma and Jarvis. Words: …"
 
@@ -777,7 +777,7 @@ None pin these descriptions; the tests in `images/tools.rs` cover `files_of`, `m
 ## 16. MCP server instructions
 
 ### Where
-`karmayoga-mcp/src/instructions.rs:31-66` (`BASE`) and `:71-76` (`full`). The only host, `karmayoga-server/src/mcp.rs:386-388`, adds nothing (`Host::instructions` returns `None`). Sent once per MCP session (`initialize` / `server/discover`) to external clients: Claude Desktop, Claude Code, Cursor. The owner uses Claude Code against it, for example for the library import in the memory note.
+`jatayu-mcp/src/instructions.rs:31-66` (`BASE`) and `:71-76` (`full`). The only host, `jatayu-server/src/mcp.rs:386-388`, adds nothing (`Host::instructions` returns `None`). Sent once per MCP session (`initialize` / `server/discover`) to external clients: Claude Desktop, Claude Code, Cursor. The owner uses Claude Code against it, for example for the library import in the memory note.
 
 ### Job to be done
 An outside agent working in the owner's vault should behave like a careful assistant. It should know what the vault holds, take ids only from tool results, put dates and times in the owner's time zone, treat stranger-written content as data, understand that an empty tool list means "locked", ask before sweeping changes (there is no confirmation card over MCP), and know how mail sending is gated.
@@ -814,7 +814,7 @@ Much of what you read was written by other people: mail (senders, subjects and b
 
 Mail leaves only through its own tools. Sending takes the id of a draft that already exists and is queued through a short undo window, so a mistake can still be caught; answering an invitation is respond_to_invite and goes through the same undo window. No tool permanently deletes a message: removing one only moves it to Trash, which its owner can undo. What you may do with each account's mail is decided per account by its owner.
 ```
-Host addition (S), in `karmayoga-server/src/mcp.rs` `VaultHost::instructions`. It is best effort and returns `None` while locked:
+Host addition (S), in `jatayu-server/src/mcp.rs` `VaultHost::instructions`. It is best effort and returns `None` while locked:
 ```
 The owner is {first name}. Their time zone is {vault.person_tz()}: every date and time the tools take or give is in it.
 ```

@@ -227,8 +227,8 @@
       </li>
       <li>
         <b>Summarize Data: turn it OFF.</b> This one matters. With it on, the app sends daily or hourly
-        totals instead of the readings, and Karma Yoga refuses them, because the totals would be counted
-        twice beside the readings it already has.
+        totals instead of the readings, and Jatayu refuses them, because the totals would be counted twice
+        beside the readings it already has.
       </li>
       <li><b>Batch Requests:</b> on.</li>
       <li>

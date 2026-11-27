@@ -1,0 +1,1369 @@
+//! The router, served on both transports.
+//!
+//! Built once and handed to two listeners: TLS over TCP for other machines, and
+//! a local socket for processes belonging to the same user. That is not a
+//! convenience -- it is what lets a browser extension and the command-line tool
+//! reach a vault without either of them holding a token or trusting a
+//! certificate, and it is why this file never assumes there is a network under
+//! it.
+//!
+//! # Everything under `/v1`
+//!
+//! A version in the path as well as [`PROTOCOL`] in a header, because they
+//! answer different questions. The path says which shape of API this is; the
+//! header says which build of the command table is behind it. A client and a
+//! server are the same binary here, so the header is the one that will
+//! disagree.
+//!
+//! # What a request has to carry
+//!
+//! `Authorization: Bearer <token>` on the TLS transport, and nothing on the
+//! socket -- the operating system already said who is on the other end.
+//! `X-Jatayu-Protocol` always; a mismatch is refused rather than attempted.
+//! `X-Jatayu-Request` on a write, which is what makes a retry safe.
+//!
+//! The two screen-time routes are the exception: a heartbeats token and
+//! nothing else, because the collectors that call them are not built from
+//! this workspace. See `crate::screentime`.
+
+use axum::extract::{ConnectInfo, Path, Query, Request, State};
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::sse::{Event, Sse};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use futures::stream::Stream;
+use jatayu_core::BlobId;
+use jatayu_core::id::{FileId, MailMessageId, StoryId};
+use jatayu_service::ctx::{Caller, Ctx, Scope};
+use jatayu_service::error::CommandError;
+use jatayu_service::{PROTOCOL, Service};
+use serde::Deserialize;
+use serde_json::{Value, json};
+use std::sync::Arc;
+
+use crate::auth::{Leniency, Registry, bearer};
+use crate::sse::Broadcaster;
+use crate::wire::{Hello, PairRequest, Paired, headers as wire_headers, path};
+
+/// Largest JSON body a command may arrive in.
+///
+/// Generous -- a board reorder can carry a few hundred tasks, and an imported
+/// calendar is a document -- and finite, which is the point. Attachments do not
+/// come this way; they have their own route and their own limit.
+const MAX_JSON_BYTES: usize = 32 * 1024 * 1024;
+
+/// Most a body may be buffered to before anybody has proved who they are.
+///
+/// The router used to set its default limit to the attachment ceiling, half a
+/// gigabyte, and `call`, `stream` and `put_blob` took `Bytes` -- which axum
+/// buffers before a handler runs -- so anybody who could reach the port could
+/// make the server hold that much per request without ever showing a token.
+/// Those three now take the raw body and read it themselves once the caller
+/// is known (see [`read_body`]). The one body still read beforehand is a
+/// pairing request: a code, a device name and a scope list.
+const UNAUTHENTICATED_BODY_BYTES: usize = 64 * 1024;
+
+/// How many requests one device may have in flight.
+///
+/// Each one can be holding a blocking thread, so an unbounded client could
+/// exhaust the pool and stall every other device. Eight is more parallelism than
+/// a window ever needs and less than a runaway loop wants.
+const MAX_IN_FLIGHT: usize = 8;
+
+pub struct Server {
+    pub service: Arc<Service>,
+    pub registry: Arc<Registry>,
+    pub broadcaster: Arc<Broadcaster>,
+    /// What this vault is called, for the pairing screen.
+    pub name: String,
+    /// The certificate a client should pin. Empty when TLS is terminated
+    /// somewhere else.
+    pub fingerprint: String,
+    /// May a client unlock the vault over the wire?
+    ///
+    /// An atomic rather than a field, so changing it does not mean restarting
+    /// the server. Restarting to flip one boolean meant rebinding the port,
+    /// which meant racing the old listener's shutdown -- and losing that race
+    /// left sharing switched off with an "address already in use" behind it.
+    allow_remote_unlock: std::sync::atomic::AtomicBool,
+    in_flight: Arc<tokio::sync::Semaphore>,
+    /// The browsers signed in, for a server answering `Transport::Web`.
+    /// `None` everywhere else, where nothing could be signed in.
+    sessions: Option<Arc<crate::web::session::Sessions>>,
+    /// Set when the listener answering for this server stops (`start`): what
+    /// a connection that outlives its request -- a voice session -- watches,
+    /// since the listener's graceful shutdown does not reach an upgraded one.
+    pub(crate) closing: tokio::sync::watch::Sender<bool>,
+}
+
+impl Server {
+    pub fn new(
+        service: Arc<Service>,
+        registry: Arc<Registry>,
+        broadcaster: Arc<Broadcaster>,
+        name: String,
+        fingerprint: String,
+        allow_remote_unlock: bool,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            service,
+            registry,
+            broadcaster,
+            name,
+            fingerprint,
+            allow_remote_unlock: std::sync::atomic::AtomicBool::new(allow_remote_unlock),
+            in_flight: Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT * 4)),
+            sessions: None,
+            closing: tokio::sync::watch::channel(false).0,
+        })
+    }
+
+    /// The server behind web access: the same routes, answering signed-in
+    /// browsers from `sessions` instead of paired devices from tokens. No
+    /// fingerprint -- a browser pins nothing -- and remote unlock is web
+    /// access's own setting, decided at its login, not here.
+    pub fn for_web(
+        service: Arc<Service>,
+        registry: Arc<Registry>,
+        broadcaster: Arc<Broadcaster>,
+        name: String,
+        sessions: Arc<crate::web::session::Sessions>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            service,
+            registry,
+            broadcaster,
+            name,
+            fingerprint: String::new(),
+            allow_remote_unlock: std::sync::atomic::AtomicBool::new(false),
+            in_flight: Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT * 4)),
+            sessions: Some(sessions),
+            closing: tokio::sync::watch::channel(false).0,
+        })
+    }
+
+    pub fn allow_remote_unlock(&self) -> bool {
+        self.allow_remote_unlock.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn set_allow_remote_unlock(&self, allow: bool) {
+        self.allow_remote_unlock.store(allow, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// How a request arrived, which decides how it is authenticated.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    /// TLS over TCP. A token is required.
+    Network,
+    /// A local socket. The operating system vouched for the peer.
+    Socket,
+    /// A browser, through web access's gatekeeper -- see
+    /// `crate::web::routes`. The session it found is in two headers only
+    /// the gatekeeper sets.
+    Web,
+}
+
+pub fn router(server: Arc<Server>, transport: Transport) -> Router {
+    use axum::extract::DefaultBodyLimit;
+    let mut router = Router::new();
+    // A browser does not pair, has its own handshake (`/web/hello`) and its
+    // own event stream (`/web/events`, which ends with the session), and is
+    // not a screen-time collector. Everything else is the same for it.
+    if transport != Transport::Web {
+        router = router
+            .route(path::HELLO, get(hello))
+            // Its own limit, not only the router's below, so that widening the
+            // default for some later route can never widen what a stranger with
+            // no token may make this server buffer.
+            .route(path::PAIR, post(pair).layer(DefaultBodyLimit::max(UNAUTHENTICATED_BODY_BYTES)))
+            .route(path::EVENTS, get(events))
+            // The two routes collectors speak to, for a machine with no copy of
+            // this application running: a heartbeats token, no protocol header,
+            // and a body that must name its device. Their handlers are shared
+            // with the shell's loopback listener -- see `crate::screentime`.
+            .route(path::SCREENTIME_HELLO, get(crate::screentime::shared_hello))
+            .route(path::SCREENTIME_HEARTBEATS, post(crate::screentime::shared_heartbeats));
+    }
+    router
+        // The phone's Health Auto Export pushes, on every transport -- web
+        // access is the one a phone can reach. Bearer-token authenticated
+        // even there; see `crate::health`.
+        .route(path::HEALTH_PUSH_ROUTE, post(crate::health::push))
+        .route(path::CALL_ROUTE, post(call))
+        .route(path::STREAM_ROUTE, post(stream))
+        // Talking to the assistant from another device: see `crate::voice`.
+        .route(path::VOICE, get(voice))
+        .route(path::BLOB, post(put_blob))
+        .route(path::BLOB_ROUTE, get(get_blob))
+        .route(path::MAIL_BODY_ROUTE, get(get_mail_body))
+        .route(path::MAIL_PART_ROUTE, get(get_mail_part))
+        .route(path::MAIL_IMAGE_ROUTE, get(get_mail_image))
+        // The image address's first shape, with the message id in a query
+        // parameter instead of the path -- kept so a body sanitised before
+        // `jatayu-mail::sanitize` started writing the new shape still
+        // resolves. See `get_mail_image_legacy`'s own docs.
+        .route(path::MAIL_IMAGE_LEGACY_ROUTE, get(get_mail_image_legacy))
+        .route(path::NEWS_BODY_ROUTE, get(get_news_body))
+        .route(path::NEWS_IMAGE_ROUTE, get(get_news_image))
+        // A file in the files catalog, with ranges, and one chunk of an upload
+        // to it. The chunk's body is raw bytes read by the handler after
+        // `authenticate`, like `put_blob`'s, so no default limit governs it.
+        .route(path::FILE_ROUTE, get(get_file))
+        .route(path::UPLOAD_ROUTE, post(upload_file_chunk))
+        // What an extractor that buffers -- `Json`, `Bytes` -- may take when a
+        // route says nothing. It does not govern a raw `Body`, which is why
+        // `call`, `stream` and `put_blob` can still take up to their own
+        // limits: they read through `read_body`, after `authenticate`.
+        .layer(DefaultBodyLimit::max(UNAUTHENTICATED_BODY_BYTES))
+        .with_state((server, transport))
+}
+
+type Ctxt = State<(Arc<Server>, Transport)>;
+
+// ---- errors --------------------------------------------------------------
+
+/// A command error, as a response.
+///
+/// The status is derived from the code rather than chosen at each call site, so
+/// a new error code cannot accidentally arrive as a 200 with a body nobody
+/// checks. The body is the same `{ code, message }` the interface already knows
+/// how to route on, which is what lets a remote client hand the window the
+/// error the server raised rather than flattening everything into "network".
+struct Failure(CommandError);
+
+impl From<CommandError> for Failure {
+    fn from(e: CommandError) -> Self {
+        Failure(e)
+    }
+}
+
+impl IntoResponse for Failure {
+    fn into_response(self) -> Response {
+        (status_for(&self.0.code), Json(self.0)).into_response()
+    }
+}
+
+/// The status a command error's code is answered with.
+///
+/// Its own function rather than the body of [`Failure`]'s `into_response`
+/// so the screen-time ingest routes (see `crate::screentime`) answer every
+/// code the way every other route does, and differ only where their
+/// contract says so.
+pub(crate) fn status_for(code: &str) -> StatusCode {
+    use jatayu_service::error::codes;
+    match code {
+        // This server's own codes, from `auth.rs` and `client.rs` --
+        // `bad_password` joins `unauthorized` here because both say the
+        // same thing about a credential: it did not check out.
+        "unauthorized" | codes::BAD_PASSWORD => StatusCode::UNAUTHORIZED,
+        codes::FORBIDDEN => StatusCode::FORBIDDEN,
+        // Concurrency limits, not authentication: `busy` is `jatayu-service`'s
+        // own transfer-slot ceiling, the same shape as a pairing code's
+        // attempt limit. `rate_limited` joins them: the assistant or an
+        // MCP client asked for more mail ops than its per-turn or
+        // per-minute budget allows, the same "slow down" answer as the
+        // other two.
+        "too_many_attempts" | codes::BUSY | codes::RATE_LIMITED => StatusCode::TOO_MANY_REQUESTS,
+        // Malformed input, whether the shape came from JSON that would
+        // not deserialise or from a vault descriptor naming a backend or
+        // a cipher this build has never heard of.
+        // `invalid_client` joins them: a wrong client id or secret is a
+        // malformed request in the same sense a bad backend name is --
+        // the fix is the caller's, not a retry.
+        "bad_code"
+        | codes::INVALID
+        | codes::UNKNOWN_BACKEND
+        | codes::UNKNOWN_CIPHER
+        | codes::INVALID_CLIENT => StatusCode::BAD_REQUEST,
+        codes::UNKNOWN_COMMAND | codes::UNKNOWN_TOOL | codes::NOT_FOUND => StatusCode::NOT_FOUND,
+        // `already_initialised` is a conflict for the same reason a
+        // stale save is: the thing this call assumed did not exist,
+        // does. `retry` joins it because the answer is the same one a
+        // conflict gets -- ask again, deliberately, with a fresh id.
+        codes::CONFLICT | codes::ALREADY_INITIALISED | codes::RETRY => StatusCode::CONFLICT,
+        codes::TOO_LARGE => StatusCode::PAYLOAD_TOO_LARGE,
+        // A version older or newer than this build understands.
+        // `unsupported_version` is a vault's on-disk format saying the
+        // same thing `protocol` says about the wire: upgrade the build
+        // rather than retry the call.
+        "protocol" | codes::UNSUPPORTED_VERSION => StatusCode::UPGRADE_REQUIRED,
+        // Understood, but this vault or this input cannot honour it --
+        // `not_an_image` is the same shape as `unsupported`: a caller
+        // that gave a well-formed request pointed at the wrong thing.
+        // `invalid_grant` says the same thing about an account that
+        // `locked` says about a vault: understood, cannot be honoured
+        // as it stands, and there is a specific known step -- sign in
+        // again -- that fixes it.
+        // `no_location` says the same thing about `weather` (the
+        // command) that `invalid_grant` says about an account: a
+        // specific, known step -- adding a location in Settings → About
+        // You -- fixes it.
+        codes::LOCKED
+        | codes::NO_VAULT
+        | codes::UNSUPPORTED
+        | codes::CONFIRM_REQUIRED
+        | codes::NOT_AN_IMAGE
+        | codes::NO_LOCATION
+        | codes::INVALID_GRANT => StatusCode::UNPROCESSABLE_ENTITY,
+        // Another copy of this process holds the write claim. Distinct
+        // from `conflict`'s optimistic-concurrency meaning -- nothing
+        // about the record changed, the vault itself is spoken for --
+        // which is what the WebDAV status name actually means.
+        codes::VAULT_IN_USE => StatusCode::LOCKED,
+        // A request this server could not carry out because something
+        // beyond it did not answer, or answered with something that
+        // could not be used: the web, or the model behind the assistant
+        // and the quick model, whichever endpoint a person configured.
+        // `provider` joins them: the OAuth endpoint on the other end of
+        // the socket answered with something other than a token or one
+        // of the two named failures above, which is exactly the shape
+        // of "something beyond this server did not behave".
+        codes::NETWORK
+        | codes::UNREACHABLE
+        | codes::AGENT
+        | codes::QUICK
+        | codes::UNREADABLE
+        | codes::PROVIDER => StatusCode::BAD_GATEWAY,
+        // Nobody's browser came back inside the sign-in's own window.
+        codes::TIMED_OUT => StatusCode::REQUEST_TIMEOUT,
+        // The flow this call named was withdrawn -- `cancel_oauth_sign_in`
+        // -- and, unlike `not_found`, once existed and will not answer
+        // again under the same id.
+        codes::CANCELLED => StatusCode::GONE,
+        // Everything left is this side's own failure to make sense of
+        // its own data or finish its own work: `decrypt_failed` is
+        // ciphertext that does not check out against the key that
+        // opened it, which is a corruption question rather than a
+        // caller's mistake; `internal`, `panic`, `io`, `serde` and
+        // `backend` are this process failing at something with no
+        // caller-facing shape at all.
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+type Answer<T> = Result<T, Failure>;
+
+// ---- the handshake -------------------------------------------------------
+
+/// What a client asks before it trusts anything.
+///
+/// Unauthenticated on purpose: it is the call that finds out whether the two
+/// builds can talk at all, and refusing it without a token would mean a version
+/// mismatch presenting as an authentication failure.
+async fn hello(State((server, _)): Ctxt) -> Json<Hello> {
+    Json(Hello {
+        name: server.name.clone(),
+        protocol: PROTOCOL,
+        fingerprint: server.fingerprint.clone(),
+        locked: !server.service.get().is_some_and(|v| v.is_unlocked()),
+        pairing: server.registry.pairing_open(),
+    })
+}
+
+async fn pair(
+    State((server, transport)): Ctxt,
+    headers: HeaderMap,
+    Json(body): Json<PairRequest>,
+) -> Answer<Json<Paired>> {
+    check_protocol(&headers)?;
+    // Pairing over the local socket would be pointless -- a process that can
+    // reach the socket already has everything a token would buy -- and it would
+    // be a way to mint a token from a machine that never saw the code.
+    if transport == Transport::Socket {
+        return Err(CommandError::new("forbidden", "pair over the network, not the socket").into());
+    }
+    let (token, device_id) = server.registry.pair(&body.code, &body.device_name, body.scopes)?;
+    Ok(Json(Paired { token, device_id, protocol: PROTOCOL }))
+}
+
+// ---- commands ------------------------------------------------------------
+
+async fn call(
+    State((server, transport)): Ctxt,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+    body: axum::body::Body,
+) -> Answer<Response> {
+    check_protocol(&headers)?;
+    let mut ctx = authenticate(&server, transport, &headers)?;
+    ctx.request_id = request_id(&headers);
+    let body = read_body(body, MAX_JSON_BYTES).await?;
+
+    let args: Value = if body.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&body)
+            .map_err(|e| CommandError::new("invalid", format!("{name}: {e}")))?
+    };
+
+    // Deriving a key is the one thing whose *cost* is the attack. Each
+    // attempt burns 64 MiB of Argon2 by design, so they run one at a time and
+    // a device that keeps guessing is turned away. See `auth`.
+    //
+    // Every command that does it is here -- see `derives_a_key` for the list
+    // and why each is on it. Whatever else they do, each is a guess at the
+    // same secret for the same price, so each goes through the same gate and
+    // counts against the same lockout. A command that was cheaper to guess
+    // through than `unlock` would simply become the way in.
+    if derives_a_key(&name) {
+        // ...but they are not the same *policy*. `--no-remote-unlock` says a
+        // sealed vault is opened at the machine holding it and nowhere else.
+        // Applied to `verify_password` as well, it locked people out of a
+        // vault that was already open: a remote window whose own screen timed
+        // out could never answer for itself again, and there was nothing to do
+        // at the host either, because the vault it holds was never locked.
+        //
+        // So the refusal is `unlock`'s, plus the one case where the others
+        // would be a way around it -- a sealed vault, where an answer of "yes,
+        // that is the password" is exactly the thing the flag is keeping on
+        // the other machine. `change_password` gives that answer too, and
+        // replaces the password on a right guess besides. With the vault open
+        // there is no such answer to buy: the caller is already holding a
+        // token that reads it.
+        let sealed = server.service.get().is_none_or(|v| !v.is_unlocked());
+        if !server.allow_remote_unlock()
+            && transport == Transport::Network
+            && (name == "unlock" || sealed)
+        {
+            return Err(CommandError::new(
+                "forbidden",
+                "this vault must be unlocked on the machine holding it",
+            )
+            .into());
+        }
+        let gate = server.registry.unlock_gate(&ctx.caller).await?;
+        let outcome = server.service.call(ctx, &name, args).await;
+        // `change_password` can fail before it has guessed at anything -- a
+        // new password too short to accept, a vault opened read-only -- and
+        // somebody who mistyped the *new* password has not guessed at the old
+        // one. Only a verdict on `current` counts for or against them.
+        let not_a_guess = name == "change_password"
+            && outcome
+                .as_ref()
+                .is_err_and(|e| e.code != jatayu_service::error::codes::BAD_PASSWORD);
+        if !not_a_guess {
+            gate.record(outcome.is_ok());
+        }
+        return Ok(Json(outcome?).into_response());
+    }
+
+    let _permit = server.in_flight.clone().acquire_owned().await.ok();
+    let value = server.service.call(ctx, &name, args).await?;
+    Ok(Json(value).into_response())
+}
+
+/// The commands that derive a key from a password the caller sent, and so go
+/// through [`Registry::unlock_gate`].
+///
+/// One list, so the gate and the refusal in [`call`] cannot disagree about it.
+/// `unlock` opens the vault. `verify_password` opens nothing -- it is what a
+/// client asks when its own screen locked and the vault behind it never
+/// closed -- but costs the same derivation. `change_password` derives a key
+/// from `current` to unwrap the vault's own, whether or not the vault is open,
+/// which made it an ungated way to ask "is this the password?" that also
+/// replaced the password on a right answer.
+fn derives_a_key(name: &str) -> bool {
+    matches!(name, "unlock" | "verify_password" | "change_password")
+}
+
+/// Read a request's body, refusing it once it passes `limit`.
+///
+/// For the three routes that take a body worth having -- `call`, `stream` and
+/// `put_blob` -- and only ever called after [`authenticate`], which is the
+/// point: see [`UNAUTHENTICATED_BODY_BYTES`]. They take the raw `Body`, which
+/// no `DefaultBodyLimit` governs, so this is the only limit on it.
+///
+/// Its own loop rather than `axum::body::to_bytes`, whose error says whether
+/// the limit was hit or the client went away only through a type from
+/// `http-body-util`, which this crate does not depend on -- and the two want
+/// different answers.
+///
+/// Answers a [`CommandError`] rather than a [`Failure`] so the screen-time
+/// ingest routes in `crate::screentime`, which answer some codes their own
+/// way, read their bodies through this too; `?` turns it into a `Failure`
+/// everywhere else.
+pub(crate) async fn read_body(
+    body: axum::body::Body,
+    limit: usize,
+) -> Result<Vec<u8>, CommandError> {
+    use futures::StreamExt;
+    let too_large = || CommandError::new("too_large", "that request is too large");
+    // A declared length past the limit is refused without reading a byte.
+    let declared = axum::body::HttpBody::size_hint(&body).lower();
+    if declared > limit as u64 {
+        return Err(too_large());
+    }
+    let mut out = Vec::with_capacity(declared as usize);
+    let mut chunks = body.into_data_stream();
+    while let Some(chunk) = chunks.next().await {
+        let chunk = chunk.map_err(|e| {
+            CommandError::new("invalid", format!("the request did not arrive whole: {e}"))
+        })?;
+        // ...and an undeclared one at the chunk that would carry it past.
+        if out.len() + chunk.len() > limit {
+            return Err(too_large());
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
+}
+
+/// A voice session for a paired device: its microphone in, this computer's
+/// models and assistant, its speaker out, over one WebSocket. See
+/// `crate::voice`.
+///
+/// The token and the agent scope are checked before the upgrade, so a device
+/// that may not talk to the assistant is refused with the same `{ code,
+/// message }` as any command, not a socket that opens and then closes.
+async fn voice(
+    State((server, transport)): Ctxt,
+    headers: HeaderMap,
+    upgrade: axum::extract::ws::WebSocketUpgrade,
+) -> Answer<Response> {
+    check_protocol(&headers)?;
+    let ctx = authenticate(&server, transport, &headers)?;
+    ctx.require(Scope::Agent)?;
+    let service = server.service.clone();
+    let device = match &ctx.caller {
+        Caller::Device(id) => Some(id.clone()),
+        _ => None,
+    };
+    Ok(upgrade.on_upgrade(move |socket| async move {
+        let (frames, out) = crate::voice::axum_socket(socket);
+        let frames = crate::voice::until(frames, disallowed(server, device));
+        crate::voice::serve(service, ctx, frames, out).await;
+    }))
+}
+
+/// Finishes when a voice session stops being allowed: its device revoked, or
+/// sharing switched off. The token was looked at once, before the upgrade,
+/// and a session lasts as long as somebody keeps talking -- so the device is
+/// looked for again every few seconds.
+async fn disallowed(server: Arc<Server>, device: Option<String>) {
+    let mut closing = server.closing.subscribe();
+    let mut every = tokio::time::interval(std::time::Duration::from_secs(5));
+    loop {
+        tokio::select! {
+            _ = closing.wait_for(|closing| *closing) => return,
+            _ = every.tick() => {
+                if let Some(id) = &device
+                    && !server.registry.holds(id)
+                {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// The one command that answers with a stream.
+///
+/// Newline-delimited JSON rather than server-sent events, and the difference
+/// matters: this is the *response to one request*, not a subscription. A client
+/// reads lines until the body ends, and the body ending is how it knows the turn
+/// is over -- no terminal event to miss, no reconnection to get wrong.
+///
+/// Kept off `/v1/call` deliberately. A route that sometimes answered with a
+/// value and sometimes with a stream would oblige every client to look at the
+/// content type before it knew how to read the body.
+async fn stream(
+    State((server, transport)): Ctxt,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+    body: axum::body::Body,
+) -> Answer<Response> {
+    check_protocol(&headers)?;
+    let ctx = authenticate(&server, transport, &headers)?;
+    if name != "send_message" {
+        return Err(CommandError::new(
+            "unknown_command",
+            format!("{name} does not answer with a stream"),
+        )
+        .into());
+    }
+    // A turn's arguments are a prompt and references -- pictures arrive
+    // through `put_blob` first -- so a command's limit is plenty.
+    let body = read_body(body, MAX_JSON_BYTES).await?;
+    let args: Value = if body.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&body)
+            .map_err(|e| CommandError::new("invalid", format!("{name}: {e}")))?
+    };
+
+    // A generous buffer, and a lossy one by construction: if a client stops
+    // reading, the sender fills up and the turn's own progress is what slows.
+    // That is the right way round -- the vault's work should never be dropped
+    // to keep a stream tidy.
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+    let service = server.service.clone();
+    tokio::spawn(async move {
+        let sender = tx.clone();
+        let sink: jatayu_service::agent::Sink = Arc::new(move |event| {
+            let _ = sender.send(serde_json::to_value(event).unwrap_or(Value::Null));
+        });
+        if let Err(e) = service.send_message(ctx, args, sink).await {
+            // The turn failed before the harness could say so itself. The
+            // client is drawing a spinner, so the last thing down the pipe has
+            // to be terminal whatever happened.
+            let _ = tx.send(json!({ "type": "failed", "message": e.message }));
+        }
+    });
+
+    let lines = futures::stream::unfold(rx, |mut rx| async move {
+        let value = rx.recv().await?;
+        let mut line = serde_json::to_vec(&value).unwrap_or_default();
+        line.push(b'\n');
+        Some((Ok::<_, std::convert::Infallible>(axum::body::Bytes::from(line)), rx))
+    });
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/x-ndjson")
+        .body(axum::body::Body::from_stream(lines))
+        .map_err(|e| CommandError::new("internal", e.to_string()).into())
+}
+
+// ---- attachments ---------------------------------------------------------
+
+async fn put_blob(
+    State((server, transport)): Ctxt,
+    headers: HeaderMap,
+    body: axum::body::Body,
+) -> Answer<Json<String>> {
+    check_protocol(&headers)?;
+    let ctx = authenticate(&server, transport, &headers)?;
+    let bytes = read_body(body, Service::MAX_ATTACHMENT_BYTES).await?;
+    Ok(Json(server.service.put_blob(&ctx, bytes).await?))
+}
+
+#[derive(Deserialize)]
+struct BlobQuery {}
+
+/// Does this caller hold only scopes that write and never read?
+fn write_only(ctx: &Ctx) -> bool {
+    !ctx.scopes.is_empty()
+        && ctx.scopes.iter().all(|s| matches!(s, Scope::Heartbeats | Scope::HealthIngest))
+}
+
+/// Turn a write-only caller away from a route that only reads.
+fn refuse_write_only(ctx: &Ctx) -> Result<(), Failure> {
+    if write_only(ctx) {
+        return Err(CommandError::new(
+            jatayu_service::error::codes::FORBIDDEN,
+            "this token cannot read",
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// What `Cache-Control` a response carrying decrypted vault bytes is sent
+/// with, given the one `desktop` would use.
+///
+/// A browser reached over the network or through web access keeps what it is
+/// told it may, in a cache on its own disk that outlives the session, the
+/// pairing and the vault's lock. A passport scan or a lab report opened on a
+/// borrowed laptop would stay there for the year the blob and file routes
+/// used to allow, readable by whoever sat down next. So for those two
+/// transports nothing the vault decrypted is kept: `no-store`, and no
+/// `max-age` or `immutable` beside it, because that is what lets a browser
+/// answer without asking again.
+///
+/// The local socket is the same user's own process -- the command line, not
+/// a browser -- and keeps what the route would have said. The desktop's own
+/// `jatayu://` handler does not come through here at all.
+fn vault_cache_control(transport: Transport, desktop: &'static str) -> &'static str {
+    match transport {
+        Transport::Network | Transport::Web => "no-store",
+        Transport::Socket => desktop,
+    }
+}
+
+/// Serve part of an attachment, honouring `Range`.
+///
+/// The same arithmetic the desktop's `jatayu://` handler uses, from the same
+/// module, so a video seeks over a network exactly as it seeks off a disk: two
+/// chunks decrypted rather than a whole file downloaded.
+async fn get_blob(
+    State((server, transport)): Ctxt,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Query(_q): Query<BlobQuery>,
+) -> Answer<Response> {
+    let ctx = authenticate_media(&server, transport, &headers)?;
+    // A write-only token -- a collector's heartbeats, a phone's health push
+    // -- reads nothing, and the blob store holds every sealed file and what
+    // a connector sent for a clinical document as well as pictures. It is
+    // the token most likely to leak.
+    refuse_write_only(&ctx)?;
+    let id = BlobId::parse(&id).map_err(|_| CommandError::new("invalid", "not a blob address"))?;
+
+    let total = server.service.blob_len(id)?;
+    let plan =
+        jatayu_core::media::plan(total, headers.get(header::RANGE).and_then(|v| v.to_str().ok()));
+    let bytes = server.service.blob_range(id, plan.start, plan.len)?;
+
+    let mut response = Response::builder()
+        .header(header::CONTENT_TYPE, jatayu_core::media::sniff_mime(&bytes))
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::CONTENT_LENGTH, bytes.len().to_string())
+        // Blobs are content-addressed, so the bytes behind a URL can never
+        // change and a client on this machine may cache them for ever -- but
+        // see `vault_cache_control` for why one that is a browser may not.
+        .header(
+            header::CACHE_CONTROL,
+            vault_cache_control(transport, "private, max-age=31536000, immutable"),
+        );
+    response = if plan.partial {
+        response
+            .status(StatusCode::PARTIAL_CONTENT)
+            .header(header::CONTENT_RANGE, plan.content_range())
+    } else {
+        response.status(StatusCode::OK)
+    };
+    response
+        .body(axum::body::Body::from(bytes))
+        .map_err(|e| CommandError::new("internal", e.to_string()).into())
+}
+
+// ---- mail: a rendered body, a part, a remote image -----------------------
+//
+// The same three things `jatayu-app/src/protocol.rs`'s `jatayu://mail/…`
+// routes answer, over HTTP instead -- both transports call straight into
+// `jatayu_service::mail::view`, which is where the actual logic (and its
+// tests) live. See that module's docs for why none of this is a JSON
+// command: a rendered body is bytes, not a result `Service::call` returns.
+//
+// Unlike `get_blob`, which is content-addressed and open to anything a
+// paired device can reach, these three check `Scope::Mail` explicitly: a
+// `MailMessageId` is not an opaque hash, and mail is the one domain whose
+// contents are written by strangers -- see `ctx::Scope::Mail`'s own docs.
+
+async fn get_mail_body(
+    State((server, transport)): Ctxt,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Answer<Response> {
+    let ctx = authenticate_media(&server, transport, &headers)?;
+    ctx.require(Scope::Mail)?;
+    let id =
+        MailMessageId::parse(&id).map_err(|_| CommandError::new("invalid", "not a message id"))?;
+
+    let vault = server.service.require()?;
+    let one_off = server.service.remote_images_allowed_once(id);
+    let allow_remote = jatayu_service::mail::view::remote_images_allowed(&vault, id, one_off)?;
+    let doc = jatayu_service::mail::view::body_document(&vault, id, allow_remote)?;
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        // A rendered body is decided fresh every time -- whether images are
+        // hidden can change between two requests for the same id -- so it
+        // must never be believed from a cache. See `protocol.rs`'s own
+        // `mail/body` route for the identical header.
+        .header(header::CACHE_CONTROL, "no-store")
+        .header("x-content-type-options", "nosniff")
+        // Read by the interface's `fetch()` of this address -- never by
+        // anything inside the sandboxed frame itself -- to show "images
+        // hidden" without parsing the document. See
+        // `ui/src/lib/mailview.ts`.
+        .header("x-mail-images-hidden", doc.images_hidden.to_string())
+        .body(axum::body::Body::from(doc.html))
+        .map_err(|e| CommandError::new("internal", e.to_string()).into())
+}
+
+async fn get_mail_part(
+    State((server, transport)): Ctxt,
+    Path((message_id, identifier)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Answer<Response> {
+    let ctx = authenticate_media(&server, transport, &headers)?;
+    ctx.require(Scope::Mail)?;
+    let message_id = MailMessageId::parse(&message_id)
+        .map_err(|_| CommandError::new("invalid", "not a message id"))?;
+
+    let vault = server.service.require()?;
+    let served = jatayu_service::mail::view::part(&vault, message_id, &identifier)?;
+    mail_bytes_response(
+        served,
+        vault_cache_control(transport, "private, max-age=31536000, immutable"),
+    )
+}
+
+/// `/v1/mail/img/{message_id}/{token}` -- the shape
+/// `jatayu-mail::sanitize::sanitize` writes into a message's HTML today.
+/// The message id comes first, matching `/v1/mail/part/{message_id}/{identifier}`'s
+/// own order, so both routes share one shape.
+async fn get_mail_image(
+    State((server, transport)): Ctxt,
+    Path((message_id, token)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Answer<Response> {
+    mail_image_response(&server, transport, &headers, &message_id, &token).await
+}
+
+#[derive(Deserialize)]
+struct MailImageQuery {
+    /// The message this image belongs to -- `jatayu://mail/img/{token}?m={msg}`'s
+    /// own query parameter, named to match.
+    m: String,
+}
+
+/// `/v1/mail/img/{token}?m={message_id}` -- the image address's first
+/// shape, with the message id in a query parameter rather than the path.
+/// Still answered, and will be for as long as a vault might hold a body
+/// sanitised before `sanitize::sanitize` started writing the message id
+/// into the path: a stored body is sealed at sync time and never
+/// re-sanitised to migrate it to the new shape, so a route that stopped
+/// understanding the old one would break every remote image in a message
+/// synced before this change. See `crates/jatayu-app/src/protocol.rs`'s
+/// identical fallback for the desktop transport.
+async fn get_mail_image_legacy(
+    State((server, transport)): Ctxt,
+    Path(token): Path<String>,
+    headers: HeaderMap,
+    Query(q): Query<MailImageQuery>,
+) -> Answer<Response> {
+    mail_image_response(&server, transport, &headers, &q.m, &token).await
+}
+
+/// What both `get_mail_image` and `get_mail_image_legacy` do once they have
+/// a message id and a token, whichever shape of address it arrived in.
+async fn mail_image_response(
+    server: &Arc<Server>,
+    transport: Transport,
+    headers: &HeaderMap,
+    message_id: &str,
+    token: &str,
+) -> Answer<Response> {
+    let ctx = authenticate_media(server, transport, headers)?;
+    ctx.require(Scope::Mail)?;
+    let message_id = MailMessageId::parse(message_id)
+        .map_err(|_| CommandError::new("invalid", "not a message id"))?;
+
+    let vault = server.service.require()?;
+    let one_off = server.service.remote_images_allowed_once(message_id);
+    let client = jatayu_service::http::public_client()?;
+    let served =
+        jatayu_service::mail::view::remote_image(&vault, client, message_id, token, one_off)
+            .await?;
+    // Never cached: a placeholder answered before permission was granted
+    // must not shadow the real picture once it is.
+    mail_bytes_response(served, "no-store")
+}
+
+fn mail_bytes_response(
+    served: jatayu_service::mail::view::PartResponse,
+    cache_control: &str,
+) -> Answer<Response> {
+    let mut response = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, served.content_type)
+        .header(header::CACHE_CONTROL, cache_control)
+        .header("x-content-type-options", "nosniff");
+    if served.attachment {
+        let filename = served.filename.as_deref().unwrap_or("attachment");
+        response = response.header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{}\"", filename.replace('"', "'")),
+        );
+    }
+    response
+        .body(axum::body::Body::from(served.bytes))
+        .map_err(|e| CommandError::new("internal", e.to_string()).into())
+}
+
+// ---- news: a rendered story, a picture ------------------------------------
+//
+// The twins of `jatayu-app/src/protocol.rs`'s `jatayu://news/…` routes,
+// over HTTP, calling straight into `jatayu_service::news::view`. Like
+// mail's they check their scope explicitly rather than relying on a command
+// table, because they are not commands: a story's body is written by a
+// stranger, and the pictures inside it are fetched on a client's behalf.
+
+#[derive(Deserialize)]
+struct NewsPart {
+    /// `?part=notes|transcript|summary`: which of the story's documents a
+    /// pane's tab draws. Absent, or a word this does not know, is the whole
+    /// body -- see [`jatayu_service::news::view::BodyPart`].
+    part: Option<String>,
+}
+
+async fn get_news_body(
+    State((server, transport)): Ctxt,
+    Path(story): Path<String>,
+    headers: HeaderMap,
+    Query(q): Query<NewsPart>,
+) -> Answer<Response> {
+    let ctx = authenticate_media(&server, transport, &headers)?;
+    ctx.require(Scope::News)?;
+    let story =
+        StoryId::parse(&story).map_err(|_| CommandError::new("invalid", "not a story id"))?;
+    let part = jatayu_service::news::view::BodyPart::parse(q.part.as_deref().unwrap_or(""));
+
+    let vault = server.service.require()?;
+    // A newsletter's body is a message's, drawn by mail, and what is kept of it
+    // in Files -- its summary -- is made from that message. A client that may
+    // read the Feed is not for that reason one that may read mail.
+    let mail_backed = {
+        let vault = vault.clone();
+        jatayu_service::blocking(move || Ok(vault.story(story)?.mail_message.is_some())).await?
+    };
+    if mail_backed {
+        ctx.require(Scope::Mail)?;
+    }
+    let doc = jatayu_service::blocking(move || {
+        jatayu_service::news::view::body_document(&vault, story, part)
+    })
+    .await?;
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        // Decided fresh every time, as mail's is: whether pictures are hidden
+        // changes when a person switches them on.
+        .header(header::CACHE_CONTROL, "no-store")
+        .header("x-content-type-options", "nosniff")
+        // Read by the interface's `fetch()` of this address, never by anything
+        // inside the sandboxed frame. See `protocol.rs`'s `respond_news_body`.
+        .header("x-news-images-hidden", if doc.images_hidden { "1" } else { "0" })
+        .body(axum::body::Body::from(doc.html))
+        .map_err(|e| CommandError::new("internal", e.to_string()).into())
+}
+
+/// `/v1/news/img/{story}/{token}`: a picture from a story's body, from the
+/// vault when it was fetched before and from the public internet when it was
+/// not -- never from a private address.
+async fn get_news_image(
+    State((server, transport)): Ctxt,
+    Path((story, token)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Answer<Response> {
+    let ctx = authenticate_media(&server, transport, &headers)?;
+    ctx.require(Scope::News)?;
+    let story =
+        StoryId::parse(&story).map_err(|_| CommandError::new("invalid", "not a story id"))?;
+
+    let vault = server.service.require()?;
+    let client = jatayu_service::http::public_client()?;
+    let served = jatayu_service::news::view::image(&vault, client, story, &token).await?;
+    // Never cached, for the reason `get_mail_image` gives.
+    mail_bytes_response(served, "no-store")
+}
+
+// ---- files: a file's bytes, one chunk of an upload -------------------------
+//
+// The twins of `jatayu-app/src/protocol.rs`'s `jatayu://files/file/{id}`
+// and of the shell's `upload_chunk` command, over HTTP. Unlike a blob, a file
+// is not content-addressed: its bytes can change under the same id, and its
+// type is the catalog's word for it rather than anything sniffed from the
+// bytes -- so what comes out of here is held to a stricter rule than a blob.
+
+/// Most one chunk of an upload may carry. The shells send four megabytes; twice
+/// that leaves room for a client that rounds up and keeps a chunk from being a
+/// way to make the server hold a great deal before it has read a byte of it.
+const MAX_UPLOAD_CHUNK_BYTES: usize = 8 * 1024 * 1024;
+
+/// The largest file answered whole when nothing asked for a part of it.
+///
+/// [`jatayu_core::media::plan`] answers a request with no `Range` -- an
+/// `<img>`, a `fetch()` -- with the first eight megabytes and a `206`, which a
+/// film's player asks for and goes back for the rest of, but which a picture
+/// does not: it draws what it was sent. A twenty-five megabyte photograph would
+/// show as the top third of one. So up to this size the answer is the file; past
+/// it, which only a film or an archive is, the planner decides. Not larger,
+/// because a response is a buffer in memory, here and in the shell.
+pub const WHOLE_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// What a file is answered with when it is opened as a document rather than
+/// drawn: the policy `jatayu-app/src/protocol.rs` sends every `jatayu:`
+/// response with. A catalogued file is whatever bytes somebody put in the
+/// folder -- an HTML page a person saved, a mail attachment -- and the type it
+/// is served as is the catalog's, so one that is `text/html` would, opened at
+/// this address, run its script as part of the page that served it. `sandbox`
+/// gives it an opaque origin and no script; as an `<img>` or a `<video>`, which
+/// is all the interface asks for, the policy does nothing at all.
+const FILE_DOCUMENT_POLICY: &str = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+
+/// What to send for a file of `total` bytes and an optional `Range`: the
+/// whole of it when it is small enough and nothing asked for less (see
+/// [`WHOLE_FILE_BYTES`]), and what [`jatayu_core::media::plan`] says
+/// otherwise. One function for the server and the desktop shell, so a range
+/// means the same thing in both.
+pub fn file_plan(total: u64, range: Option<&str>) -> jatayu_core::media::ResponsePlan {
+    let asked = range.is_some_and(|r| jatayu_core::media::parse_range(r, total).is_some());
+    if !asked && total <= WHOLE_FILE_BYTES {
+        return jatayu_core::media::ResponsePlan { start: 0, len: total, total, partial: false };
+    }
+    jatayu_core::media::plan(total, range)
+}
+
+/// A file's type as its response header, from the catalog's word for it: kept
+/// if it is a plausible header value, `application/octet-stream` if not. The
+/// catalog is not sniffed, but nor is it trusted to hold nothing that would
+/// make a response unbuildable.
+pub fn file_content_type(mime: &str) -> &str {
+    if !mime.is_empty() && mime.bytes().all(|b| (0x20..0x7f).contains(&b)) {
+        mime
+    } else {
+        "application/octet-stream"
+    }
+}
+
+/// How long a webview may keep a file's bytes. A year for an address whose
+/// `?v=` is the version the file has right now
+/// ([`jatayu_core::Vault::file_version_is_current`]) -- so a changed file
+/// has another address -- and never otherwise, because a file's bytes can
+/// change under the same id, and under the same `?v=` until the catalog
+/// catches up. Never `immutable`, as a blob's are.
+pub fn file_cache_control(current: bool) -> &'static str {
+    if current { "private, max-age=31536000" } else { "no-cache" }
+}
+
+/// What a request for a file asked for, read: the bytes, and what a response
+/// made from them needs to say.
+pub struct FileSlice {
+    /// The catalog's type for the file.
+    pub mime: String,
+    pub plan: jatayu_core::media::ResponsePlan,
+    pub bytes: Vec<u8>,
+    /// The request named the version the file has now, so the answer may be
+    /// kept ([`file_cache_control`]).
+    pub current: bool,
+}
+
+/// Read what a request for a file asked for. Blocking; callers run it off the
+/// async runtime.
+///
+/// The length comes from the disk and the type from the catalog, and the bytes
+/// are read after both, so a file that changed in between answers an error to
+/// try again rather than a body that disagrees with its own headers.
+pub fn read_file_slice(
+    vault: &jatayu_core::Vault,
+    id: FileId,
+    range: Option<&str>,
+    version: Option<&str>,
+) -> Result<FileSlice, CommandError> {
+    let mime = vault.file(id)?.mime;
+    let current = match version.filter(|v| !v.is_empty()) {
+        Some(v) => vault.file_version_is_current(id, v)?,
+        None => false,
+    };
+    let total = vault.file_len(id)?;
+    let plan = file_plan(total, range);
+    let bytes = vault.read_file_range(id, plan.start, plan.len)?;
+    if bytes.len() as u64 != plan.len {
+        return Err(CommandError::new("io", "that file changed while it was being read"));
+    }
+    Ok(FileSlice { mime, plan, bytes, current })
+}
+
+#[derive(Deserialize)]
+struct FileVersion {
+    /// `?v=`: what the interface versions an address by. Cached only when it
+    /// is the version the file has now -- see [`file_cache_control`].
+    v: Option<String>,
+}
+
+/// Serve part of a file, honouring `Range`.
+///
+/// The scope is checked here, not left to a command table, because this is not
+/// a command: a paired device holding no `Files` scope may not read the folder
+/// through the one route that does not go through [`call`].
+async fn get_file(
+    State((server, transport)): Ctxt,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Query(q): Query<FileVersion>,
+) -> Answer<Response> {
+    let ctx = authenticate_media(&server, transport, &headers)?;
+    ctx.require(Scope::Files)?;
+    let id = FileId::parse(&id).map_err(|_| CommandError::new("invalid", "not a file address"))?;
+
+    let vault = server.service.require_unlocked()?;
+    // One of Health's -- a clinical document's page, a meal's photograph --
+    // is Health's to show as much as Files': a device holding only `Files`
+    // reads the folder, not somebody's lab reports.
+    let origin = {
+        let vault = vault.clone();
+        jatayu_service::blocking(move || Ok(vault.file(id)?.origin)).await?
+    };
+    if origin == jatayu_core::files::FileOrigin::Health {
+        ctx.require(Scope::Health)?;
+    }
+    let range = header_str(&headers, "range");
+    let version = q.v;
+    let FileSlice { mime, plan, bytes, current } = jatayu_service::blocking(move || {
+        read_file_slice(&vault, id, range.as_deref(), version.as_deref())
+    })
+    .await?;
+
+    let mut response = Response::builder()
+        .header(header::CONTENT_TYPE, file_content_type(&mime))
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::CONTENT_LENGTH, bytes.len().to_string())
+        .header(header::CACHE_CONTROL, vault_cache_control(transport, file_cache_control(current)))
+        .header("x-content-type-options", "nosniff")
+        .header(header::CONTENT_SECURITY_POLICY, FILE_DOCUMENT_POLICY);
+    response = if plan.partial {
+        response
+            .status(StatusCode::PARTIAL_CONTENT)
+            .header(header::CONTENT_RANGE, plan.content_range())
+    } else {
+        response.status(StatusCode::OK)
+    };
+    response
+        .body(axum::body::Body::from(bytes))
+        .map_err(|e| CommandError::new("internal", e.to_string()).into())
+}
+
+#[derive(Deserialize)]
+struct UploadOffset {
+    /// Where in the file this chunk begins. Read as text and parsed after
+    /// authentication, so a caller with no token is refused as such rather
+    /// than told what is wrong with its query.
+    offset: Option<String>,
+}
+
+/// One chunk of an upload begun with the `begin_upload` command, as raw bytes,
+/// at `?offset=`. Answers the bytes received so far.
+///
+/// The same door the desktop shell's `upload_chunk` command is: both call
+/// `domains::files::upload_chunk`, which decides what an offset that is not
+/// where the upload has got to means. Bytes, not JSON, so it is not a command.
+async fn upload_file_chunk(
+    State((server, transport)): Ctxt,
+    Path(upload): Path<String>,
+    Query(q): Query<UploadOffset>,
+    headers: HeaderMap,
+    body: axum::body::Body,
+) -> Answer<Json<u64>> {
+    check_protocol(&headers)?;
+    let ctx = authenticate(&server, transport, &headers)?;
+    ctx.require(Scope::Files)?;
+    let offset = q
+        .offset
+        .as_deref()
+        .and_then(|o| o.parse::<u64>().ok())
+        .ok_or_else(|| CommandError::new("invalid", "an upload chunk needs an ?offset="))?;
+    let bytes = read_body(body, MAX_UPLOAD_CHUNK_BYTES).await?;
+    let received = jatayu_service::domains::files::upload_chunk(
+        server.service.clone(),
+        ctx,
+        upload,
+        offset,
+        bytes,
+    )
+    .await?;
+    Ok(Json(received))
+}
+
+// ---- events --------------------------------------------------------------
+
+/// Everything the service says, as it says it.
+///
+/// One stream per connected client. A client is told about writes it did not
+/// make -- the origin is compared here rather than in the interface, so a
+/// window never reloads under its own cursor.
+///
+/// And only about what it may read. A new-mail notice carries a sender, a
+/// subject and the first words of the message; a reminder names a medicine; a
+/// meeting offer carries a join link. A token that holds only
+/// [`Scope::Heartbeats`] or [`Scope::HealthIngest`] is documented as one that
+/// "can read nothing", and sits in a browser profile or an app on a phone, so
+/// it is refused the stream outright -- the same refusal [`get_blob`] gives it
+/// -- and any other token's stream is filtered by its scopes (see
+/// `crate::sse::is_for`).
+async fn events(
+    State((server, transport)): Ctxt,
+    headers: HeaderMap,
+) -> Answer<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>> + use<>>> {
+    check_protocol(&headers)?;
+    let ctx = authenticate(&server, transport, &headers)?;
+    refuse_write_only(&ctx)?;
+    let me = ctx.caller.origin().unwrap_or("").to_string();
+    Ok(server.broadcaster.stream(me, ctx.scopes))
+}
+
+// ---- the parts every route shares ----------------------------------------
+
+fn header_str(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers.get(name).and_then(|v| v.to_str().ok()).map(str::to_string)
+}
+
+/// The first of `names` the request carries.
+fn first_header(
+    headers: &HeaderMap,
+    mut names: impl Iterator<Item = &'static str>,
+) -> Option<String> {
+    names.find_map(|name| header_str(headers, name))
+}
+
+/// A write's id, under whichever name the client's build sends it: a phone
+/// from before a rename that speaks this protocol is answered, and a retry of
+/// its write must still be one.
+fn request_id(headers: &HeaderMap) -> Option<String> {
+    first_header(headers, wire_headers::request_names())
+}
+
+/// Refuse a client built against a different command table.
+///
+/// Named, not guessed: the message carries both numbers, because "update the
+/// app" is only useful advice if it says which side is behind.
+fn check_protocol(headers: &HeaderMap) -> Result<(), Failure> {
+    // A copy of the app from before either rename says it under that
+    // generation's name, and is told which side to update rather than that
+    // it said nothing.
+    let Some(raw) = first_header(headers, wire_headers::protocol_names()) else {
+        return Err(CommandError::new(
+            "protocol",
+            format!(
+                "this request did not say which protocol it speaks; this server speaks {PROTOCOL}"
+            ),
+        )
+        .into());
+    };
+    match raw.parse::<u32>() {
+        Ok(n) if n == PROTOCOL => Ok(()),
+        Ok(n) => Err(CommandError::new(
+            "protocol",
+            format!(
+                "that copy of Jatayu speaks protocol {n} and this one speaks {PROTOCOL}; \
+                 update the older of the two"
+            ),
+        )
+        .into()),
+        Err(_) => Err(CommandError::new("protocol", "the protocol header was not a number").into()),
+    }
+}
+
+/// Who is calling.
+///
+/// Over the socket, nobody had to prove anything: the peer is a process
+/// belonging to this user, which is a stronger statement than any token. Over
+/// the network, a bearer token is required and is what carries the scopes.
+///
+/// # Not an MCP token
+///
+/// An MCP client's token is a row in the same device list a paired phone's
+/// is -- one list, so revoking either is the same act -- but it is a key to
+/// the MCP endpoint and nothing else. That endpoint is where its limits live:
+/// the switch for destructive tools, each account's own MCP access, a tool
+/// catalogue filtered to match. Accepted here, the same token reached the
+/// whole command table with none of them. So it is refused by kind, from the
+/// identity [`Registry::authenticate`] stamped on it, not from anything the
+/// request says about itself. A device paired before rows were marked counts
+/// as MCP too -- see `auth::Device::mcp` -- and pairs again, hence the message.
+fn authenticate(
+    server: &Arc<Server>,
+    transport: Transport,
+    headers: &HeaderMap,
+) -> Result<Ctx, Failure> {
+    match transport {
+        Transport::Socket => Ok(Ctx {
+            caller: Caller::Socket,
+            scopes: vec![Scope::All],
+            proved_at: None,
+            request_id: None,
+        }),
+        Transport::Network => {
+            let token = bearer(headers, Leniency::Exact).ok_or_else(|| {
+                CommandError::new("unauthorized", "this request carried no device token")
+            })?;
+            let ctx = server.registry.authenticate(token)?;
+            if let Caller::Device(id) = &ctx.caller
+                && jatayu_core::agent::tools::is_mcp_device_id(id)
+            {
+                return Err(CommandError::new(
+                    "forbidden",
+                    "this token was issued for an MCP client, and those only work on the MCP \
+                     endpoint. If this is a device you paired, pair it again.",
+                )
+                .into());
+            }
+            Ok(ctx)
+        }
+        Transport::Web => web_session(server, headers, false),
+    }
+}
+
+/// [`authenticate`], for the routes that answer media -- an attachment, a
+/// message body, a picture inside one, a story.
+///
+/// The same for a paired device or the socket. A browser may reach these
+/// with the media token instead of the cookie (see `crate::web::session`
+/// for why the token exists), and without the protocol header, which an
+/// `<img>` cannot send. These routes only read.
+fn authenticate_media(
+    server: &Arc<Server>,
+    transport: Transport,
+    headers: &HeaderMap,
+) -> Result<Ctx, Failure> {
+    if transport == Transport::Web {
+        return web_session(server, headers, true);
+    }
+    check_protocol(headers)?;
+    authenticate(server, transport, headers)
+}
+
+/// The session web access's gatekeeper found for this request.
+///
+/// Only ever from the two headers the gatekeeper sets -- it removes any copy
+/// a client sent before it looks. `media` says whether the media token is
+/// enough, or the cookie is needed.
+///
+/// A vault that is no longer unlocked ends every session here too, not only
+/// through `crate::web::WebSink`: a lock that some path forgot to announce
+/// must not leave a browser holding a session into the next unlock.
+fn web_session(server: &Arc<Server>, headers: &HeaderMap, media: bool) -> Result<Ctx, Failure> {
+    use crate::web::routes::{ACCESS_HEADER, SESSION_HEADER};
+    let sessions = server
+        .sessions
+        .as_ref()
+        .ok_or_else(|| CommandError::new("internal", "this server has no browser sessions"))?;
+    let signed_out = || CommandError::new("unauthorized", "this browser is not signed in");
+    let id = header_str(headers, SESSION_HEADER).ok_or_else(signed_out)?;
+    let access = header_str(headers, ACCESS_HEADER).unwrap_or_default();
+    if access != "full" && !(media && access == "media") {
+        return Err(signed_out().into());
+    }
+    let Some(vault) = server.service.get().filter(|v| v.is_unlocked()) else {
+        sessions.close_all();
+        return Err(signed_out().into());
+    };
+    // A session opened on the vault that was open before this one -- the
+    // desktop opening or creating another underneath a running server -- is
+    // no key to this one. `belongs_to` ends every such session.
+    if !sessions.belongs_to(vault.path()) {
+        return Err(signed_out().into());
+    }
+    let session = sessions.by_id(&id).ok_or_else(signed_out)?;
+    Ok(Ctx {
+        caller: Caller::Device(crate::web::routes::origin_of(&session.id, headers)),
+        scopes: vec![Scope::All],
+        proved_at: Some(session.proved_at),
+        request_id: None,
+    })
+}
+
+/// The connection's peer, for logs. Not used for authentication -- see
+/// [`authenticate`] -- because an address is not an identity.
+#[allow(dead_code)]
+pub fn peer(request: &Request) -> Option<String> {
+    request
+        .extensions()
+        .get::<ConnectInfo<std::net::SocketAddr>>()
+        .map(|ConnectInfo(addr)| addr.to_string())
+}
+
+/// The JSON a client sees when something is refused before a command ran.
+#[allow(dead_code)]
+pub fn refusal(code: &str, message: &str) -> Value {
+    json!({ "code": code, "message": message })
+}
+
+#[cfg(test)]
+mod tests;

@@ -106,17 +106,17 @@ const LIVE_EVERY_MS = 60_000
  * and visibly flip.
  */
 const viewPref = pref<ScreenView>(
-  'karmayoga.screentime.view',
+  'jatayu.screentime.view',
   (raw) => SCREEN_VIEWS.find((v) => v === raw) ?? 'summary',
   'summary',
 )
 const rangePref = pref<RangeKind>(
-  'karmayoga.screentime.range',
+  'jatayu.screentime.range',
   (raw) => RANGES.find((r) => r === raw) ?? 'day',
   'day',
 )
 const devicesPref = pref<string[]>(
-  'karmayoga.screentime.devices',
+  'jatayu.screentime.devices',
   (raw) => {
     const parsed: unknown = raw ? JSON.parse(raw) : []
     return Array.isArray(parsed) ? parsed.filter((d): d is string => typeof d === 'string') : []

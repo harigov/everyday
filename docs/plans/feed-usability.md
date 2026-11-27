@@ -92,7 +92,7 @@ differs from the decisions that follow:
   (the article written from the transcript; otherwise the tab offers to
   write it). An article -- a web feed's story, a newsletter issue -- has
   Article and Summary. Each tab is a document from the news body route,
-  `karmayoga://news/body/{story}?part=notes|transcript|summary`, drawn in
+  `jatayu://news/body/{story}?part=notes|transcript|summary`, drawn in
   the same sandboxed frame as a body: one place renders, one set of rules.
   `Open transcript` in Files and the inspector is unchanged.
 - **Clean-up defaults are two `Retention`s** in `FeedSettings.cleanup`:
@@ -146,7 +146,7 @@ differs from the decisions that follow:
 | --- | --- | --- |
 | N (newsletters) | `news/newsletters.rs`, `news/refresh.rs`, `store/news.rs` (`move_stories`), `store-sql/src/news.rs`, `store/conformance/news.rs`, `domains/news.rs`, `tests/news_newsletters.rs` | routing to and making found sources, re-homing, a found source's refresh, `not_newsletters` on delete and off on a by-hand follow, calling `automation::arrived` for what a turn stored |
 | C (clean-up + automation) | `vault/news.rs`, `vault/listening.rs`, `news/cleanup.rs` (new), `news/automation.rs` (new), `news/summary.rs` (new), `news/work.rs`, `news/mod.rs` (WorkKind), `news/transcribe.rs` (article gate), `domains/upnext.rs` or a new `domains/summaries.rs`, `vault/files.rs` (summary slot), `news/downloads.rs` (summary slot clean-up only), `tests/change_events.rs`, `command.rs` (INVISIBLE) | defaults in expiry, `ExpireReport.mail`, trashing, `summarize_story`, `automation::arrived(svc, vault, source, &[StoryId])` |
-| V (views) | `news/view.rs`, `karmayoga-app/src/protocol.rs` (news routes only), `karmayoga-server/src/routes.rs` + `client.rs` (news body only) | `?part=` on the news body route, locally and remotely |
+| V (views) | `news/view.rs`, `jatayu-app/src/protocol.rs` (news routes only), `jatayu-server/src/routes.rs` + `client.rs` (news body only) | `?part=` on the news body route, locally and remotely |
 
 The supervisor wires `automation::arrived` into the web-feed store path and
 `cleanup::after_expiry` into `refresh.rs`'s `expire`, regenerates

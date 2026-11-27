@@ -184,8 +184,8 @@
     <EmptyState lead="Health is not available here.">
       {#snippet icon()}<Icon name="info" size={30} weight={1.3} />{/snippet}
       {#snippet note()}
-        This vault cannot keep health data. Open one on a computer where Karma Yoga runs, or ask
-        whoever runs this one to turn Health on.
+        This vault cannot keep health data. Open one on a computer where Jatayu runs, or ask whoever
+        runs this one to turn Health on.
       {/snippet}
     </EmptyState>
   {:else if blank}

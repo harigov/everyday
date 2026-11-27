@@ -33,7 +33,7 @@ export function formatSize(bytes: number): string {
  *  read, not rendered by the viewer's own hand. */
 export type FilePreview = 'image' | 'video' | 'audio' | 'pdf' | 'text' | 'none'
 
-// A port of `karmayoga-service`'s `mailpreview::kind_of`, so a picture saved
+// A port of `jatayu-service`'s `mailpreview::kind_of`, so a picture saved
 // from a message and the same picture in the Files app are looked at the same
 // way. Two differences, both on purpose: an SVG is an `image` here -- an
 // `<img>` never runs a script in it, which is why mail has to frame it -- and

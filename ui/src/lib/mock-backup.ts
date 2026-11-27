@@ -40,9 +40,9 @@ import type {
 } from './types'
 
 /** What the folder picker answers: an external disk, as Linux mounts one. */
-const PICKED_FOLDER = '/media/you/Backup Disk/Karma Yoga'
+const PICKED_FOLDER = '/media/you/Backup Disk/Jatayu'
 
-const CONFIG_DIR = '/home/you/.config/karmayoga'
+const CONFIG_DIR = '/home/you/.config/jatayu'
 
 const HOUR = 3_600_000
 const DAY = 24 * HOUR

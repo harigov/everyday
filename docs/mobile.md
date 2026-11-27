@@ -1,4 +1,4 @@
-# Karma Yoga on a phone
+# Jatayu on a phone
 
 The same application on Android and iOS, built by Tauri from the
 same crate and the same `ui/`. This page is how it is put together, how to
@@ -13,7 +13,7 @@ The phone pairs with it once -- Settings → Vault → Share on the network
 there, a pairing link here -- and from then on every command the interface
 runs goes to that computer over TLS, pinned to the certificate the link
 named. Exactly what a desktop window looking at another computer's vault
-already did (`crates/karmayoga-app/src/remote.rs`); the phone just never
+already did (`crates/jatayu-app/src/remote.rs`); the phone just never
 offers a vault of its own.
 
 What the phone has that the desktop's remote window does not: it reconnects
@@ -25,7 +25,7 @@ voice typing into other apps. Talking to the assistant goes to the computer
 too: see "Voice" below.
 
 ```text
-crates/karmayoga-app/
+crates/jatayu-app/
   src/lib.rs        the desktop's modules are cfg(desktop); run() hands a
                     phone build to mobile::run()
   src/mobile.rs     the phone's builder: one window, the commands a remote
@@ -34,9 +34,9 @@ crates/karmayoga-app/
                     private storage (tokens.json), not a keychain
   gen/android/      the Android project, committed: manifest, MainActivity
                     (the screen's edges and the keyboard, told to the page)
-crates/karmayoga-vault  set_app_dirs: where a platform with no $HOME keeps
-                    settings
-crates/karmayoga-server  `speech` is a default feature the phone turns off
+crates/jatayu-vault   set_app_dirs: where a platform with no $HOME keeps
+                      settings
+crates/jatayu-server  `speech` is a default feature the phone turns off
 ```
 
 ## Building and running on Android
@@ -55,7 +55,7 @@ Then, every time:
 
 ```sh
 . scripts/android-env.sh                  # SDK, NDK, JDK, node, cargo on PATH
-cd crates/karmayoga-app
+cd crates/jatayu-app
 cargo tauri android build --debug --target x86_64 --apk     # the emulator
 cargo tauri android build --debug --target aarch64 --apk    # a real phone
 adb install -r gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
@@ -78,8 +78,8 @@ BT=~/Android/Sdk/build-tools/36.1.0
 APK=gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk
 $BT/zipalign -f -p 4 $APK /tmp/aligned.apk
 $BT/apksigner sign --ks ~/.android/debug.keystore --ks-pass pass:android \
-  --key-pass pass:android --out karmayoga.apk /tmp/aligned.apk
-adb install -r karmayoga.apk     # USB debugging on, or `adb pair` for wireless
+  --key-pass pass:android --out jatayu.apk /tmp/aligned.apk
+adb install -r jatayu.apk        # USB debugging on, or `adb pair` for wireless
 ```
 
 The phone needs Android 8.0 or later, and to reach the computer: the same
@@ -101,12 +101,12 @@ under `~/.cache/ky-android/testserver` so nothing touches your own vault or
 settings. On the emulator, `adb reverse tcp:7397 tcp:7397` makes the link's
 `127.0.0.1:7397` this machine's. The password is `phone-test-pass`.
 
-**Logs**: `adb logcat -s KarmaYoga` is the shell's own log (`mobile::Logcat`);
+**Logs**: `adb logcat -s Jatayu` is the shell's own log (`mobile::Logcat`);
 `adb logcat | grep RustStdoutStderr` is everything else the process printed.
 
 **Driving the app's webview from a script**: Playwright attaches to it over
 adb -- `const [device] = await _android.devices(); const page = await (await
-device.webView({ pkg: 'app.karmayogi.KarmaYoga' })).page()` -- and from there
+device.webView({ pkg: 'app.jatayu.Jatayu' })).page()` -- and from there
 it is an ordinary page: evaluate, screenshot, locators. A real touch is `adb
 shell input tap X Y` at the element's centre times `devicePixelRatio`;
 Android's back button is `adb shell input keyevent KEYCODE_BACK`.
@@ -278,10 +278,10 @@ Not yet known, or not done:
 ## Voice
 
 Talking to the assistant on the phone is the desktop's own voice transport
-(`crates/karmayoga-app/src/voice`, `audio`) on the phone's microphone and
+(`crates/jatayu-app/src/voice`, `audio`) on the phone's microphone and
 speaker -- cpal over AAudio, echo cancelling and noise suppression in sonora
 -- with the session running on the computer. `RemoteClient::voice_open`
-opens it over one WebSocket, `/v1/voice` (`crates/karmayoga-server/src/voice.rs`):
+opens it over one WebSocket, `/v1/voice` (`crates/jatayu-server/src/voice.rs`):
 microphone audio up as 16 kHz PCM, the voice's audio and the session's events
 down. The computer's models hear and speak; the phone needs none. A desktop
 window looking at another computer's vault talks the same way now.
@@ -293,7 +293,7 @@ recorded voice; and a change asked for aloud is asked about rather than taken
 as approved, as on a call.
 
 On Android the app asks for the microphone the first time it is wanted
-(`window.KarmaYogaMic`, `MainActivity.kt`), and hands cpal the Java VM and the
+(`window.JatayuMic`, `MainActivity.kt`), and hands cpal the Java VM and the
 application's Context at startup (`mobile::android_context`) -- without that
 cpal panics opening the microphone. AAudio needs Android 8.0, which is the
 app's minimum.
@@ -302,7 +302,7 @@ app's minimum.
 
 ```sh
 . scripts/android-env.sh
-KARMAYOGA_BIN=... scripts/phone-test-vault.sh &       # a vault to pair with
+JATAYU_BIN=... scripts/phone-test-vault.sh &          # a vault to pair with
 # choose its models: a recogniser and a voice on this computer, and a model to
 # answer (a stand-in that streams a fixed reply is enough), over the server's
 # local socket with save_model_settings / set_model_key / save_agent_settings
@@ -337,7 +337,7 @@ a file as on Android. `gen/apple/` is the Xcode project, committed as
 
 What is the iPhone's own:
 
-- **Privacy texts**, in `crates/karmayoga-app/Info.ios.plist`, which the iOS
+- **Privacy texts**, in `crates/jatayu-app/Info.ios.plist`, which the iOS
   build merges in last: the local network (iOS refuses it quietly without a
   text), the microphone, and the camera that a file picker's "Take Photo"
   opens (an app with no text for it is killed). The build merges the Mac's
@@ -372,12 +372,12 @@ One-time, on a Mac:
 Then:
 
 ```sh
-cd crates/karmayoga-app
+cd crates/jatayu-app
 cargo tauri ios build --target aarch64-sim --features drive     # ~15 min first time
 xcrun simctl boot "iPhone 17"
-xcrun simctl install booted "gen/apple/build/arm64-sim/Karma Yoga.app"
-SIMCTL_CHILD_KARMAYOGA_DRIVE=$HOME/.cache/ky-drive.sock \
-  xcrun simctl launch booted app.karmayogi.KarmaYoga
+xcrun simctl install booted "gen/apple/build/arm64-sim/Jatayu.app"
+SIMCTL_CHILD_JATAYU_DRIVE=$HOME/.cache/ky-drive.sock \
+  xcrun simctl launch booted app.jatayu.Jatayu
 ```
 
 A release build, not `--debug`: its build tree is a third the size (3 GB
@@ -386,12 +386,12 @@ The simulator shares this machine's network, so `scripts/phone-test-vault.sh`'s
 link to `127.0.0.1:7397` works as it is.
 
 **Driving it**: Playwright cannot reach WKWebView, so a build with `--features
-drive` runs JavaScript sent over the socket `KARMAYOGA_DRIVE` names (passed into
-the simulator as `SIMCTL_CHILD_KARMAYOGA_DRIVE`): `node ui/scripts/drive.mjs
+drive` runs JavaScript sent over the socket `JATAYU_DRIVE` names (passed into
+the simulator as `SIMCTL_CHILD_JATAYU_DRIVE`): `node ui/scripts/drive.mjs
 'return document.title'`, or `import { drive }` from a script. The same works
 for the Mac app. Screenshots: `xcrun simctl io booted screenshot shot.png`.
 Two things that look like failures and are not: `xcrun simctl privacy booted
-grant microphone app.karmayogi.KarmaYoga` terminates the app, as iOS does when
+grant microphone app.jatayu.Jatayu` terminates the app, as iOS does when
 a permission changes; and an app in the background is suspended, so nothing
 sent to it is answered until it is in front again.
 

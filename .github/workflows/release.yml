@@ -76,7 +76,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          version=$(node -p "require('./crates/karmayoga-app/tauri.conf.json').version")
+          version=$(node -p "require('./crates/jatayu-app/tauri.conf.json').version")
           tag=${TAG_INPUT:-v$version}
 
           # Echoed to the log, not just the summary: the API does not record
@@ -202,7 +202,7 @@ jobs:
             libvulkan1 \
             build-essential curl wget file patchelf desktop-file-utils
 
-      # llama.cpp's Vulkan backend (see crates/karmayoga-service/Cargo.toml)
+      # llama.cpp's Vulkan backend (see crates/jatayu-service/Cargo.toml)
       # needs the Vulkan headers, SPIRV-Headers and `glslc` to build. LunarG's
       # SDK carries all three, checked against a pinned SHA-256.
       - name: Fetch and check the Vulkan SDK
@@ -260,7 +260,7 @@ jobs:
         run: scripts/appimage-tools.sh "${XDG_CACHE_HOME:-$HOME/.cache}/tauri"
 
       - name: Build bundles
-        working-directory: crates/karmayoga-app
+        working-directory: crates/jatayu-app
         env:
           BUNDLES: ${{ matrix.bundles }}
           RUST_TARGET: ${{ matrix.rust_target }}
@@ -284,7 +284,7 @@ jobs:
           # `--locked` so the build fails, rather than quietly resolving
           # something else, if Cargo.lock does not match the manifests.
           args+=(-- --profile dist --locked)
-          # Run from crates/karmayoga-app, where tauri.conf.json is, so the
+          # Run from crates/jatayu-app, where tauri.conf.json is, so the
           # CLI comes from ui/'s install by `--prefix` rather than by path.
           npm --prefix ../../ui exec --no -- tauri "${args[@]}"
 
@@ -313,7 +313,7 @@ jobs:
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: karmayoga-${{ matrix.name }}
+          name: jatayu-${{ matrix.name }}
           path: dist/*
           if-no-files-found: error
           retention-days: 14
@@ -339,12 +339,13 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
-          pattern: karmayoga-*
+          pattern: jatayu-*
           merge-multiple: true
 
-      # GitHub rewrites characters it will not put in an asset name: the
-      # space in "Karma Yoga_0.1.0_amd64.deb" silently becomes a dot on
-      # upload. Do that rename here instead, so the names recorded in
+      # GitHub rewrites characters it will not put in an asset name: a
+      # space in a bundle's name (there was one while the product was
+      # "Karma Yoga") silently becomes a dot on upload. Do that rename here
+      # instead, so the names recorded in
       # SHA256SUMS.txt are the names the assets actually end up with and
       # `sha256sum -c SHA256SUMS.txt` verifies a fresh download rather than
       # reporting six missing files.
@@ -414,7 +415,7 @@ jobs:
             [ "$clash" = 0 ] || exit 1
             gh release upload "$TAG" dist/*
           else
-            flags=(--title "Karma Yoga $VERSION" --target "$GITHUB_SHA"
+            flags=(--title "Jatayu $VERSION" --target "$GITHUB_SHA"
                    --notes "$notes" --generate-notes)
             if [ "$MODE" = draft ]; then
               flags+=(--draft)

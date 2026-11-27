@@ -31,7 +31,7 @@ import type {
   Turn,
 } from './panel'
 
-/** The most cards drawn at once: `MAX_SHOWN` in `crates/karmayoga-app/src/panel/mod.rs`. */
+/** The most cards drawn at once: `MAX_SHOWN` in `crates/jatayu-app/src/panel/mod.rs`. */
 export const MAX_SHOWN = 3
 
 /** How many turns of a conversation are drawn: the newest. */
@@ -213,7 +213,7 @@ export function sticksToBottom(body: readonly Keyed[]): boolean {
 /**
  * The most of the screen's work area -- `screen.availHeight` to the page --
  * the window is made: `MOST_OF_AREA` in
- * `crates/karmayoga-app/src/panel/window.rs`. A stack taller than that
+ * `crates/jatayu-app/src/panel/window.rs`. A stack taller than that
  * scrolls, as a whole, inside the window.
  */
 export const MOST_OF_AREA = 0.8
@@ -602,7 +602,7 @@ export interface DecisionPress {
  * A card's buttons in the order they are drawn, left to right: as listed,
  * except that the primary one goes last, rightmost -- where a desktop's dialogs
  * put the button that goes ahead. The shell lists the primary first, as the most
- * important; `drawn_order` in `crates/karmayoga-app/src/panel/mod.rs` is the
+ * important; `drawn_order` in `crates/jatayu-app/src/panel/mod.rs` is the
  * same rule.
  */
 export function drawnOrder(actions: readonly PanelAction[] | undefined): PanelAction[] {

@@ -1,7 +1,7 @@
 // Somebody a task is to be raised with, as the words said them.
 //
 // The same reading the core makes (`TaskPerson::said` over
-// `meeting::identify::parse_attendee` in `karmayoga-core`), so a person typed
+// `meeting::identify::parse_attendee` in `jatayu-core`), so a person typed
 // into a task's "Raise with" field and one the assistant wrote down from a
 // sentence come out the same. It matters because the brief before a meeting
 // matches by address as well as by name: "Josh Smith <josh@acme.com>" kept

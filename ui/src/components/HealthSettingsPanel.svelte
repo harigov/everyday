@@ -379,9 +379,9 @@
     <section aria-labelledby="hs-glucose">
       <span class="eyebrow" id="hs-glucose">Glucose notices</span>
       <p class="hint">
-        Karma Yoga can tell you afterwards that your glucose went below or above these. It is a
-        notice in the app, never an alarm: your sensor’s own alarms stay your safety alarm, and
-        nothing here is advice about what your range should be. Leave one empty for no notice.
+        Jatayu can tell you afterwards that your glucose went below or above these. It is a notice
+        in the app, never an alarm: your sensor’s own alarms stay your safety alarm, and nothing
+        here is advice about what your range should be. Leave one empty for no notice.
       </p>
       <label class="row-setting">
         <span><b>Below</b></span>

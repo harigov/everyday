@@ -30,14 +30,13 @@ export function bootWindow(
   component: Component,
   { forced = null, follow = false }: BootOptions = {},
 ) {
-  const theme = () =>
-    resolveTheme(parseThemeChoice(forced ?? localStorage.getItem('karmayoga.theme')))
+  const theme = () => resolveTheme(parseThemeChoice(forced ?? localStorage.getItem('jatayu.theme')))
 
   showTheme(theme())
 
   if (follow) {
     window.addEventListener('storage', (e) => {
-      if (e.key === 'karmayoga.theme') showTheme(theme())
+      if (e.key === 'jatayu.theme') showTheme(theme())
     })
     watchSystemScheme(() => showTheme(theme()))
   }

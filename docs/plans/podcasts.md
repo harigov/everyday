@@ -133,8 +133,8 @@ file, then reviewed (15 findings, all fixed). What differs from that contract:
   `App.svelte` (never unmounted while switching apps), playing
   `playUrl(id)`, which honours `Range`. It plays anything audio or video in
   Files. On Linux that is the shell's loopback server
-  (`karmayoga-app/src/player.rs`), not `fileUrl(id)`: WebKitGTK's media goes
-  through GStreamer, which reads no custom scheme, so `karmayoga://` failed
+  (`jatayu-app/src/player.rs`), not `fileUrl(id)`: WebKitGTK's media goes
+  through GStreamer, which reads no custom scheme, so `jatayu://` failed
   with "The operation is not supported" -- found after phase 2 merged, since
   nothing had played a file in the real app. Articles in Up Next are heard through
   Listen (`ListenSource::Story`) or opened to read. Progress is reported with

@@ -4,7 +4,7 @@ Hari (Nov 24 2026): speech recognition gets confused by background noise,
 people talking in the room; filter it so only his voice is heard. Before
 this, every app microphone was cleaned by `sonora` (WebRTC's processing):
 a high-pass filter, steady-noise suppression and, in voice mode, echo
-cancellation (`karmayoga-app` `audio/echo.rs`). None of that tells one voice
+cancellation (`jatayu-app` `audio/echo.rs`). None of that tells one voice
 from another, and Silero and the voicing check after it only ask whether a
 sound is a voice, not whose.
 
@@ -16,7 +16,7 @@ typing and dictation. A meeting is recorded as it was.
 
 ## 1. Only my voice: the owner's voice check
 
-`karmayoga_service::speech::owner`. Every utterance the detector cuts from
+`jatayu_service::speech::owner`. Every utterance the detector cuts from
 this computer's microphone is embedded with the speech kit's speaker model
 (eres2net, already used to tell meeting voices apart) and compared with the
 owner's voiceprint before a recogniser hears it. Wrapped round the
@@ -64,7 +64,7 @@ The real-model test is `tests/mic_cleanup_real.rs` (two Phonon voices).
 
 ## 2. Remove other voices: VoxLock
 
-`karmayoga_service::speech::cleanup`, run by the app's audio engine. VoxLock
+`jatayu_service::speech::cleanup`, run by the app's audio engine. VoxLock
 (arbazsiddiqui/voxlock, Apache-2.0, 27M causal band-split RNN, int8 from
 sherpa-onnx's `speech-enhancement-models` release, 72.5 MB) is the only
 thing here that takes out somebody talking *over* the person: once a

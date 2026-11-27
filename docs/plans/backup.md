@@ -2,8 +2,8 @@
 
 Sealed, date-stamped copies of the vault and of this computer's settings,
 made on a schedule, to a folder or to an S3 or Google Cloud Storage bucket,
-pruned to a number of copies. Settings → Backup, `karmayoga backups`, and
-`karmayoga restore`.
+pruned to a number of copies. Settings → Backup, `jatayu backups`, and
+`jatayu restore`.
 
 ## What it is for, and what it is not
 
@@ -11,7 +11,7 @@ The day the disk dies, the laptop is stolen, or a sync goes wrong: a copy of
 everything, somewhere else, that opens with the same password. It is not an
 export -- an export takes the encryption off so other programs can read your
 writing (see the README's "Leaving with your writing") -- and it is not
-`karmayoga backup <dir>`, which makes one plain copy of the vault folder,
+`jatayu backup <dir>`, which makes one plain copy of the vault folder,
 once, by hand. That verb stays, and now copies mail's packs and a chat link's
 store too, which it used to leave behind.
 
@@ -31,7 +31,7 @@ changes, and a nightly backup sends only what changed.
 
 ```text
   <folder, or bucket/prefix>/
-    karmayoga-backup.json             what this is, and whose (a keyed id)
+    jatayu-backup.json                what this is, and whose (a keyed id)
     vault-header.json                 the vault's header: what the password opens
     README.txt                        for whoever finds it in ten years
     snapshots/2026-11-14T030512Z.snapshot   one sealed manifest per copy
@@ -41,6 +41,12 @@ changes, and a nightly backup sends only what changed.
 
 The snapshot names are the "date stamped files": UTC, no colons (a FAT disk
 or a Windows share refuses them), sorting as they read.
+
+A repository made while the application was Karma Yoga has
+`karmayoga-backup.json` for its marker, naming the format `karmayoga-backup`.
+Both are still read (`Former::backup_marker`, `backup_format`): it is the same
+repository, sealed under the same `karmayoga.backup.*` labels, which never
+change (see `rename-jatayu.md`).
 
 ### Chunks
 
@@ -71,7 +77,7 @@ does not compress. Manifests are deflated (they are mostly chunk names).
 
 ### Sealing and names
 
-`karmayoga_core::backup::BackupKeys`: two subkeys of the vault's data key,
+`jatayu_core::backup::BackupKeys`: two subkeys of the vault's data key,
 by label (`karmayoga.backup.seal.v1`, `karmayoga.backup.name.v1`).
 XChaCha20-Poly1305 for chunks and manifests, with the chunk's name or the
 snapshot's name in the associated data, so nothing can be moved under
@@ -99,13 +105,15 @@ keychain for opening the vault by itself.
 
 ## What a copy holds
 
-- **The vault**: `store/karmayoga.db` (consistent, while the app writes),
+- **The vault**: `store/jatayu.db` (consistent, while the app writes),
   `store/media/`, `store/mail-packs/`, `store/chat/` (its SQLite stores also
   through the backup API), and `spool/` (recordings not yet written up).
 - **This computer's settings** (on by default): the config folder, minus
-  `last-vault` (a path on this machine), `webview-carried-over`, `mail-index/`
-  (rebuilt from the mail), `chat/` (a Postgres vault's live chat store),
-  `*.lock`, `*.tmp`.
+  `last-vault` (a path on this machine), the webview carry-over markers
+  (`webview-carried-over`, `webview-carried-over-from-karmayoga`: one per
+  former name, about this machine's webview, see `rename-jatayu.md`),
+  `mail-index/` (rebuilt from the mail), `chat/` (a Postgres vault's live chat
+  store), `*.lock`, `*.tmp`.
 - **Never**: downloaded models (gigabytes, the same for everybody, downloaded
   again), the mail search index, `vault.lock`, the keychain entry.
 
@@ -118,7 +126,7 @@ and named in the report.
 
 ## A run
 
-`karmayoga_service::backup::run`, in order:
+`jatayu_service::backup::run`, in order:
 
 1. Make the folder if this destination has never been used; otherwise a
    missing marker means "not there" (a disk not plugged in) and the run
@@ -144,7 +152,7 @@ them and sends nothing twice.
 
 ## Where
 
-`karmayoga_service::backup::target::Target`: four verbs -- put, get, list,
+`jatayu_service::backup::target::Target`: four verbs -- put, get, list,
 delete -- over whole objects of at most a megabyte. No multipart, no ranges,
 no SDK.
 
@@ -184,7 +192,7 @@ hour) says so once, as an OS notification; the next success replaces it.
 
 ## Restore
 
-`karmayoga restore <folder | s3://bucket/prefix | gs://bucket/prefix> <new
+`jatayu restore <folder | s3://bucket/prefix | gs://bucket/prefix> <new
 folder> [--snapshot NAME] [--config]`: needs no vault, asks for the password
 only if the header says one exists, refuses a folder that is not empty,
 writes the header last (until then it is not a vault), checks every chunk's

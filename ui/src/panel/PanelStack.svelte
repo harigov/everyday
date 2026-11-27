@@ -65,7 +65,7 @@
   const SETTLE_MS = 40
 
   /** Where the main window keeps the theme it was given, in this origin's storage. */
-  const THEME_KEY = 'karmayoga.theme'
+  const THEME_KEY = 'jatayu.theme'
 
   /** A review in a browser can force a theme (`?theme=`); the shell never does. */
   const forced = MOCK ? new URLSearchParams(location.search).get('theme') : null

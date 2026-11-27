@@ -14,6 +14,7 @@
   import { mobileShell } from '../lib/api'
   import { friendlyDate } from '../lib/format'
   import { isoDate } from '../lib/time'
+  import { isPairingLink } from '../lib/legacy'
   import Icon from './Icon.svelte'
 
   /** Drawn in Settings → Vault → Sharing rather than on the setup screen: a
@@ -25,7 +26,11 @@
   let busy = $state(false)
 
   const known = $derived(app.remotes)
-  const ready = $derived(link.trim().startsWith('karmayoga://pair?'))
+  // A link copied under a former name (`karmayoga://pair?`, `everyday://pair?`)
+  // is let through too: the shell reads every spelling and says what is wrong
+  // with a link it cannot use, so this only keeps the button off for text that
+  // is plainly not a link at all.
+  const ready = $derived(isPairingLink(link))
 
   async function connect() {
     if (!ready || busy) return
@@ -98,7 +103,7 @@
     <input
       type="text"
       bind:value={link}
-      placeholder="karmayoga://pair?host=…"
+      placeholder="jatayu://pair?host=…"
       spellcheck="false"
       autocomplete="off"
       disabled={busy}

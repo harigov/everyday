@@ -66,11 +66,11 @@ const TEAM: Person[] = [
     status: 'accepted',
     organizer: true,
   }),
-  person('Priya Raman', 'priya@karmayoga.example', {
+  person('Priya Raman', 'priya@jatayu.example', {
     detail: 'Design · on your team',
     status: 'tentative',
   }),
-  person('Sam Patel', 'sam@karmayoga.example', { status: 'accepted', you: true }),
+  person('Sam Patel', 'sam@jatayu.example', { status: 'accepted', you: true }),
   person('Ama Owusu', 'ama@northwind.example', {
     detail: 'Product manager at Northwind · wrote on Monday about the roadmap',
     status: 'needsAction',
@@ -209,7 +209,7 @@ const SAMPLES: Record<string, () => Panel> = {
           person('Ama Owusu', 'ama@northwind.example', { organizer: true, status: 'accepted' }),
           person('Josh Miller', 'josh@northwind.example', { status: 'accepted' }),
           person('Lena Fischer', 'lena@northwind.example', { status: 'tentative' }),
-          person('Sam Patel', 'sam@karmayoga.example', { status: 'needsAction', you: true }),
+          person('Sam Patel', 'sam@jatayu.example', { status: 'needsAction', you: true }),
         ],
         rsvp: 'needsAction',
       },

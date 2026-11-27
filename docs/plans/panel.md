@@ -18,7 +18,7 @@ Three things built together, November 2026:
 Voice typing moves onto the panel too: "Listening", the words as they are
 heard, the level, Stop/Cancel; on failure the text and a Copy button.
 
-## The panel (`crates/karmayoga-app/src/panel/`)
+## The panel (`crates/jatayu-app/src/panel/`)
 
 `panel::Panel` is one card: `id`, `owner` (who hears its buttons), `tone`,
 `kicker`, `title`, `count` (countdown), `body`, `lines` (speech, newest
@@ -49,8 +49,8 @@ Renderers, both drawing the same `Vec<Panel>`:
 * **Webview** (`panel/window.rs`, page `ui/panel.html` + `ui/src/panel/`):
   everywhere but Wayland, and Wayland's fallback. Label `panel`. Top-right,
   width 380, height = what the page reports through `panel_resize`.
-  Events `karmayoga://panel/state` (whole stack) and
-  `karmayoga://panel/level` (`{id, level}`). Commands `panel_state`,
+  Events `jatayu://panel/state` (whole stack) and
+  `jatayu://panel/level` (`{id, level}`). Commands `panel_state`,
   `panel_action {id, action, copied}`, `panel_resize {height}` -- named only
   in `ui/src/panel/panel.ts` (the ACL test reads that file).
 * **X11 child** (`panel/topcard.rs`): on Wayland with XWayland, this binary
@@ -68,12 +68,12 @@ right with the primary rightmost (`panel::drawn_order`, `cards.ts`'s
 
 ## Meeting briefs
 
-Core types: `karmayoga_core::meeting::brief` -- `MeetingBrief`,
+Core types: `jatayu_core::meeting::brief` -- `MeetingBrief`,
 `MeetingBriefPerson`, `TalkingPoint`, `MeetingBriefSource(Kind)`,
 `MeetingBriefSettings { enabled, lead_minutes (15), web (true) }` as
 `MeetingSettings::brief`; `Task::raise_with: Vec<TaskPerson>`.
 
-Service: `karmayoga_service::meeting::brief`:
+Service: `jatayu_service::meeting::brief`:
 
 * `tick(svc, vault)` from the scheduler's minute: for every meeting (the
   watcher's definition -- `detect::is_meeting`, the calendar filter, not
@@ -120,7 +120,7 @@ countdown. A brief arriving after the card is up redraws it
 (`offers::on_meeting_brief`); a card going up asks the service for a cached
 brief.
 
-## The talk key (`crates/karmayoga-app/src/talk/`)
+## The talk key (`crates/jatayu-app/src/talk/`)
 
 Fourth global key, `Binding::Talk`, id `talk`, default `Ctrl+Alt+A`.
 Per-machine `talk.json`: `enabled` (off), `shortcut`, `mode` (toggle | hold),
@@ -164,12 +164,12 @@ Per-machine `talk.json`: `enabled` (off), `shortcut`, `mode` (toggle | hold),
   once the utterance is captured -- muting mid-utterance drops it -- so the
   microphone stays open 250 ms and then until the state leaves Hearing. A tap
   under 400 ms is hands-free.
-* The main window hears `karmayoga://talk` (true/false) and pauses its player
+* The main window hears `jatayu://talk` (true/false) and pauses its player
   for the conversation, as it does for voice mode.
 * `keep_ready`: while enabled and the vault unlocked, hold
-  `Service::speech_keep_ready()` (`karmayoga_service::speech::ready`).
+  `Service::speech_keep_ready()` (`jatayu_service::speech::ready`).
 * **"Type that ..."** (Nov 23 2026): the talk key's session is opened with a
-  typist (`Service::voice_open_typing`, `karmayoga_service::agent::Typist`,
+  typist (`Service::voice_open_typing`, `jatayu_service::agent::Typist`,
   carried in `Reach::typist`), and its spoken turns are offered `type_text`.
   The model gives the exact text -- dictated words cleaned of filler and
   punctuated, not reworded, or what it was asked to write -- and the shell
@@ -188,12 +188,12 @@ Per-machine `talk.json`: `enabled` (off), `shortcut`, `mode` (toggle | hold),
 
 | Agent | Owns |
 |-------|------|
-| P (panel shell) | `crates/karmayoga-app/src/panel/{mod,window,topcard}.rs` |
+| P (panel shell) | `crates/jatayu-app/src/panel/{mod,window,topcard}.rs` |
 | U1 (panel page) | `ui/panel.html`, `ui/src/panel/**`, `ui/src/voicetyping/**`, `ui/scripts/voicetyping.test.mjs`, a new `ui/scripts/panel.test.mjs` |
-| M (meeting card) | `crates/karmayoga-app/src/offers.rs`, `crates/karmayoga-app/src/notice.rs` (brief in the notification body only) |
-| B (briefs) | `crates/karmayoga-core/src/meeting/brief.rs`, `crates/karmayoga-core/src/task.rs` (`raise_with` helpers only), `crates/karmayoga-core/src/agent/tools/{tasks,meetings}.rs`, `crates/karmayoga-service/src/meeting/brief.rs`, `crates/karmayoga-service/src/domains/meetings.rs` (the two brief commands), service tests for briefs |
-| V (voice typing) | `crates/karmayoga-app/src/voicetyping/{mod,pill,paste}.rs` |
-| T (talk) | `crates/karmayoga-app/src/talk/**`, `crates/karmayoga-app/src/voice/mod.rs`, `crates/karmayoga-service/src/speech/ready.rs` |
+| M (meeting card) | `crates/jatayu-app/src/offers.rs`, `crates/jatayu-app/src/notice.rs` (brief in the notification body only) |
+| B (briefs) | `crates/jatayu-core/src/meeting/brief.rs`, `crates/jatayu-core/src/task.rs` (`raise_with` helpers only), `crates/jatayu-core/src/agent/tools/{tasks,meetings}.rs`, `crates/jatayu-service/src/meeting/brief.rs`, `crates/jatayu-service/src/domains/meetings.rs` (the two brief commands), service tests for briefs |
+| V (voice typing) | `crates/jatayu-app/src/voicetyping/{mod,pill,paste}.rs` |
+| T (talk) | `crates/jatayu-app/src/talk/**`, `crates/jatayu-app/src/voice/mod.rs`, `crates/jatayu-service/src/speech/ready.rs` |
 | U2 (settings + app UI) | `ui/src/components/AiFeaturesPanel.svelte` (talk section), the meeting settings pane (brief section), task detail (raise-with chips), the calendar event view (brief), `ui/src/lib/mock*.ts` for those |
 
 Shared files (`lib.rs`, `build.rs`, capabilities, `hotkey.rs`, `events.rs`,
@@ -309,7 +309,7 @@ Used in the app process and, unchanged, in the child process.
 * **Keyboard on demand** (`window::focus(app, want)`): the panel never takes
   the keyboard -- except when the person clicks into a box on a card.
   - macOS: `set_focusable(true)` (tao writes the `focusable` ivar the
-    `KarmaYogaOverlayPanel` class reads) then, on the main thread,
+    `JatayuOverlayPanel` class reads) then, on the main thread,
     `[ns_window makeKeyWindow]` and `webview.set_focus()`. **Never
     `window.set_focus()`**: tao's calls `[NSApp activateIgnoringOtherApps:]`,
     which activates the whole app -- the main window comes forward and, over a
@@ -429,7 +429,7 @@ through the generic blocks -- the page has no per-owner code.
   `tentative` / `declined` → `respond_to_invite {messageId, response}`. Open
   → `windows::open_item(app, "thread", threadId)`. `expires {mailSeconds,
   "expire"}`.
-* **Ask** (`askcard.rs`): implements `karmayoga_service::asking::DeskAsker`,
+* **Ask** (`askcard.rs`): implements `jatayu_service::asking::DeskAsker`,
   handed over with `Service::set_desk_asker` when the service is built.
   `confirm` → card `ask:{id}`, `kind: assistant`, tone attention, kicker "{from}
   asks", title from the kind ("Delete these?", "Send this?", "Open this
@@ -480,10 +480,10 @@ reduced motion; no wheel listeners.
 
 | Agent | Owns |
 |-------|------|
-| H (host) | `crates/karmayoga-app/src/panel/{mod,window,place,child,settings}.rs`, `lib.rs`, `build.rs`, `capabilities/*.json`, `acl.rs`, `guard.rs`, `overlay.rs`, `windows.rs` (open_item) |
-| M (meetings) | `offers.rs`, `recordcard.rs`, `meeting.rs`, `capture.rs` (hooks only), `crates/karmayoga-core/src/meeting/{brief,mod}.rs`, `crates/karmayoga-service/src/meeting/**` (incl. `pipeline/drivers.rs`: the notes notification moved after proposals, carrying `NoticeCard::MeetingNotes`), `crates/karmayoga-service/src/domains/meetings.rs` |
-| N (mail + notes) | `mailcard.rs`, `notescard.rs`, `crates/karmayoga-app/src/events.rs`, `crates/karmayoga-service/src/arrivals.rs`, `crates/karmayoga-service/src/mail/sync/**` and `mail/ai/categorize.rs` (NewMail fields only) |
-| A (asks) | `askcard.rs`, `crates/karmayoga-app/src/commands.rs` (window questions), `crates/karmayoga-app/src/state.rs` (set_desk_asker), `crates/karmayoga-service/src/{asking,reach,scheduler}.rs`, `jobs/answer.rs` |
+| H (host) | `crates/jatayu-app/src/panel/{mod,window,place,child,settings}.rs`, `lib.rs`, `build.rs`, `capabilities/*.json`, `acl.rs`, `guard.rs`, `overlay.rs`, `windows.rs` (open_item) |
+| M (meetings) | `offers.rs`, `recordcard.rs`, `meeting.rs`, `capture.rs` (hooks only), `crates/jatayu-core/src/meeting/{brief,mod}.rs`, `crates/jatayu-service/src/meeting/**` (incl. `pipeline/drivers.rs`: the notes notification moved after proposals, carrying `NoticeCard::MeetingNotes`), `crates/jatayu-service/src/domains/meetings.rs` |
+| N (mail + notes) | `mailcard.rs`, `notescard.rs`, `crates/jatayu-app/src/events.rs`, `crates/jatayu-service/src/arrivals.rs`, `crates/jatayu-service/src/mail/sync/**` and `mail/ai/categorize.rs` (NewMail fields only) |
+| A (asks) | `askcard.rs`, `crates/jatayu-app/src/commands.rs` (window questions), `crates/jatayu-app/src/state.rs` (set_desk_asker), `crates/jatayu-service/src/{asking,reach,scheduler}.rs`, `jobs/answer.rs` |
 | T (talk + typing) | `talk/**`, `voicetyping/**` |
 | U1 (panel page) | `ui/panel.html`, `ui/src/panel/**`, `ui/scripts/panel.test.mjs` |
 | U2 (main UI) | Settings Panel section, theme → `set_panel_theme`, `ShowInMain.open`, `ui/src/lib/{api,types,live.svelte}.ts` and mocks for those |

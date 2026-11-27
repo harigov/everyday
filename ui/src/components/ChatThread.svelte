@@ -906,7 +906,7 @@
             {/if}
           </div>
         {:else}
-          <EmptyState lead="Ask about anything in Karma Yoga" icon={dog ? undefined : sparkle}>
+          <EmptyState lead="Ask about anything in Jatayu" icon={dog ? undefined : sparkle}>
             {#snippet note()}
               {reachNote}
             {/snippet}

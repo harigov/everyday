@@ -45,7 +45,7 @@ function shipped(folder, name) {
 
 export function pdfjsFiles() {
   return {
-    name: 'karmayoga-pdfjs-files',
+    name: 'jatayu-pdfjs-files',
     configureServer(server) {
       server.middlewares.use(`/${PDFJS_PATH}`, (request, response, next) => {
         const path = decodeURIComponent((request.url ?? '').split('?')[0]).replace(/^\/+/, '')

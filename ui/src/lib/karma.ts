@@ -2,7 +2,7 @@
 // say, how a day's net is drawn on the heatmap, and -- for the mock backend
 // only -- the scoring rules themselves.
 //
-// The rules belong to `karmayoga_core::karma`, and the real backend never
+// The rules belong to `jatayu_core::karma`, and the real backend never
 // asks this file for a score. They are mirrored here for two readers: the
 // tracker editor, which says what "Default" means for the tracker in front
 // of it, and `mock.ts`, which has to answer `karma` from its own records the

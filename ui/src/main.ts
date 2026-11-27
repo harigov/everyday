@@ -1,5 +1,5 @@
-// First: an installation of Every Day's preferences move before any store
-// reads its own. See `lib/legacy.ts`.
+// First: preferences kept under Karma Yoga's or Every Day's name move to
+// Jatayu's before any store reads its own. See `lib/legacy.ts`.
 import './lib/legacy'
 import './styles/app.css'
 import { mount } from 'svelte'

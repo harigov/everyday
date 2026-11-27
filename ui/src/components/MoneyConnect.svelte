@@ -114,8 +114,8 @@
       {#if money.linkOpened}
         <p class="hint">
           A page from Plaid has opened in your browser. Choose your bank and sign in there — your
-          bank password goes to Plaid and your bank, never to Karma Yoga. This closes by itself when
-          you are done.
+          bank password goes to Plaid and your bank, never to Jatayu. This closes by itself when you
+          are done.
         </p>
         {#if safeUrl}
           <details class="fallback">
@@ -128,7 +128,7 @@
         <p class="hint">
           This window cannot open a browser itself. Open this page from Plaid in your browser and
           sign in to your bank there — your bank password goes to Plaid and your bank, never to
-          Karma Yoga. This closes by itself when you are done.
+          Jatayu. This closes by itself when you are done.
         </p>
         <SignInLink url={safeUrl} />
       {:else}

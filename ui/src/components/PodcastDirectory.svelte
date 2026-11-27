@@ -14,7 +14,7 @@
   //
   // Every picture is an address on somebody else's server, and the webview
   // may not load one -- the content security policy allows `data:` and
-  // `karmayoga:` and nothing remote -- so each comes through
+  // `jatayu:` and nothing remote -- so each comes through
   // `api.imagePreview`, as the library's cover search does: asked for only
   // once its row is near the screen, and a few at a time, since fifty charts
   // are fifty requests to strangers' servers and most are never scrolled to.
@@ -187,7 +187,7 @@
   const asked = new Set<string>()
 
   /** Already something the webview may load. */
-  const loadable = (url: string) => /^(data|blob|karmayoga):/i.test(url)
+  const loadable = (url: string) => /^(data|blob|jatayu):/i.test(url)
 
   function want(url: string) {
     if (!url || asked.has(url) || loadable(url)) return

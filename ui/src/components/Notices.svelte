@@ -68,8 +68,8 @@
       <strong>Read-only.</strong>
       <span>
         This vault is open for writing somewhere else — another window, or
-        <code>karmayoga</code> on the command line. You can read and search; nothing can be saved until
-        the other one closes.
+        <code>jatayu</code> on the command line. You can read and search; nothing can be saved until the
+        other one closes.
       </span>
     </div>
   </div>

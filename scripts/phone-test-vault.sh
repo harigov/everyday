@@ -30,11 +30,11 @@ if [ "$(uname -s)" = Darwin ]; then
   mkdir -p "$T/home"
   export HOME="$T/home"
 fi
-export KARMAYOGA_PASSWORD=phone-test-pass
+export JATAYU_PASSWORD=phone-test-pass
 
-K="${KARMAYOGA_BIN:-${CARGO_TARGET_DIR:-$ROOT/target}/debug/karmayoga}"
+K="${JATAYU_BIN:-${CARGO_TARGET_DIR:-$ROOT/target}/debug/jatayu}"
 if [ ! -x "$K" ]; then
-  echo "No CLI at $K: build it with cargo build -p karmayoga-cli, or set KARMAYOGA_BIN." >&2
+  echo "No CLI at $K: build it with cargo build -p jatayu-cli, or set JATAYU_BIN." >&2
   exit 1
 fi
 V="$T/vault"

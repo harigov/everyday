@@ -376,7 +376,7 @@ import {
   mockTemplates,
 } from './mock-templates'
 
-const PASSWORD = 'karmayoga'
+const PASSWORD = 'jatayu'
 
 /**
  * A string argument off the command bridge.
@@ -400,7 +400,7 @@ function str(v: unknown, fallback = ''): string {
 
 /** The same narrowing as `str`, for the batch mail commands' own
  *  `threads: ThreadId[]` -- everything from `mark_read` to `snooze` takes a
- *  list rather than a single id, per `crates/karmayoga-service/src/domains
+ *  list rather than a single id, per `crates/jatayu-service/src/domains
  *  /mail.rs`. */
 function strArray(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
@@ -1147,7 +1147,7 @@ const keepInTouch: KeepInTouchStatus = {
   lastReport: { entriesRead: 2, logged: 1, asked: 1, suggested: 1, occasions: 0 },
 }
 
-/** Who is due, worked out the way `karmayoga_core::keepintouch` does. */
+/** Who is due, worked out the way `jatayu_core::keepintouch` does. */
 function peopleDue(): PersonDue[] {
   const s = keepInTouch.settings
   const today = new Date(day(0)).getTime()
@@ -2686,7 +2686,7 @@ const calendars: CalendarInfo[] = [
 
 /**
  * Scopes that let an account write to its calendars -- mirrors
- * `Account::can_write_calendars` in `karmayoga-core`. An OAuth account signed
+ * `Account::can_write_calendars` in `jatayu-core`. An OAuth account signed
  * in before calendar writing existed has only the read scope, and its
  * calendars answer `needsSignIn` until it signs in again.
  */
@@ -2883,7 +2883,7 @@ const accounts: AccountView[] = [
   },
 ]
 
-/** Mirrors `Provider::preset` in `karmayoga-core`; see that function for the
+/** Mirrors `Provider::preset` in `jatayu-core`; see that function for the
  *  rationale behind each host, port and scope. */
 const MAIL_PROVIDER_PRESETS: MailProviderInfo[] = [
   {
@@ -3485,7 +3485,7 @@ function checkMockDraft(draft: EventDraft) {
 
 /**
  * `meeting_activity`, over the mock calendar: the rules
- * `karmayoga_core::insights` counts by -- busy, timed events on visible
+ * `jatayu_core::insights` counts by -- busy, timed events on visible
  * calendars, duplicates once, overlaps once, you left out of the people, a
  * meeting of more than eight other people left out of them too.
  */
@@ -3945,7 +3945,7 @@ let nextId = 100
 // a failure -- so the panel can be built and reviewed without a provider.
 
 /**
- * The quick ask catalogue, mirrored from `karmayoga_core::quick::ASKS`.
+ * The quick ask catalogue, mirrored from `jatayu_core::quick::ASKS`.
  *
  * A copy, and the only one in this file that is a copy of a Rust table rather
  * than of a record shape -- which is a cost worth naming. It is here because
@@ -4137,7 +4137,7 @@ let agentSettings: AgentSettings = {
 
 /**
  * The models, and which endpoints have a key. Keys by endpoint, as the core
- * keeps them -- see `karmayoga_core::llm` -- so two tiers at one address share
+ * keeps them -- see `jatayu_core::llm` -- so two tiers at one address share
  * one here too. The small model is on: the mock runs the quick asks as well
  * (see `quickAsks` below, which answers with the catalogue and canned
  * suggestions), so the chips can be built and reviewed with no Rust, no vault
@@ -5016,7 +5016,7 @@ function status(): VaultStatus {
     encrypted: true,
     autoLockSeconds: 900,
     forgetKeySeconds: 0,
-    path: '/Users/you/Library/Application Support/KarmaYoga',
+    path: '/Users/you/Library/Application Support/Jatayu',
     // `?readonly=1` to review the read-only banner without a second process.
     writable: !new URLSearchParams(location.search).has('readonly'),
     stats: unlocked
@@ -5407,7 +5407,7 @@ export const mockInvoke = async <T>(
     case 'bootstrap':
       return {
         vaultExists: true,
-        defaultPath: '/Users/you/Library/Application Support/KarmaYoga',
+        defaultPath: '/Users/you/Library/Application Support/Jatayu',
         backends: [
           {
             id: 'sqlite',
@@ -5432,7 +5432,7 @@ export const mockInvoke = async <T>(
               {
                 key: 'schema',
                 label: 'Schema',
-                placeholder: 'karmayoga',
+                placeholder: 'jatayu',
                 required: false,
                 secret: false,
               },
@@ -7903,7 +7903,7 @@ export const mockInvoke = async <T>(
     // real counts, an archive that is bytes rather than a zip -- nothing here
     // parses one -- and an import that describes what it was given and says
     // it read it. What this cannot exercise is the formats themselves, which
-    // is what `karmayoga-transfer`'s own round-trip test is for.
+    // is what `jatayu-transfer`'s own round-trip test is for.
 
     case 'list_parts': {
       requireUnlocked()
@@ -7960,13 +7960,13 @@ export const mockInvoke = async <T>(
       requireUnlocked()
       const parts = (args.parts as string[]) ?? []
       const body = new TextEncoder().encode(
-        `Karma Yoga mock export\n\nparts: ${parts.join(', ')}\nmedia: ${String(args.media)}\n`,
+        `Jatayu mock export\n\nparts: ${parts.join(', ')}\nmedia: ${String(args.media)}\n`,
       )
       mockArchives.set('mock-export', body)
       return {
         handle: 'mock-export',
         bytes: body.length,
-        name: 'Karma Yoga (mock).zip',
+        name: 'Jatayu (mock).zip',
         chunk: 4 << 20,
         manifest: mockManifest(parts),
       } as T
@@ -8409,7 +8409,7 @@ export const mockInvoke = async <T>(
 
     // ── Mail ────────────────────────────────────────────────────────
     //
-    // Reconciled against `crates/karmayoga-service/src/domains/mail.rs`:
+    // Reconciled against `crates/jatayu-service/src/domains/mail.rs`:
     // every batch action below takes `threads: ThreadId[]`, not a single
     // `id`, and answers the `Op[]` it enqueued. Two names are not in
     // `surface.json` at all -- `respond_to_invite` (i) and
@@ -8789,7 +8789,7 @@ export const mockInvoke = async <T>(
     // `mock-feed.ts` holds the sources and stories and does the work; these
     // only narrow what arrived over the bridge, as the mail cases above do.
     // A story's body is not a command in the real build -- it is fetched from
-    // `karmayoga://news/body/{id}`, which a browser tab cannot answer -- so
+    // `jatayu://news/body/{id}`, which a browser tab cannot answer -- so
     // `mock_story_body` is the mock's own stand-in, called by name from
     // `feed.svelte.ts` and never generated into the surface.
 
@@ -9289,7 +9289,7 @@ function mockManifest(parts: string[]) {
     assistant: ['Assistant', 'Markdown', false],
   }
   return {
-    application: 'Karma Yoga',
+    application: 'Jatayu',
     formatVersion: 1,
     exportedAt: new Date().toISOString(),
     vault: 'Mock',
@@ -9348,7 +9348,7 @@ function mockConfirm(callId: string, approved: boolean, later: boolean, always =
 const MOCK_SHARED_SUFFIXES = new Set(['co.uk', 'org.uk', 'com.au', 'github.io', 'blogspot.com'])
 
 /**
- * `karmayoga_core::agent::sites::normalize_site`: an address or a host as the
+ * `jatayu_core::agent::sites::normalize_site`: an address or a host as the
  * host it names -- lower-case, no scheme, credentials, port, path, trailing
  * dot or `www.` -- and a refusal for what is not a host with a dot in it, or
  * is a suffix everybody registers under.
@@ -9891,7 +9891,7 @@ export async function mockSendMessage(
         '> A quotation, for something you said earlier.',
         '',
         '```sh',
-        'karmayoga search rain --json',
+        'jatayu search rain --json',
         '```',
         '',
         '| Shelf | Open |',

@@ -39,7 +39,7 @@
     x11: 'the X11 window manager’s active window',
     windows: 'Windows’ foreground window',
     macos: 'macOS’s frontmost app',
-    unsupported: 'nothing yet: this desktop is not one Karma Yoga can watch',
+    unsupported: 'nothing yet: this desktop is not one Jatayu can watch',
   }
 
   const BROWSERS: { id: string; label: string }[] = [
@@ -289,7 +289,7 @@
         {#if connection}
           <div class="code">
             <p class="hint">
-              Add the Karma Yoga browser extension to your browser — it is in the <code
+              Add the Jatayu browser extension to your browser — it is in the <code
                 >extensions/browser</code
               >
               folder of the app — then open its options and paste this code. You will only see the code

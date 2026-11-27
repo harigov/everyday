@@ -942,7 +942,7 @@ const ALBUM_SPECS: AlbumSpec[] = [
   },
 ]
 
-const DEFAULT_FOLDER = '/home/you/Karma Yoga'
+const DEFAULT_FOLDER = '/home/you/Jatayu'
 
 /** Everything the mock keeps, built on first use. */
 interface Store {
@@ -1039,7 +1039,7 @@ function build(): Store {
         id,
         storage: {
           kind: 'plain',
-          path: trashed ? `.karmayoga/trash/${id}/${shot.name}` : joinPath(scene.dir, shot.name),
+          path: trashed ? `.jatayu/trash/${id}/${shot.name}` : joinPath(scene.dir, shot.name),
         },
         name: shot.name,
         kind,
@@ -1088,7 +1088,7 @@ function build(): Store {
         ? { kind: 'sealed', blob: `blob-${hexHash(`sealed:${name}`).slice(0, 16)}` }
         : {
             kind: 'plain',
-            path: doc.trashed ? `.karmayoga/trash/${id}/${name}` : doc.path,
+            path: doc.trashed ? `.jatayu/trash/${id}/${name}` : doc.path,
           },
       name,
       kind: kindOf(mime, name),
@@ -1712,7 +1712,7 @@ function trash(ids: string[]): FileEntry[] {
     if (f.status.state === 'trashed') continue
     const was = f.storage.kind === 'plain' ? f.storage.path : (db().wasAt.get(id) ?? '')
     const from = parentOf(was)
-    if (f.storage.kind === 'plain') f.storage.path = `.karmayoga/trash/${id}/${f.name}`
+    if (f.storage.kind === 'plain') f.storage.path = `.jatayu/trash/${id}/${f.name}`
     f.status = { state: 'trashed', at: nowIso(), from }
     touch(f)
     out.push(f)
@@ -2229,7 +2229,7 @@ export function mockFilesInvoke(cmd: string, args: Record<string, unknown>): unk
     case 'pick_and_import_files':
       return wire([addFile(`Picked photo ${s.counter + 1}.jpg`, 1_800_000, addOptions(args))])
     case 'pick_files_folder':
-      return '/home/you/Documents/Karma Yoga'
+      return '/home/you/Documents/Jatayu'
     case 'open_file_externally':
     case 'reveal_file':
       mustFile(str(args.id))

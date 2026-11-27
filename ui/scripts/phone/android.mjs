@@ -10,7 +10,7 @@
 import { _android as android } from 'playwright-core'
 import { execFileSync } from 'node:child_process'
 
-export const PACKAGE = 'app.karmayogi.KarmaYoga'
+export const PACKAGE = 'app.jatayu.Jatayu'
 
 export function adb(...args) {
   return execFileSync('adb', args, { encoding: 'utf8' })

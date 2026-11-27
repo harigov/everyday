@@ -99,9 +99,9 @@ assert.equal(partOf('summary'), 'summary')
   assert.equal(recallTab('episode'), 'transcript')
 
   // A value left by a version that had other tabs, or another kind's.
-  stored.set('karmayoga.feed.tab.article', 'transcript')
+  stored.set('jatayu.feed.tab.article', 'transcript')
   assert.equal(recallTab('article'), 'article', 'a stale value opens on the default')
-  stored.set('karmayoga.feed.tab.episode', 'nonsense')
+  stored.set('jatayu.feed.tab.episode', 'nonsense')
   assert.equal(recallTab('episode'), 'notes')
 
   // Storage that refuses -- a private window, a full disk -- is not an error.

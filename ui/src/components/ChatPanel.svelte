@@ -75,7 +75,7 @@
   const MAX_SHARE = 0.62
 
   const widthPref = pref<number>(
-    'karmayoga:assistant-width',
+    'jatayu:assistant-width',
     (raw) => Number(raw) || DEFAULT_WIDTH,
     DEFAULT_WIDTH,
   )

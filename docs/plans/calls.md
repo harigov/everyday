@@ -6,7 +6,7 @@ talks back, and what was said lands in the same thread as what is typed in that
 chat. It can also call you: a routine set to "Call me with it" rings the phone
 with the run's result, says it, and stays on the line for whatever you ask
 about it. If you don't pick up, the result is sent as a message instead.
-Whatever runs the chat link answers: the desktop app, or `karmayoga serve` on a
+Whatever runs the chat link answers: the desktop app, or `jatayu serve` on a
 machine with no screen and no sound card.
 
 **Changed Nov 19 2026: MatrixRTC, not legacy calls.** The first version

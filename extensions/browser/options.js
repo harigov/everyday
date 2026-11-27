@@ -1,4 +1,4 @@
-// Karma Yoga Screen time: the options page. Paste a connection code,
+// Jatayu Screen time: the options page. Paste a connection code,
 // connect, see what the extension is doing, disconnect.
 
 "use strict";
@@ -22,7 +22,7 @@
     $("connected").hidden = !status.connected;
     $("connect-title").textContent = status.connected
       ? "Connect with a new code"
-      : "Connect to Karma Yoga";
+      : "Connect to Jatayu";
     if (!status.connected) return;
 
     $("live").textContent = liveText(status);
@@ -49,10 +49,10 @@
         : "");
     $("titles").textContent = status.keepTitles
       ? "sent"
-      : "not sent (Karma Yoga does not keep them)";
+      : "not sent (Jatayu does not keep them)";
     $("idle").textContent =
       plural(status.idleMinutes, "minute") +
-      " without input, as set in Karma Yoga";
+      " without input, as set in Jatayu";
 
     let problem = "";
     if (status.revoked) {

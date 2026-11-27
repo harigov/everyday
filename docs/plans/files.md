@@ -12,7 +12,7 @@
 >   `hash_key`), with the path and hash sealed again in `idx` for the
 >   reconciler; "everything under a folder" and "by name" are answered after
 >   opening. Times taken stay clear, as every table's timestamps do.
-> - **`.stignore` is always made to name `.karmayoga`**, not only written when
+> - **`.stignore` is always made to name `.jatayu`**, not only written when
 >   there is none: a folder already shared with Syncthing would otherwise
 >   copy a decrypted copy or a sealed upload's staging file to every device.
 >   Checked on every reconciler pass too.
@@ -29,7 +29,7 @@
 > - **Place names** come from a reverse lookup (`maps::reverse_url`), opt-in,
 >   paced with every other Nominatim question and remembered by spot.
 > - **A test binary's default folder is in the test sandbox**, never
->   `~/Karma Yoga`.
+>   `~/Jatayu`.
 > - **Exports carry catalogued files** in `media/` beside attachments, and an
 >   import whose sidecar names files the vault lacks is read from the
 >   Markdown instead.
@@ -49,10 +49,10 @@ calls are marked as his.
 
 ## What this is
 
-1. **A files folder** — `~/Karma Yoga` unless chosen otherwise — holding
+1. **A files folder** — `~/Jatayu` unless chosen otherwise — holding
    ordinary, unencrypted files that Syncthing, a photo viewer or a file
    manager can use where they lie (Hari's call: plain files, so other
-   software works). Karma Yoga is meant to be his Dropbox; syncing the folder
+   software works). Jatayu is meant to be his Dropbox; syncing the folder
    is somebody else's job (Syncthing today, anything tomorrow).
 2. **A catalog in the vault**: one sealed record per file — where it is,
    what it is, what the file says about itself (EXIF, a film's length), what
@@ -76,23 +76,32 @@ files arrive.
 
 - **Plain by default, sealed by choice.** A file is `Plain { path }` (in the
   folder) or `Sealed { blob }` (in the vault's blob store, readable only by
-  Karma Yoga). `FilesSettings.encrypted` lists the apps whose new files are
+  Jatayu). `FilesSettings.encrypted` lists the apps whose new files are
   sealed; empty by default. Any file can be moved either way. Mail
   attachments, Money and app furniture (covers, Feed pictures, thumbnails)
   stay where they are and are not catalogued at all.
 - **Never get in the way of protecting the folder at the OS level** (Hari's
   call): an encrypted volume, fscrypt, a Cryptomator mount. The folder can be
-  anywhere. A marker file (`.karmayoga/folder.json`) tells a folder that is
+  anywhere. A marker file (`.jatayu/folder.json`) tells a folder that is
   there from an empty mount point: no marker where the catalog expects files
   means *unavailable*, never *empty*, and nothing — the reconciler, the trash
   sweep, a backup — acts on it. Thumbnails are sealed blobs, and the trash
-  and plain uploads in progress live in `.karmayoga/` inside the folder
+  and plain uploads in progress live in `.jatayu/` inside the folder
   (which a fresh `.stignore` tells Syncthing to leave alone). What is
   decrypted from a sealed file never touches the folder, which may be
   synced: a copy opened in another program and a sealed upload in progress
   live in owner-only directories under the cache directory
-  (`karmayoga-open-*`, `karmayoga-staging-*`), are deleted when the vault
+  (`jatayu-open-*`, `jatayu-staging-*`), are deleted when the vault
   locks, and are swept after an hour and at the next start.
+- **A folder made under Karma Yoga** has `.karmayoga/` where this has
+  `.jatayu/` (`Former::files_internal_dir`). The marker is how a folder is
+  told from an empty mount point, so it is renamed to `.jatayu/`, with the
+  trash and uploads inside, rather than missed — missing it would make the
+  folder read as unavailable — and `.stignore` loses its `.karmayoga` line
+  and names `.jatayu`. The folder itself keeps its name and place (`~/Karma
+  Yoga`): its path is a setting, and Syncthing or a backup knows it by that
+  name. Scratch copies left under `karmayoga-open-*` and `karmayoga-staging-*`
+  are swept like the new ones. See `rename-jatayu.md`.
 - **The folder is the truth for plain files.** A watcher (`notify`) and a
   pass every five minutes reconcile the catalog with the disk. A file that
   moved while nobody watched is recognised by its BLAKE3 hash and keeps its
@@ -140,23 +149,23 @@ files arrive.
 
 | Layer | Files |
 |---|---|
-| Records, value types | `karmayoga-core/src/files/mod.rs` |
-| The folder (paths, copying in, trash, uploads, walking) | `karmayoga-core/src/files/disk.rs` |
-| What changed on disk (pure) | `karmayoga-core/src/files/reconcile.rs` |
-| Store trait, AEAD labels | `karmayoga-core/src/store/files.rs` |
-| SQL tables (schema v29) | `karmayoga-store-sql/src/files.rs`, `schema.rs` |
-| Facade | `karmayoga-core/src/vault/files.rs` |
-| Metadata, thumbnails, reconciler task, watcher | `karmayoga-service/src/files/` |
-| Commands | `karmayoga-service/src/domains/files.rs` |
-| Assistant tools | `karmayoga-core/src/agent/tools/files.rs` |
-| `karmayoga://files/file/{id}`, pickers, open-with | `karmayoga-app/src/protocol.rs`, `files.rs` |
-| Remote and web routes | `karmayoga-server/src/routes.rs`, `client.rs` |
+| Records, value types | `jatayu-core/src/files/mod.rs` |
+| The folder (paths, copying in, trash, uploads, walking) | `jatayu-core/src/files/disk.rs` |
+| What changed on disk (pure) | `jatayu-core/src/files/reconcile.rs` |
+| Store trait, AEAD labels | `jatayu-core/src/store/files.rs` |
+| SQL tables (schema v29) | `jatayu-store-sql/src/files.rs`, `schema.rs` |
+| Facade | `jatayu-core/src/vault/files.rs` |
+| Metadata, thumbnails, reconciler task, watcher | `jatayu-service/src/files/` |
+| Commands | `jatayu-service/src/domains/files.rs` |
+| Assistant tools | `jatayu-core/src/agent/tools/files.rs` |
+| `jatayu://files/file/{id}`, pickers, open-with | `jatayu-app/src/protocol.rs`, `files.rs` |
+| Remote and web routes | `jatayu-server/src/routes.rs`, `client.rs` |
 | Interface | `ui/src/lib/files*.ts`, `ui/src/components/Files*.svelte`, `Photos*.svelte` |
 
 ## Phases
 
 1. **Platform**: the folder, the catalog, references, the reconciler,
-   streaming import and chunked upload, `karmayoga://files/…` with ranges,
+   streaming import and chunked upload, `jatayu://files/…` with ranges,
    backups, Postgres blobs on disk, bringing old attachments in.
 2. **Files app**: browse, add, organise, preview, trash, storage, settings.
 3. **Photos view**: timeline, albums, people, places, stacks, ratings.

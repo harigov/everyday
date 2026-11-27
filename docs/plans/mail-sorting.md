@@ -1,10 +1,10 @@
 # Mail sorting on a decision model
 
-> **Delivered.** The code is `karmayoga_core::mail::sorting`, the `decision`
-> card in `karmayoga_core::llm`, `karmayoga_service::{decision, mailsort}`, the
+> **Delivered.** The code is `jatayu_core::mail::sorting`, the `decision`
+> card in `jatayu_core::llm`, `jatayu_service::{decision, mailsort}`, the
 > `mailsorting` command domain, `ModelsPanel.svelte`'s Decision card and
 > `MailSortingPanel.svelte` (Settings → Mail sorting). Models that run on
-> this computer, added later, are `karmayoga_service::local`; see "On this
+> this computer, added later, are `jatayu_service::local`; see "On this
 > computer" below.
 
 A *decision model* (TypeSafe's "System One": Jev; OpenAI's Decisions API)
@@ -80,7 +80,7 @@ half done; asking again skips what is already sorted.
 
 ## New mail first, and who it is announced for (Nov 2026)
 
-Hari asked why Karma Yoga was the last app to announce new mail. The answer
+Hari asked why Jatayu was the last app to announce new mail. The answer
 was everything that happened after IDLE: a full pass of every mailbox, then
 sorting behind follow-ups, drafts and the backlog, account by account, with
 each account announced only once its whole share was answered.
@@ -129,7 +129,7 @@ each account announced only once its whole share was answered.
 The same model also says which recent threads are waiting: on the person
 (**Needs your reply**) or on somebody else (**Follow up**, a nudge). They are
 drawn above the date sections at the top of the Inbox. The record is
-`karmayoga_core::mail::follow_up`; the pass is `karmayoga_service::mailfollowup`,
+`jatayu_core::mail::follow_up`; the pass is `jatayu_service::mailfollowup`,
 run by `categorize_tick` straight after the sorting it is run on.
 
 - **Same switch, same model, same budget.** `MailAiFeature::Categorize`
@@ -149,7 +149,7 @@ run by `categorize_tick` straight after the sorting it is run on.
     computer; consent from `DecisionAccess::mail_allowed`.
   - *Small:* the same two questions as a structured prompt
     (`quick::run_prompt`). The system prompt is the question's instructions,
-    **what Karma Yoga itself knows about the thread** (how it was addressed,
+    **what Jatayu itself knows about the thread** (how it was addressed,
     whether the person has written to the sender or in the thread, how long it
     has waited -- worked out from the person's own records, never from the
     message), every option by name and description, and the warning
@@ -279,7 +279,7 @@ run by `categorize_tick` straight after the sorting it is run on.
   replies…" only once the answer is yes, and only "Write with AI…" when it is
   no -- nothing under a newsletter or notification, as before.
 - **Drafts hold lines.** `Draft.body_html` is the compose editor's: a `<p>`
-  is a line and `<p></p>` a blank line. `karmayoga_mail::compose::line_spaced`
+  is a line and `<p></p>` a blank line. `jatayu_mail::compose::line_spaced`
   sends them as `<div>` lines; whatever writes paragraphs -- a model through
   the mail tools, a routine's email -- goes through
   `compose::paragraphs_as_lines` first, and a draft carried on from another

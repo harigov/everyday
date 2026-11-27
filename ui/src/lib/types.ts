@@ -1,4 +1,4 @@
-// Mirrors the serde representations in `karmayoga-core`. Kept hand-written
+// Mirrors the serde representations in `jatayu-core`. Kept hand-written
 // rather than generated: the surface is small, and a hand-written type is a
 // place to document what the field *means* to the interface.
 //
@@ -107,7 +107,7 @@ export interface Journal {
 // An area is a part of your life; a goal is an outcome under one. Every
 // record that represents effort can point at one of the two, and that pointer
 // is what makes "where did my week go, by area" answerable. Areas were called
-// roles until November 2026; see `karmayoga_core::purpose` for what kept the
+// roles until November 2026; see `jatayu_core::purpose` for what kept the
 // old word.
 
 /** A part of your life. A handful of these, changing about once a year. */
@@ -226,7 +226,7 @@ export interface GoalActivity {
 //
 // What the Overview's mail, meeting and people widgets draw: a window of
 // each, counted in Rust because who a message is from and what an event is
-// called are sealed. See `karmayoga_core::insights` for the rules.
+// called are sealed. See `jatayu_core::insights` for the rules.
 
 /** A window of mail. `received` is from somebody else; `sent` is yours. */
 export interface MailActivity {
@@ -489,7 +489,7 @@ export interface TrackerDay {
   lastAt?: string | null
 }
 
-/** Where a deed came from -- `karmayoga_core::karma::DeedKind`. */
+/** Where a deed came from -- `jatayu_core::karma::DeedKind`. */
 export const DEED_KINDS = ['task', 'habit', 'journal', 'time', 'finished'] as const
 export type DeedKind = (typeof DEED_KINDS)[number]
 
@@ -502,7 +502,7 @@ export interface Deed {
   points: number
 }
 
-/** One day's Karma -- `karmayoga_core::karma::KarmaDay`. */
+/** One day's Karma -- `jatayu_core::karma::KarmaDay`. */
 export interface KarmaDay {
   date: string
   /** The good deeds, after every cap. Never negative. */
@@ -586,7 +586,7 @@ export interface Entry {
 }
 
 /**
- * Who started a note -- `karmayoga_core::note::NoteOrigin`. Never changes
+ * Who started a note -- `jatayu_core::note::NoteOrigin`. Never changes
  * after: editing the assistant's report does not make it yours.
  */
 export type NoteOrigin = 'own' | 'assistant' | 'meeting'
@@ -643,7 +643,7 @@ export interface NoteTag {
 
 // ── Templates ────────────────────────────────────────────────────────────
 //
-// One record for the journal, notes and meeting notes — `karmayoga_core::
+// One record for the journal, notes and meeting notes — `jatayu_core::
 // template`. The body is Markdown: `{{date}}`, `{{weekday}}` and the rest are
 // filled in for the day; headings are kept, and the text under one is
 // guidance for whoever writes that section — the person in an entry or a
@@ -829,7 +829,7 @@ export type RoutineKind =
 // ── Briefs ───────────────────────────────────────────────────────────────
 //
 // The morning brief and the evening one: a routine the application owns,
-// whose run keeps the brief it wrote. Mirrors `karmayoga_core::brief`.
+// whose run keeps the brief it wrote. Mirrors `jatayu_core::brief`.
 
 export const BRIEF_KINDS = ['morning', 'evening', 'weekly', 'podcast'] as const
 /** Which brief: before the day, at the end of it, the week ahead (Sundays), or the daily podcast. */
@@ -1202,7 +1202,7 @@ export interface RunQuery {
 // Work the assistant took on because a question needed more time than a
 // turn: it says so in the thread, the job runs on its own, and when it is
 // done the assistant comes back to that thread with an answer. Mirrors
-// `karmayoga_core::job`. See `docs/plans/jobs.md`.
+// `jatayu_core::job`. See `docs/plans/jobs.md`.
 
 /**
  * What a job is, with its arguments. A task is one of the assistant's own
@@ -1709,7 +1709,7 @@ export class VaultError extends Error {
 
 // ── The task domain ──────────────────────────────────────────────────────
 //
-// Projects, tasks and blocks of time. Mirrors `karmayoga-core`'s `task`
+// Projects, tasks and blocks of time. Mirrors `jatayu-core`'s `task`
 // module; see its docs for why subtasks are just tasks and why scheduled
 // time is a record rather than a field.
 
@@ -1961,7 +1961,7 @@ export interface TagCount {
 
 // ── The calendar domain ──────────────────────────────────────────────────
 //
-// Mirrors `karmayoga-core`'s `calendar` module. Two records only, because
+// Mirrors `jatayu-core`'s `calendar` module. Two records only, because
 // most of a calendar already existed: time you schedule for yourself is a
 // `TimeBlock` (above), and what the calendar adds is other people's
 // calendars — a subscription, and the events read out of it.
@@ -2047,7 +2047,7 @@ export interface RemoteCalendarInfo extends RemoteCalendar {
 
 export type EventStatus = 'confirmed' | 'tentative' | 'cancelled'
 
-/** How often a repeat comes round. Mirrors `karmayoga-core`'s `recurrence`. */
+/** How often a repeat comes round. Mirrors `jatayu-core`'s `recurrence`. */
 export type Frequency = 'daily' | 'weekly' | 'monthly' | 'yearly'
 
 /**
@@ -2199,9 +2199,9 @@ export interface ProviderInfo {
 }
 
 /**
- * A notification raised by the Rust shell, off `karmayoga://notify`.
+ * A notification raised by the Rust shell, off `jatayu://notify`.
  *
- * Mirrors `karmayoga_app::notify::Notification`, and is deliberately a subset
+ * Mirrors `jatayu_app::notify::Notification`, and is deliberately a subset
  * of the interface's own `NotifySpec`: the shell can say what happened, how
  * serious it is and how far it needs to reach, but it cannot hand across a
  * button, because the thing a button does lives on this side of the bridge.
@@ -2221,7 +2221,7 @@ export interface ShellNotification {
 
 /**
  * The structured half of a `ShellNotification`. Mirrors `NoticeCard` in
- * `crates/karmayoga-service/src/events.rs`: tagged by `type`, the variant's
+ * `crates/jatayu-service/src/events.rs`: tagged by `type`, the variant's
  * own fields beside it.
  */
 export type NoticeCard =
@@ -2318,7 +2318,7 @@ export type { ChangeKind } from './generated/commands'
 // A mailbox provider signed in to. Not owned by the mail app -- mail and the
 // calendar's "other people's calendars" both borrow the same credential --
 // which is why this sits beside Purpose and the calendar rather than inside
-// either. Mirrors `karmayoga_core::account`; see that module for why almost
+// either. Mirrors `jatayu_core::account`; see that module for why almost
 // nothing here is sensitive and the one thing that is (the credential
 // itself) never crosses the wire at all.
 
@@ -2386,7 +2386,7 @@ export interface MailAi {
   autoDraft: boolean
   summaries: boolean
   /** Suggested replies under an open thread, a draft from a few words, and
-   *  improving what was written -- `karmayoga_service::mailwrite`. Optional
+   *  improving what was written -- `jatayu_service::mailwrite`. Optional
    *  because an account saved before it existed answers without it. */
   writing?: boolean
 }
@@ -2434,7 +2434,7 @@ export interface Account {
 
 /**
  * Which of an account's new mail is worth interrupting somebody for -- mirrors
- * `MailNotify` in `karmayoga-core`. `sorted` names categories of somebody's own
+ * `MailNotify` in `jatayu-core`. `sorted` names categories of somebody's own
  * by `SortCategory.id`, which only a decision model files anything under.
  */
 export type MailNotify =
@@ -2480,7 +2480,7 @@ export interface MailProviderInfo extends Preset {
 // ── Mail ──────────────────────────────────────────────────────────────────
 //
 // Mailboxes, threads and the messages in them -- storage only, read-only,
-// for now. Mirrors `karmayoga_core::mail` and `karmayoga_core::store::mail`;
+// for now. Mirrors `jatayu_core::mail` and `jatayu_core::store::mail`;
 // see those for the two-views-of-a-thread design (a thread's own aggregates
 // versus its per-mailbox row in `thread_mailboxes`) and for which columns
 // stay sealed. `list_mailboxes`, `list_threads` and `get_thread` are the
@@ -2642,10 +2642,10 @@ export interface MailMessage {
 }
 
 /**
- * A thread, exactly as `karmayoga_core::mail::Thread` carries it.
+ * A thread, exactly as `jatayu_core::mail::Thread` carries it.
  *
  * `snippet`, `starred` and `hasAttachments` are aggregates
- * `karmayoga_store_sql::mail::write::recompute_thread` keeps in step with the
+ * `jatayu_store_sql::mail::write::recompute_thread` keeps in step with the
  * thread's own messages on every ingest, flag change and removal -- see that
  * function's own docs. They are what let a list row show a preview line, a
  * star and a paperclip without opening the thread first.
@@ -2673,17 +2673,17 @@ export interface Thread {
   /** When a decision model was last asked about it -- `SortMark`. */
   aiSorted?: SortMark | null
   /** Somebody waiting on the person, or the person waiting on somebody --
-   *  `karmayoga_core::mail::FollowUp`. Absent for a thread that is neither. */
+   *  `jatayu_core::mail::FollowUp`. Absent for a thread that is neither. */
   followUp?: FollowUp | null
   /** When the follow-up pass last asked about it. */
   followUpAsked?: FollowUpMark | null
 }
 
-/** `karmayoga_core::mail::FollowUpKind`: `reply`, somebody is waiting on your
+/** `jatayu_core::mail::FollowUpKind`: `reply`, somebody is waiting on your
  *  answer; `nudge`, you are waiting on theirs. */
 export type FollowUpKind = 'reply' | 'nudge'
 
-/** `karmayoga_core::mail::FollowUp`. */
+/** `jatayu_core::mail::FollowUp`. */
 export interface FollowUp {
   kind: FollowUpKind
   /** The message it was decided about: theirs for `reply`, yours for `nudge`. */
@@ -2692,7 +2692,7 @@ export interface FollowUp {
   since: string
 }
 
-/** `karmayoga_core::mail::FollowUpMark`. */
+/** `jatayu_core::mail::FollowUpMark`. */
 export interface FollowUpMark {
   message: MailMessageId
   messageCount: number
@@ -2705,13 +2705,13 @@ export interface FollowUpList {
   threads: Thread[]
 }
 
-/** `karmayoga_core::mail::SortMark`. */
+/** `jatayu_core::mail::SortMark`. */
 export interface SortMark {
   messageCount: number
   at: string
 }
 
-/** `karmayoga_core::mail::SortedAs`. */
+/** `jatayu_core::mail::SortedAs`. */
 export interface SortedAs {
   /** A `SortCategory.id`. One no longer in the list names nothing. */
   category: string
@@ -2719,7 +2719,7 @@ export interface SortedAs {
   message: MailMessageId
 }
 
-/** One of the categories mail is sorted into -- `karmayoga_core::mail::SortCategory`. */
+/** One of the categories mail is sorted into -- `jatayu_core::mail::SortCategory`. */
 export interface SortCategory {
   /** Stable across renames. */
   id: string
@@ -2731,7 +2731,7 @@ export interface SortCategory {
   treatAs: MailCategory
 }
 
-/** Settings → Mail sorting -- `karmayoga_core::mail::MailSorting`. */
+/** Settings → Mail sorting -- `jatayu_core::mail::MailSorting`. */
 export interface MailSorting {
   categories: SortCategory[]
   /** How many days back mail is sorted without being asked. */
@@ -2741,7 +2741,7 @@ export interface MailSorting {
   followUp?: FollowUpSettings
 }
 
-/** Settings → Mail sorting, "Follow-ups" -- `karmayoga_core::mail::FollowUpSettings`. */
+/** Settings → Mail sorting, "Follow-ups" -- `jatayu_core::mail::FollowUpSettings`. */
 export interface FollowUpSettings {
   on: boolean
   /** How many days back threads are looked at (2-60, 14 to start). */
@@ -2751,7 +2751,7 @@ export interface FollowUpSettings {
   nudgeAfterDays: number
 }
 
-/** Settings → Mail writing -- `karmayoga_core::mail::MailWriting`. */
+/** Settings → Mail writing -- `jatayu_core::mail::MailWriting`. */
 export interface MailWriting {
   /** How they want to sound, in their own words. */
   instructions: string
@@ -2765,7 +2765,7 @@ export interface MailWriting {
   sendChecks?: SendCheck[]
 }
 
-/** One check before sending -- `karmayoga_core::mail::SendCheck`. */
+/** One check before sending -- `jatayu_core::mail::SendCheck`. */
 export interface SendCheck {
   /** What the message should be: "The tone is friendly". */
   text: string
@@ -2777,7 +2777,7 @@ export interface SendCheck {
 export type CheckModel = 'decision' | 'small'
 
 /** One check before sending, as it came back --
- *  `karmayoga_service::mailcheck::DraftCheckResult`. */
+ *  `jatayu_service::mailcheck::DraftCheckResult`. */
 export interface DraftCheckResult {
   check: string
   passed: boolean
@@ -2785,7 +2785,7 @@ export interface DraftCheckResult {
   note?: string | null
 }
 
-/** What `checkDraft` answers -- `karmayoga_service::mailcheck::DraftCheckReport`.
+/** What `checkDraft` answers -- `jatayu_service::mailcheck::DraftCheckReport`.
  *  Empty `results` and no `skipped`: nothing to check, send at once. */
 export interface DraftCheckReport {
   /** One per check switched on, in Settings' order. */
@@ -2801,7 +2801,7 @@ export interface DraftCheckReport {
 }
 
 /** What writing help has learned from the replies they sent --
- *  `karmayoga_service::mailvoicelearn::VoiceLearningView`. */
+ *  `jatayu_service::mailvoicelearn::VoiceLearningView`. */
 export interface VoiceLearningView {
   /** One rule a line. Empty until the first pass, or once forgotten. */
   notes: string
@@ -2828,7 +2828,7 @@ export interface OlderSortView {
 export type FollowUpModel = 'decision' | 'small'
 
 /** How far one account's follow-ups got this session --
- *  `karmayoga_service::mailfollowup::FollowUpAccountStatus`. */
+ *  `jatayu_service::mailfollowup::FollowUpAccountStatus`. */
 export interface FollowUpAccountStatus {
   accountId: AccountId
   /** Why this account is not looked at -- its sorting switch is off, or the
@@ -2857,7 +2857,7 @@ export interface FollowUpAccountStatus {
 }
 
 /** Whether follow-ups can run, on what, and how far each account got --
- *  `karmayoga_service::mailfollowup::FollowUpStatus`. Session state for the
+ *  `jatayu_service::mailfollowup::FollowUpStatus`. Session state for the
  *  counts: a restart starts them afresh. */
 export interface FollowUpStatus {
   /** `null` when no model can be asked; see `blocked`. */
@@ -3014,7 +3014,7 @@ export interface RecategorizeResult {
 }
 
 /** The standing, per-sender/per-domain allow-list a remote image is checked
- * against -- mirrors `karmayoga_core::mail::RemoteImageSettings`. The
+ * against -- mirrors `jatayu_core::mail::RemoteImageSettings`. The
  * per-message one-off grant `allowRemoteImages` can also express is
  * deliberately not part of this: it lives in memory on the side that holds
  * the vault, for the one session that granted it, and this record never
@@ -3025,7 +3025,7 @@ export interface RemoteImageSettings {
 }
 
 /** Which part of the sync an account's task is doing right now. Mirrors
- * `karmayoga_service::mailsync::status::Phase`. */
+ * `jatayu_service::mailsync::status::Phase`. */
 // No `attachments` phase: extracting them is folded into the bodies pass
 // rather than walking the mailbox again, so `Phase` in `mailsync/status.rs`
 // has nothing beyond `bodies` to report and this union must not offer a
@@ -3092,7 +3092,7 @@ export interface InboxSender {
 
 // ── Drafts and the outbox (phase 3) ─────────────────────────────────────
 //
-// Mirrors `karmayoga_core::mail`'s `Draft`, `Op` and the small enums either
+// Mirrors `jatayu_core::mail`'s `Draft`, `Op` and the small enums either
 // carries. Who asked for an `Op` -- a person, the assistant in a named
 // conversation, a routine run, or an MCP client -- is `MailOrigin`, prefixed
 // the way `MailAddress` and `MailCategory` are to keep the word "origin"
@@ -3181,7 +3181,7 @@ export type OpState =
 
 /** One entry in the outbox: the local write already happened; this is what
  * still has to reach the server. See `crate::mail::outbox` for the state
- * machine and `crates/karmayoga-mail/src/outbox.rs` for what runs it. */
+ * machine and `crates/jatayu-mail/src/outbox.rs` for what runs it. */
 export interface Op {
   id: OpId
   accountId: AccountId
@@ -3341,7 +3341,7 @@ export interface McpStatus {
 // ── Opening this vault in a browser ─────────────────────────────────────
 
 /** Which network web access answers on. Only Tailscale today; see
- *  `karmayoga_server::web::Network`. */
+ *  `jatayu_server::web::Network`. */
 export type WebNetwork = {
   kind: 'tailscale'
   peers: 'sameUser' | { logins: string[] }
@@ -3442,7 +3442,7 @@ export interface TalkSettings {
 export type PanelRoute = 'panel' | 'notification'
 
 /** The panel's per-machine settings (`panel.json`) -- see
- *  `crates/karmayoga-app/src/panel/settings.rs`. */
+ *  `crates/jatayu-app/src/panel/settings.rs`. */
 export interface PanelSettings {
   /** New mail and invitations, those the account lets through at all. */
   mail: PanelRoute
@@ -3480,7 +3480,7 @@ export interface WakeSettings {
 }
 
 /** The microphone's per-machine settings: what is taken out of it before
- *  anything listens to the person. See `crates/karmayoga-app/src/microphone.rs`. */
+ *  anything listens to the person. See `crates/jatayu-app/src/microphone.rs`. */
 /** How alike to the person's voice what is heard must be. */
 export type VoiceCheck = 'lenient' | 'balanced' | 'strict'
 
@@ -3527,7 +3527,7 @@ export type TrayMenuItem =
 // ── The badge on the application's icon ───────────────────────────────────
 //
 // What `set_badge` takes: which counts the shell adds up into the number on
-// the Dock or taskbar icon. Mirrors `karmayoga-app`'s `badge::BadgeSources`.
+// the Dock or taskbar icon. Mirrors `jatayu-app`'s `badge::BadgeSources`.
 
 export interface BadgeSources {
   /**
@@ -3544,7 +3544,7 @@ export interface BadgeSources {
 
 // ── The library domain ───────────────────────────────────────────────────
 //
-// Mirrors `karmayoga-core`'s `library` module. Three records, and the middle
+// Mirrors `jatayu-core`'s `library` module. Three records, and the middle
 // one is the point:
 //
 //   Kind ────── Item ────── LogEntry
@@ -3753,7 +3753,7 @@ export interface LogEntry {
 
 // ── Keeping in touch ─────────────────────────────────────────────────────
 //
-// Mirrors `karmayoga_core::keepintouch`. A person is an item on the Contacts
+// Mirrors `jatayu_core::keepintouch`. A person is an item on the Contacts
 // shelf and a catch-up is a row in its log. See docs/plans/keep-in-touch.md.
 
 /** How a catch-up happened. `Via` on the Rust side; that name is the chat's here. */
@@ -3878,7 +3878,7 @@ export interface AddedItem {
 // ── Web search ───────────────────────────────────────────────────────────
 //
 // A facility rather than a feature of the library: `lib/websearch.ts` is the
-// class any component can reach for. Mirrors `karmayoga-core`'s `websearch`.
+// class any component can reach for. Mirrors `jatayu-core`'s `websearch`.
 
 export interface SearchRequest {
   query: string
@@ -3924,7 +3924,7 @@ export interface SourceInfo {
 
 /**
  * One picture an image search found. Mirrors
- * `karmayoga_core::websearch::images::ImageResult`.
+ * `jatayu_core::websearch::images::ImageResult`.
  *
  * Addresses only: nothing here is fetched until it is shown through
  * `api.imagePreview` or chosen through `api.fetchImage`.
@@ -3947,7 +3947,7 @@ export interface ImageResult {
 
 // ── Weather ──────────────────────────────────────────────────────────────
 //
-// Mirrors `karmayoga_core::weather` and `karmayoga_core::air_quality`. Read by
+// Mirrors `jatayu_core::weather` and `jatayu_core::air_quality`. Read by
 // both the `weather` command (the Overview's Weather widget) and, loosely --
 // it is never typed on that side -- the assistant's own `get_weather` tool,
 // which answers with the same JSON.
@@ -4024,7 +4024,7 @@ export interface AirQualityDay {
 /**
  * What's in the air beside the weather -- `WeatherReport.airQuality` is
  * `null` when this second, smaller request failed on its own; the rest of
- * the forecast is still returned. See `karmayoga_core::air_quality`'s "A
+ * the forecast is still returned. See `jatayu_core::air_quality`'s "A
  * third request, allowed to fail on its own".
  */
 export interface AirQualityReport {
@@ -4053,7 +4053,7 @@ export interface WeatherReport {
 
 // ── The models ───────────────────────────────────────────────────────────
 //
-// Mirrors `karmayoga_core::llm`. Application settings rather than the
+// Mirrors `jatayu_core::llm`. Application settings rather than the
 // assistant's: three sizes of work, each with its own endpoint and model.
 // Note what is *not* here: an API key. Keys are stored per endpoint and there
 // is no command that reads one back; `ModelSettingsView.keyed` says which
@@ -4079,7 +4079,7 @@ export interface LLMModelConfig {
   reasoningEffort: ReasoningEffort | null
 }
 
-/** How hard a reasoning model thinks -- `karmayoga_core::llm::ReasoningEffort`. */
+/** How hard a reasoning model thinks -- `jatayu_core::llm::ReasoningEffort`. */
 export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 /** Which of the three models. */
@@ -4090,7 +4090,7 @@ export type ModelTier = 'large' | 'medium' | 'small'
 export type ModelSlot = ModelTier | 'decision' | 'speech' | 'voice' | 'image'
 
 /**
- * How a decision model is reached -- `karmayoga_core::llm::DecisionApi`.
+ * How a decision model is reached -- `jatayu_core::llm::DecisionApi`.
  * `typeSafe` is TypeSafe's System One (Jev, directly or through OpenRouter);
  * `openAi` is OpenAI's Decisions API; `local` runs one of the
  * `LocalDecisionModel`s on this computer, sent nothing at all.
@@ -4143,7 +4143,7 @@ export interface ModelSettings {
   /**
    * Turns speech into text -- meeting notes' calls today, anything that
    * listens later. Absent or `null`: nothing that listens can be switched on.
-   * Left out of the record when unset; see `karmayoga_core::speech`.
+   * Left out of the record when unset; see `jatayu_core::speech`.
    */
   speech?: SpeechConfig | null
   /**
@@ -4153,7 +4153,7 @@ export interface ModelSettings {
   voice?: VoiceConfig | null
   /**
    * Makes a picture. Absent or `null`: nothing can. Left out of the record
-   * when unset. See `karmayoga_core::imagegen`.
+   * when unset. See `jatayu_core::imagegen`.
    */
   image?: ImageConfig | null
 }
@@ -4171,7 +4171,7 @@ export interface ModelSettingsView {
    * model never is: it carries no mail.
    */
   acknowledgement: string
-  /** Whether this copy of Karma Yoga can run a decision model itself. */
+  /** Whether this copy of Jatayu can run a decision model itself. */
   localDecisions: boolean
   /** Whether this copy can run a speech recogniser itself. */
   localSpeech: boolean
@@ -4181,7 +4181,7 @@ export interface ModelSettingsView {
 
 // ── Backups ──────────────────────────────────────────────────────────────
 //
-// Mirrors `karmayoga_core::backup` and `karmayoga_service::domains::backup`.
+// Mirrors `jatayu_core::backup` and `jatayu_service::domains::backup`.
 // A destination holds a repository: every file cut into sealed chunks, and
 // one sealed, date-stamped manifest per copy. Copies share the chunks that
 // did not change, so keeping seven costs about one vault plus a week.
@@ -4307,7 +4307,7 @@ export interface DestinationCheck {
 
 // ── The assistant ────────────────────────────────────────────────────────
 //
-// Mirrors `karmayoga_core::agent`. Which model it runs on is the models'
+// Mirrors `jatayu_core::agent`. Which model it runs on is the models'
 // business, above.
 
 /**
@@ -4334,7 +4334,7 @@ export interface Companion {
 
 /**
  * How every voice says one word or name -- in a conversation, mail read aloud
- * and Listen. Mirrors `karmayoga_core::speech::Pronunciation`.
+ * and Listen. Mirrors `jatayu_core::speech::Pronunciation`.
  */
 export interface Pronunciation {
   /** The word as written: found whole, whatever its case. */
@@ -4766,7 +4766,7 @@ export interface ConversationSummary extends Conversation {
 // ── Chat links ───────────────────────────────────────────────────────────
 //
 // The assistant, reached from a chat app on another device -- see
-// `docs/plans/chat.md` and `karmayoga_core::chat`. A link is one bot account
+// `docs/plans/chat.md` and `jatayu_core::chat`. A link is one bot account
 // on one chat service, and the one person it answers.
 
 /** The chat a conversation arrived through. */
@@ -4800,7 +4800,7 @@ export type ChatService = { kind: 'matrix' } & MatrixLink
 export interface MatrixLink {
   /** Where the homeserver's client API answers, used exactly as given. */
   homeserver: string
-  /** The bot's own account: `@karmayoga:example.org`. */
+  /** The bot's own account: `@jatayu:example.org`. */
   userId: string
   /** The one person it answers. Anybody else's messages and invitations are
    *  ignored, whatever room they arrive in. */
@@ -4954,7 +4954,7 @@ export interface Skill {
 // ── Proposals ────────────────────────────────────────────────────────────
 //
 // Work the assistant prepared and did not do. Mirrors
-// `karmayoga_core::proposal`. A proposal carries a whole record, never a tool
+// `jatayu_core::proposal`. A proposal carries a whole record, never a tool
 // call, so it reads the same after an upgrade. See docs/plans/dreaming.md.
 
 export const PROPOSAL_KINDS = [
@@ -5192,8 +5192,8 @@ export type AgentEvent =
 
 // ── Taking your data out, and putting it back ─────────────────────────
 //
-// Mirrors `karmayoga_transfer` and `domains::transfer`. An archive is a zip
-// of Markdown, iCalendar and CSV -- there is no Karma Yoga format in it --
+// Mirrors `jatayu_transfer` and `domains::transfer`. An archive is a zip
+// of Markdown, iCalendar and CSV -- there is no Jatayu format in it --
 // and it crosses this boundary in chunks because a whole journal does not
 // fit in one reply. See `lib/transfer.svelte.ts` for the two loops.
 
@@ -5308,14 +5308,14 @@ export interface BegunSignIn {
  * same `signInId` again, renamed to say what it now means -- the account
  * form's `save_account` call is what claims the tokens waiting under it.
  * Nothing here ever carries a token itself; see
- * `crates/karmayoga-service/src/signin.rs`'s module doc.
+ * `crates/jatayu-service/src/signin.rs`'s module doc.
  */
 export interface AwaitedSignIn {
   tokensSavedUnder: string
 }
 
 // ── Meeting notes ─────────────────────────────────────────────────────────
-// Mirrors `karmayoga_core::meeting`. See docs/plans/meeting-notes.md.
+// Mirrors `jatayu_core::meeting`. See docs/plans/meeting-notes.md.
 
 /** Which side of a call audio came from: the microphone, or what the computer played. */
 export type Track = 'mic' | 'system'
@@ -5469,7 +5469,7 @@ export interface CalendarFilter {
   areaIds: AreaId[]
 }
 
-/** What a talking session is doing -- `karmayoga_service::voice::VoiceState`. */
+/** What a talking session is doing -- `jatayu_service::voice::VoiceState`. */
 export type VoiceState =
   | 'starting'
   | 'listening'
@@ -5481,7 +5481,7 @@ export type VoiceState =
   | 'waitingForClick'
 
 /**
- * What a talking session tells the window -- `karmayoga_service::voice::VoiceEvent`.
+ * What a talking session tells the window -- `jatayu_service::voice::VoiceEvent`.
  * Arrives over the channel `voiceStart` opens. `ended` is always the last.
  */
 export type VoiceEvent =
@@ -5506,7 +5506,7 @@ export type VoiceEvent =
   /** The session is over; `error` says why when it did not end on request. */
   | { type: 'ended'; error: string | null }
 
-/** What is read aloud -- `karmayoga_service::listen::ListenSource`. */
+/** What is read aloud -- `jatayu_service::listen::ListenSource`. */
 export type ListenSource =
   | { type: 'mailThread'; threadId: ThreadId }
   /** `asWritten` reads the article as it is, without the model. */
@@ -5515,12 +5515,12 @@ export type ListenSource =
   | { type: 'brief'; runId: RoutineRunId }
 
 /** What a listening session is doing --
- *  `karmayoga_service::speech::listen::ListenState`. */
+ *  `jatayu_service::speech::listen::ListenState`. */
 export type ListenState = 'preparing' | 'playing' | 'paused'
 
 /**
  * What a listening session tells the window --
- * `karmayoga_service::speech::listen::ListenEvent`. Arrives over the channel
+ * `jatayu_service::speech::listen::ListenEvent`. Arrives over the channel
  * `listenStart` opens. `ended` is always the last.
  */
 export type ListenEvent =
@@ -5534,16 +5534,16 @@ export type ListenEvent =
   | { type: 'ended'; error: string | null }
 
 /** What a dictation session is doing --
- *  `karmayoga_service::speech::dictate::DictationState`. */
+ *  `jatayu_service::speech::dictate::DictationState`. */
 export type DictationState = 'listening' | 'hearing' | 'finishing'
 
 /** Why a dictation session ended --
- *  `karmayoga_service::speech::dictate::DictationEnd`. */
+ *  `jatayu_service::speech::dictate::DictationEnd`. */
 export type DictationEnd = 'stopped' | 'paused' | 'silence' | 'timeLimit' | 'cancelled' | 'failed'
 
 /**
  * What a dictation session tells the window --
- * `karmayoga_service::speech::dictate::DictationEvent`. Arrives over the
+ * `jatayu_service::speech::dictate::DictationEvent`. Arrives over the
  * channel `dictationStart` opens. `ended` is always the last.
  */
 export type DictationEvent =
@@ -5554,11 +5554,11 @@ export type DictationEvent =
   /** `text` is everything heard (empty when cancelled). */
   | { type: 'ended'; reason: DictationEnd; text: string; error: string | null }
 
-/** The voices that run on this computer -- `karmayoga_core::speech::LocalVoice`. */
+/** The voices that run on this computer -- `jatayu_core::speech::LocalVoice`. */
 export type LocalVoice = 'phonon' | 'kokoro'
 
 /** Who turns the assistant's words into speech --
- *  `karmayoga_core::speech::SynthesiserConfig`. */
+ *  `jatayu_core::speech::SynthesiserConfig`. */
 export type SynthesiserConfig =
   | { type: 'local'; voice: LocalVoice; speaker: number }
   | { type: 'openAi'; model: string; voice: string }
@@ -5566,7 +5566,7 @@ export type SynthesiserConfig =
 
 /**
  * The assistant's voice: the sixth card in Settings → Models --
- * `karmayoga_core::speech::VoiceConfig`. Its key is filed under where it
+ * `jatayu_core::speech::VoiceConfig`. Its key is filed under where it
  * points, as every model's is.
  */
 export interface VoiceConfig {
@@ -5576,13 +5576,13 @@ export interface VoiceConfig {
 }
 
 /** The picture models that run on this computer --
- *  `karmayoga_core::imagegen::LocalImageModel`. */
+ *  `jatayu_core::imagegen::LocalImageModel`. */
 export type LocalImageModel = 'flux2KleinQ4' | 'zImageTurboQ4'
 
 /** The OpenAI image models the card offers, in list order. */
 export const OPENAI_IMAGE_MODELS = ['gpt-image-2.6-flare', 'gpt-image-2.6-sunburst'] as const
 
-/** Who makes a picture -- `karmayoga_core::imagegen::ImageGeneratorConfig`. */
+/** Who makes a picture -- `jatayu_core::imagegen::ImageGeneratorConfig`. */
 export type ImageGeneratorConfig =
   { type: 'local'; model: LocalImageModel } | { type: 'openAi'; model: string }
 
@@ -5612,10 +5612,10 @@ export interface VoiceSample {
   wav: string
 }
 
-/** The recognisers that run on this computer -- `karmayoga_core::speech::LocalModel`. */
+/** The recognisers that run on this computer -- `jatayu_core::speech::LocalModel`. */
 export type LocalModel = 'parakeetV3' | 'whisperTurbo' | 'qwen3Asr17b' | 'qwen3Asr06b'
 
-/** Who turns speech into text -- `karmayoga_core::speech::TranscriberConfig`. */
+/** Who turns speech into text -- `jatayu_core::speech::TranscriberConfig`. */
 export type TranscriberConfig =
   | { type: 'local'; model: LocalModel }
   | { type: 'openAi'; model: string }
@@ -5624,7 +5624,7 @@ export type TranscriberConfig =
 
 /**
  * The speech model: the fifth card in Settings → Models, a platform setting
- * rather than meeting notes' -- `karmayoga_core::speech::SpeechConfig`. Its key
+ * rather than meeting notes' -- `jatayu_core::speech::SpeechConfig`. Its key
  * is filed under where it points, as every model's is, so OpenAI speech shares
  * an OpenAI language model's key.
  */
@@ -5761,7 +5761,7 @@ export interface MeetingSettingsView {
 
 /**
  * A calendar meeting worth offering notes for, as the service describes it --
- * `karmayoga_service::events::MeetingOffer`. The shell turns one of these into
+ * `jatayu_service::events::MeetingOffer`. The shell turns one of these into
  * a `MeetingOfferPayload` (see `api.ts`) by adding a `key`, a `source` and
  * the rest of what only it knows.
  */
@@ -5842,8 +5842,8 @@ export interface CaptureStatus {
 
 // ── The Feed ─────────────────────────────────────────────────────────────
 //
-// Mirrors `karmayoga_core::news` and the wire types of
-// `karmayoga-service/src/domains/news.rs`. "Feed" is the app; `news` is the
+// Mirrors `jatayu_core::news` and the wire types of
+// `jatayu-service/src/domains/news.rs`. "Feed" is the app; `news` is the
 // domain, because `feed` already means a subscribed calendar.
 
 /** Which Hacker News list a source follows. */
@@ -6035,7 +6035,7 @@ export interface NewsletterSender {
 
 // ── Podcasts, Up Next, and what was read and heard ───────────────────────
 //
-// `karmayoga_core::news::{podcast, listening, settings}` and the wire types of
+// `jatayu_core::news::{podcast, listening, settings}` and the wire types of
 // `domains/{podcasts,downloads,upnext,ranking}.rs`. See
 // `docs/plans/podcasts.md`.
 
@@ -6323,7 +6323,7 @@ export interface RankingStatus {
 
 // ── Money ────────────────────────────────────────────────────────────────
 //
-// `karmayoga_core::money`. Every amount is an integer of the currency's minor
+// `jatayu_core::money`. Every amount is an integer of the currency's minor
 // unit (cents for USD, yen for JPY) -- never a float -- and a transaction's
 // sign is the budgeting one: negative is money out, positive is money in. A
 // liability account's balance is what is owed, positive. See
@@ -6646,7 +6646,7 @@ export interface Recurring {
 
 // ---- Screen time ---------------------------------------------------------
 //
-// Mirrors `karmayoga_core::screentime`. See `docs/plans/screentime.md`.
+// Mirrors `jatayu_core::screentime`. See `docs/plans/screentime.md`.
 
 export type ScreenSpanId = string
 export type ScreenAppId = string
@@ -6864,7 +6864,7 @@ export interface CollectorConfig {
 }
 
 // ---- Files -------------------------------------------------------------------
-// Mirrors `karmayoga_core::files` and `karmayoga_service::domains::files`.
+// Mirrors `jatayu_core::files` and `jatayu_service::domains::files`.
 // See `docs/plans/files.md`.
 
 export type FileId = string
@@ -7193,7 +7193,7 @@ export interface FileDetail {
 // A PDF, an EPUB, Markdown, text or a web page in the files catalog, read
 // into blocks. A block's index is the address of a place in a document:
 // the reader marks every block it draws with it, the assistant reads by it,
-// a search hit points at it. See `karmayoga-core/src/documents.rs`.
+// a search hit points at it. See `jatayu-core/src/documents.rs`.
 
 export const DOC_FORMATS = ['pdf', 'epub', 'markdown', 'text', 'html'] as const
 export type DocFormat = (typeof DOC_FORMATS)[number]
@@ -7338,7 +7338,7 @@ export interface DocIndexStatus {
 
 // ── Health -- docs/plans/health.md ───────────────────────────────────────
 //
-// `karmayoga_core::health`. Every value is in its metric's canonical unit
+// `jatayu_core::health`. Every value is in its metric's canonical unit
 // (see `MetricEntry.unit`); `lib/health.ts` converts for display from
 // `HealthUnits`. Times are RFC 3339 strings, dates `YYYY-MM-DD`, local
 // times `HH:MM:SS`.
@@ -8193,8 +8193,8 @@ export interface VisitBrief {
 // ── Connections ─────────────────────────────────────────────────────────
 //
 // MCP servers the assistant may use -- Slack, Linear, GitHub, Chrome, ... --
-// each signed in as one account. Mirrors `karmayoga_core::connection` and
-// `karmayoga_service::domains::connections`. See `docs/plans/connections.md`.
+// each signed in as one account. Mirrors `jatayu_core::connection` and
+// `jatayu_service::domains::connections`. See `docs/plans/connections.md`.
 
 export type ConnectionId = string
 

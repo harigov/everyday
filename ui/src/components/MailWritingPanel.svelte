@@ -8,7 +8,7 @@
   // is the models that read it. Also here, what every message is checked for
   // when Send is pressed -- answered in `MailCompose.svelte`. The signature is
   // not here, because that is one per account and belongs with the account.
-  // See `karmayoga_core::mail::writing` and `karmayoga_core::mail::learning`.
+  // See `jatayu_core::mail::writing` and `jatayu_core::mail::learning`.
   //
   // Three tabs, because one column of all of it was taller than the window
   // and put the Save in the middle of the scroll, with the learned notes --
@@ -30,11 +30,11 @@
   import Loading from './Loading.svelte'
   import SubTabs from './SubTabs.svelte'
 
-  /** `MAX_INSTRUCTIONS_CHARS` in `crates/karmayoga-core/src/mail/writing.rs`. */
+  /** `MAX_INSTRUCTIONS_CHARS` in `crates/jatayu-core/src/mail/writing.rs`. */
   const MAX_INSTRUCTIONS = 4_000
-  /** `MAX_NOTES_CHARS` in `crates/karmayoga-core/src/mail/learning.rs`. */
+  /** `MAX_NOTES_CHARS` in `crates/jatayu-core/src/mail/learning.rs`. */
   const MAX_NOTES = 2_000
-  /** `MAX_SEND_CHECKS` in `crates/karmayoga-core/src/mail/writing.rs`. */
+  /** `MAX_SEND_CHECKS` in `crates/jatayu-core/src/mail/writing.rs`. */
   const MAX_CHECKS = 12
   /** `MAX_SEND_CHECK_CHARS`, the same file's. */
   const MAX_CHECK_CHARS = 200

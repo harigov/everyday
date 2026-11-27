@@ -1081,7 +1081,7 @@ assert.equal(elapsed(72_000), '1m 12s')
 // fails this rather than leaving Settings telling somebody something untrue.
 {
   const rust = readFileSync(
-    new URL('../../crates/karmayoga-core/src/agent/desk.rs', import.meta.url),
+    new URL('../../crates/jatayu-core/src/agent/desk.rs', import.meta.url),
     'utf8',
   )
   const table = rust.slice(

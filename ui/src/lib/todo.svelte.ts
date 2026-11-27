@@ -102,7 +102,7 @@ export type View = 'list' | 'board'
 export type { GroupBy }
 
 const viewPref = pref<View | null>(
-  'karmayoga.todo.view',
+  'jatayu.todo.view',
   (raw) => (raw === 'list' || raw === 'board' ? raw : null),
   null,
 )
@@ -112,7 +112,7 @@ const GROUP_BYS: GroupBy[] = ['due', 'status', 'priority', 'purpose', 'none']
 // How the list is grouped, kept like the view: the next visit opens the way
 // this one was left.
 const groupPref = pref<GroupBy | null>(
-  'karmayoga.todo.group',
+  'jatayu.todo.group',
   (raw) => (GROUP_BYS.includes(raw as GroupBy) ? (raw as GroupBy) : null),
   null,
 )

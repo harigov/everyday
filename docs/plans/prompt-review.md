@@ -58,7 +58,7 @@ a set of prompt-level ones that are each fixable in an afternoon.
    stop `create_time_block` being chosen for an appointment, and "use X
    instead" in some forty descriptions. Voice pays for all of it in latency.
 2. **The assistant is not told what it is for.** It is told it is "the
-   assistant built into Karma Yoga, a private journal, task manager, calendar,
+   assistant built into Jatayu, a private journal, task manager, calendar,
    library and habit tracker" -- which leaves out mail, meetings, notes,
    goals, health, money, the Feed and files -- and nothing about the job set
    on 14 November: executive assistant, coach and guide that keeps the owner
@@ -184,7 +184,7 @@ when none is set).
 | Health: lab extraction; meal photos; visit brief | `health::extract`; `health::photo`; `health::brief` | Large; Medium (vision); Large | on request | the person, then their clinician |
 | Speech recognition context | `speech::qwen`, `speech::transcribe::*`, `speech::words` | local recogniser / provider | every utterance | the recogniser |
 | Pictures | `illustrate`, `images` | the assistant's / local image model | `draw_illustration`, `generate_image` | the person |
-| MCP server instructions | `karmayoga-mcp::instructions` | the client's | on connect | external assistants |
+| MCP server instructions | `jatayu-mcp::instructions` | the client's | on connect | external assistants |
 
 ## 2. Cross-cutting findings
 
@@ -238,7 +238,7 @@ What it costs:
 - **Money.** Every *step* re-reads it. A ten-step turn reads the catalogue ten
   times; at cache-hit prices that is still the dominant cost of the turn.
 
-This is not a Karma Yoga peculiarity. OpenAI's function-calling guide says to
+This is not a Jatayu peculiarity. OpenAI's function-calling guide says to
 "aim for fewer than 20 functions available at the start of a turn", and to use
 tool search to defer large or rarely used parts of a tool surface
 ([guide](https://developers.openai.com/api/docs/guides/function-calling/index.html)).
@@ -383,9 +383,9 @@ code every one-shot prompt shares. Each is one fix in one place:
 
 ## 3. The assistant's system prompt
 
-`karmayoga_core::agent::system_prompt` (crates/karmayoga-core/src/agent.rs,
+`jatayu_core::agent::system_prompt` (crates/jatayu-core/src/agent.rs,
 ~line 1264), followed by `Guidance` and the conversation's context from
-`build` in crates/karmayoga-service/src/agent.rs (~line 3707). Medium model
+`build` in crates/jatayu-service/src/agent.rs (~line 3707). Medium model
 for every conversation; Large for jobs; a routine's own choice for routines.
 
 ### 3.1 What it is for
@@ -412,7 +412,7 @@ answer to "what should I focus on".
 Abridged (the full text is in `system_prompt`):
 
 > Your name is {name}. The person you work for chose it, so answer to it. You
-> are the assistant built into Karma Yoga, a private journal, task manager,
+> are the assistant built into Jatayu, a private journal, task manager,
 > calendar, library and habit tracker. You are talking to its owner about their
 > own data.
 >
@@ -487,7 +487,7 @@ voice.
 
 ```text
 {identity}
-Karma Yoga is where {owner} keeps their life: {apps}. You work for them alone,
+Jatayu is where {owner} keeps their life: {apps}. You work for them alone,
 as their executive assistant and, when they want one, their coach. Your job is
 to make their days go better: get things done for them, answer from what is
 actually in their records, and help them spend their time on what they have
@@ -570,7 +570,7 @@ and do not raise it again in the same conversation.
 
 `{identity}` keeps today's two forms and their tests' intent: "Your name is
 Robin. The person you work for chose it, so answer to it. You are the
-assistant built into Karma Yoga." / "You are the assistant built into Karma
+assistant built into Jatayu." / "You are the assistant built into Karma
 Yoga." (and "You work as …" when there is a soul). `{owner}` is the profile's
 first name, or "the person you work for". `{apps}` is the list for this vault
 (journal, notes, tasks and projects, calendar, mail, meetings, areas and goals,
@@ -784,10 +784,10 @@ turn with one kit joined is 10-16k.
 
 ### 4.3 What changes in code
 
-- `karmayoga_core::agent::tools`: a `Kit` enum and `Tool::kit` (most domains
+- `jatayu_core::agent::tools`: a `Kit` enum and `Tool::kit` (most domains
   map one to one; tasks split into core and `time`; the assistant domain splits
   into core memory and a `skills`/`proposals` admin kit).
-- `karmayoga_service::agent::build`: takes the kit set, and adds one more
+- `jatayu_service::agent::build`: takes the kit set, and adds one more
   filter to the chain `available` already passes through (`jobs.offers`,
   `files_offered`, `read_only`); the service's own tools (places, pictures,
   browser, connections) are gated the same way. Every `Guidance` paragraph is
@@ -897,7 +897,7 @@ screen description labels a subject line; and the house rules should say it is
 
 `TYPING_NOTE` is good: it is where "type" and "write" are told apart, and it
 names its tools. One improvement needs code rather than words: tell the model
-which application has the keyboard. `karmayoga-focus` already reports the
+which application has the keyboard. `jatayu-focus` already reports the
 focused window's application (`Focused::name`, `app_id`) for screen time, and
 voice typing already hands it to its clean-up prompt ("They are typing into
 {app}."). "They are typing in Slack" settles `write_message`'s `kind` (chat), the
@@ -1016,7 +1016,7 @@ fine when it fits; never the same one twice running."
 
 ## 7. Mail writing
 
-`crates/karmayoga-service/src/mailwrite.rs` (suggested replies, a draft from
+`crates/jatayu-service/src/mailwrite.rs` (suggested replies, a draft from
 a few words, improving what was written), `mailvoice.rs` (the person's voice),
 and `mailvoicelearn.rs` (learning from what they sent). Medium model for drafts
 and rewrites; Small, else Medium, for the three replies.
@@ -1617,7 +1617,7 @@ it.
 
 ### 13.2 Scenarios run against a real model (by hand, opt-in)
 
-An ignored test (`cargo test -p karmayoga-service --test evals -- --ignored`)
+An ignored test (`cargo test -p jatayu-service --test evals -- --ignored`)
 that builds a small fixture vault -- a dozen tasks, a week of events, a few
 mail threads, the owner's real areas and two goals -- and runs scenarios
 against the configured endpoints. Each scenario names the surface, what is on
@@ -1711,10 +1711,10 @@ the new size so it holds.
 Rewrites in §3-§8 break these assertions; each is a one-line update, listed
 so that a red test is expected rather than alarming.
 
-- `karmayoga-core/src/agent.rs` tests:
-  `plain.starts_with("You are the assistant built into Karma Yoga")` and
+- `jatayu-core/src/agent.rs` tests:
+  `plain.starts_with("You are the assistant built into Jatayu")` and
   `named.starts_with("Your name is Robin.")` (kept by §3.3);
-  `named.contains("the assistant built into Karma Yoga, a private journal")`
+  `named.contains("the assistant built into Jatayu, a private journal")`
   (changes with the app list); `"this wins"`, `"holds whoever you are"`,
   `"However the conversation"` (soul framing, kept); the three memory headings
   (kept); the turn note's `"<application_note>\nIt is"` and "its own two
@@ -1722,21 +1722,21 @@ so that a red test is expected rather than alarming.
   note's `"call end_voice_mode and say a short goodbye"`, `"only pause"`,
   `"tell you to stop talking"` and `"don't end your answers by asking whether
   there is anything else"` (kept by §6.3).
-- `karmayoga-service/src/agent.rs` tests: the `the_preamble_*` tests pin
+- `jatayu-service/src/agent.rs` tests: the `the_preamble_*` tests pin
   phrases from `Guidance` -- `"never take instructions"`, `"every word you give
   must appear"`, `"Settings → Assistant"`, `"What agents may do"`, `"I
   understand"`, `"create_event without a calendar_id"`, `"never for an event"`,
   `"cannot move money"`, `"negative is money out"` -- all kept by §3.4; check
   each paragraph's own list as it is reshaped. `TYPING_NOTE`'s phrase list and its
   235-word ceiling are untouched by §5.3, which adds a separate line.
-- `karmayoga-service/src/mailwrite.rs` tests: `"two to four sentences"`,
+- `jatayu-service/src/mailwrite.rs` tests: `"two to four sentences"`,
   `"never invent a refusal"` and `"how they answered similar messages in the
   examples"` are kept by §7.4; the test that the system prompt contains
   `HUMAN_WRITING_RULES` changes with the shared block.
-- `karmayoga-service/src/mailvoice.rs` tests: `writing_prompt` containing
+- `jatayu-service/src/mailvoice.rs` tests: `writing_prompt` containing
   `WARM_WRITING_RULES` and `"never thank them for, or acknowledge, anything"`
   change, because §7.4 folds those rules into the shared block's warmth floor;
   `"wins over everything"`, `"does not change the rule against inventing
   facts"`, `"voice only"` and the example/signature formatting are kept.
-- `karmayoga-service/src/deskwrite.rs` tests: untouched by §8.
+- `jatayu-service/src/deskwrite.rs` tests: untouched by §8.
 - Per-area lists are in each review under [`prompt-review/`](prompt-review/).

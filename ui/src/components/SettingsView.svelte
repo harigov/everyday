@@ -737,7 +737,7 @@
                   onchange={(e) => tray.setEnabled(e.currentTarget.checked)}
                 />
                 <span>
-                  <b>Show Karma Yoga in the {TRAY_WORD}</b>
+                  <b>Show Jatayu in the {TRAY_WORD}</b>
                   <small>
                     <!-- What closing the window does follows from the icon being
                      up -- `showing`, the shell's own answer, which is what its
@@ -746,10 +746,10 @@
                      there is work to do and a hotkey to come back by, which is
                      more than a line here should try to say. -->
                     {#if tray.unavailable}
-                      This desktop session has no {TRAY_WORD} for Karma Yoga to appear in.
+                      This desktop session has no {TRAY_WORD} for Jatayu to appear in.
                     {:else if tray.showing}
                       Start an entry, a task or an hour without coming back to the window. Closing
-                      the window keeps Karma Yoga running here; quit it from this menu.
+                      the window keeps Jatayu running here; quit it from this menu.
                     {:else}
                       Start an entry, a task or an hour without coming back to the window.
                     {/if}
@@ -771,7 +771,7 @@
                   <b>Show the next meeting in the {TRAY_WORD}</b>
                   <small>
                     {#if !tray.enabled}
-                      Only shown while Karma Yoga is in the {TRAY_WORD}.
+                      Only shown while Jatayu is in the {TRAY_WORD}.
                     {:else}
                       The meeting you are in, or the next one starting soon today. Nothing is shown
                       while the vault is locked.
@@ -786,8 +786,8 @@
             <section>
               <h3 class="eyebrow">Icon badge</h3>
               <p class="hint">
-                A number on Karma Yoga's icon in the {DOCK_WORD}, adding up whatever you choose
-                here. Nothing is shown while the vault is locked.
+                A number on Jatayu's icon in the {DOCK_WORD}, adding up whatever you choose here.
+                Nothing is shown while the vault is locked.
               </p>
               <div class="seg-group" role="radiogroup" aria-label="Tasks to count on the icon">
                 {#each BADGE_TASKS as c (c.value)}
@@ -853,7 +853,7 @@
                   onchange={(e) => setHotkey(e.currentTarget.checked)}
                 />
                 <span>
-                  <b>Reach Karma Yoga from anywhere with {hotkey.shortcut}</b>
+                  <b>Reach Jatayu from anywhere with {hotkey.shortcut}</b>
                   <small>
                     {#if hotkeyNotice}
                       {hotkeyNotice}

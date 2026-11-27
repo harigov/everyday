@@ -38,7 +38,7 @@
 <div class="lock">
   <form class="card frost" class:shake onsubmit={submit}>
     <div class="mark"><Logo size={46} tile /></div>
-    <h1>Karma Yoga</h1>
+    <h1>Jatayu</h1>
     <p class="sub">
       {#if app.screenOnly}
         This screen is locked. {app.status?.name ?? 'Your vault'} is still open.
@@ -70,7 +70,7 @@
     </button>
 
     {#if isMock}
-      <p class="hint demo">Demo build — the password is <code>karmayoga</code></p>
+      <p class="hint demo">Demo build — the password is <code>jatayu</code></p>
     {/if}
   </form>
 </div>

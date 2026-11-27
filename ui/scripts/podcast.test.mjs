@@ -195,14 +195,14 @@ function story(over = {}) {
 }
 
 {
-  const req = playRequestForStory(story(), 'The Show', 'karmayoga://blob/abc', 1.5)
+  const req = playRequestForStory(story(), 'The Show', 'jatayu://blob/abc', 1.5)
   assert.deepEqual(req, {
     what: { type: 'story', id: 'st1' },
     fileId: 'file1',
     kind: 'audio',
     title: 'Episode one',
     source: 'The Show',
-    artwork: 'karmayoga://blob/abc',
+    artwork: 'jatayu://blob/abc',
     durationMs: 42 * MIN,
     speed: 1.5,
   })
@@ -715,13 +715,13 @@ const show = { author: 'A' }
 
 {
   const article = (over = {}) => story({ media: null, files: { audio: 'aud1' }, ...over })
-  assert.deepEqual(playRequestForStory(article(), 'Longform', 'karmayoga://blob/x', 1.25), {
+  assert.deepEqual(playRequestForStory(article(), 'Longform', 'jatayu://blob/x', 1.25), {
     what: { type: 'story', id: 'st1' },
     fileId: 'aud1',
     kind: 'audio',
     title: 'Episode one',
     source: 'Longform',
-    artwork: 'karmayoga://blob/x',
+    artwork: 'jatayu://blob/x',
     durationMs: null,
     speed: 1.25,
   })

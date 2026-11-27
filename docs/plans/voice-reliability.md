@@ -2,8 +2,8 @@
 
 Hari's four complaints about the voice assistant (Nov 23 2026), what was
 behind each, and the fix. The sessions are voice mode's
-(`karmayoga_service::voice::session`), opened by the window, the talk key or
-the wake word (`karmayoga-app` `talk/`, `wake.rs`).
+(`jatayu_service::voice::session`), opened by the window, the talk key or
+the wake word (`jatayu-app` `talk/`, `wake.rs`).
 
 ## 1. Calling it by name gives no sign it is listening
 
@@ -121,9 +121,9 @@ refused the keyboard, and nothing was typed.
   hands it over when the focused application asks: no helper window, no
   focus, no activation token. The helper-window paste stays as the fallback
   where the desktop has no clipboard portal.
-- **What is on Karma Yoga's screen** goes to a conversation from the talk
+- **What is on Jatayu's screen** goes to a conversation from the talk
   key or the wake word too: the window, if it is showing, sends its
-  `screenNow()` when told the conversation began (`karmayoga://talk`), so
+  `screenNow()` when told the conversation began (`jatayu://talk`), so
   "that article" can be the one open in the Feed.
 
 ## 5. Writing by voice (Nov 24 2026)
@@ -174,7 +174,7 @@ selected read as empty, and Ctrl+Insert into gnome-terminal left a running
 | --- | --- |
 | A detector | `speech/voicing.rs`, `speech/detect.rs` |
 | B session | `voice/session.rs`, `voice/phrases.rs`, `voice/assistant.rs`, `docs/plans/voice.md` |
-| C tools | `agent.rs` (service), `karmayoga-core/src/agent.rs` (`SPOKEN_NOTE`), new `tests/voice_dictate.rs` |
+| C tools | `agent.rs` (service), `jatayu-core/src/agent.rs` (`SPOKEN_NOTE`), new `tests/voice_dictate.rs` |
 | D shell | `voice/cue.rs` (`listening_chime`), `audio/engine.rs`, `audio/playback.rs`, `talk/*.rs`, `wake.rs`, `docs/plans/wake-word.md`, `docs/plans/panel.md` |
 | E clipboard | `portal.rs`, `voicetyping/paste.rs`, `docs/plans/voice-typing.md` |
 | supervisor | the contract (`voice/mod.rs`, `Tuning`, stubs), the UI, integration |

@@ -43,17 +43,17 @@ function screenNow(): OnScreen {
 /**
  * On Android, the microphone is the app's to use only once the person has
  * allowed it, which is asked the first time it is wanted: the shell's
- * `window.KarmaYogaMic` (`MainActivity.kt`) says whether it has been and asks
- * if not, answering with a `karmayoga:mic` event. Everywhere else the
+ * `window.JatayuMic` (`MainActivity.kt`) says whether it has been and asks
+ * if not, answering with a `jatayu:mic` event. Everywhere else the
  * shell's own microphone needs no asking here (the desktop's operating
  * system asks for itself, when it asks at all).
  */
 async function microphoneAllowed(): Promise<boolean> {
-  const mic = (window as { KarmaYogaMic?: { granted(): boolean; request(): void } }).KarmaYogaMic
+  const mic = (window as { JatayuMic?: { granted(): boolean; request(): void } }).JatayuMic
   if (!mic || mic.granted()) return true
   return new Promise((resolve) => {
     window.addEventListener(
-      'karmayoga:mic',
+      'jatayu:mic',
       (e) => resolve((e as CustomEvent<boolean>).detail === true),
       { once: true },
     )
@@ -96,7 +96,7 @@ class VoiceSession {
 
   /** This window can talk at all: the app, on a vault of its own or on
    *  another computer's -- a phone always is -- whose assistant then hears
-   *  this machine's microphone (`karmayoga_server::voice`). Not a browser on
+   *  this machine's microphone (`jatayu_server::voice`). Not a browser on
    *  web access, which has no shell to hold a microphone. */
   get available(): boolean {
     return isMock || hasShell
@@ -131,12 +131,12 @@ class VoiceSession {
     if (this.active) return
     this.error = null
     if (!this.available) {
-      this.error = 'Talking to the assistant needs the Karma Yoga app.'
+      this.error = 'Talking to the assistant needs the Jatayu app.'
       return
     }
     if (!(await microphoneAllowed())) {
       this.error =
-        "Karma Yoga needs the microphone to hear you. Allow it when asked, or in the phone's settings for the app."
+        "Jatayu needs the microphone to hear you. Allow it when asked, or in the phone's settings for the app."
       return
     }
     const conversation = agent.conversationId

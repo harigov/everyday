@@ -94,7 +94,7 @@ export function speakerNameStyle(how: Attribution): 'plain' | 'guessed' | 'unkno
 /**
  * The recognisers that run on this computer, as the speech card in Settings →
  * Models lists them and as a sentence names them -- `LocalModel` in
- * `crates/karmayoga-core/src/speech.rs`. `llama` ones run through llama.cpp,
+ * `crates/jatayu-core/src/speech.rs`. `llama` ones run through llama.cpp,
  * which only a copy that can run a decision model has.
  */
 export const LOCAL_RECOGNISERS: {

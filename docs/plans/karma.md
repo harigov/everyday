@@ -49,7 +49,7 @@ When `karma` is unset, the default applies:
 
 ## Shape
 
-- `karmayoga_core::karma` holds the rules as pure functions, tested there.
+- `jatayu_core::karma` holds the rules as pure functions, tested there.
   `ui/src/lib/karma.ts` mirrors them for the mock backend and the tracker
   editor, and `ui/scripts/karma.test.mjs` pins the same cases.
 - `Vault::karma(from, to, today)` is a read. It scores the open days (the

@@ -185,7 +185,7 @@ assert.equal(files.available, true)
 assert.equal(files.local, true, 'the mock is the vault’s own computer')
 assert.equal(files.folderState.state, 'available')
 assert.equal(files.settings.trashDays, 30)
-assert.equal(files.settings.folder, '/home/you/Karma Yoga')
+assert.equal(files.settings.folder, '/home/you/Jatayu')
 assert.deepEqual(
   files.listing.folders.map((f) => f.name),
   ['Assistant', 'Documents', 'Journal', 'Photos'],
@@ -228,13 +228,13 @@ assert.equal(files.visibleFiles.length, 8)
 // The order, and that it is remembered on this device.
 files.setSort('name', false)
 assert.equal(files.visibleFiles[0].name, 'DSC00112.JPG')
-assert.equal(stored.get('karmayoga.files.sort'), 'name')
-assert.equal(stored.get('karmayoga.files.descending'), '0')
+assert.equal(stored.get('jatayu.files.sort'), 'name')
+assert.equal(stored.get('jatayu.files.descending'), '0')
 files.setSort('size', true)
 assert.equal(files.visibleFiles[0].name, 'MVI_0231.MP4', 'the film is the largest')
 files.setSort('name', false)
 files.setLayout('list')
-assert.equal(stored.get('karmayoga.files.layout'), 'list')
+assert.equal(stored.get('jatayu.files.layout'), 'list')
 files.setLayout('grid')
 
 // A search narrows a folder by name, with nothing to ask.
@@ -333,7 +333,7 @@ for (let i = 1; i < files.visibleFiles.length; i++) {
   assert.ok(files.visibleFiles[i - 1].addedAt >= files.visibleFiles[i].addedAt, 'in order added')
 }
 assert.equal(files.hasMore, false)
-assert.equal(stored.get('karmayoga.files.view'), 'recent', 'the view is remembered')
+assert.equal(stored.get('jatayu.files.view'), 'recent', 'the view is remembered')
 
 files.setView('photos')
 await loaded()
@@ -774,12 +774,12 @@ assert.equal(receipt.storage.kind, 'plain')
 
 // ── the folder, and what to bring in ─────────────────────────────────
 
-await files.setUpFolder('/data/KarmaYoga')
-assert.equal(files.folderState.path, '/data/KarmaYoga')
-assert.equal(files.settings.folder, '/data/KarmaYoga')
+await files.setUpFolder('/data/Jatayu')
+assert.equal(files.folderState.path, '/data/Jatayu')
+assert.equal(files.settings.folder, '/data/Jatayu')
 assert.equal(files.dir, '', 'a new folder is opened at its top')
 await files.chooseFolder()
-assert.equal(files.folderState.path, '/home/you/Documents/Karma Yoga')
+assert.equal(files.folderState.path, '/home/you/Documents/Jatayu')
 const scanned = files.status.lastScan
 await sleep(5)
 await files.rescan()

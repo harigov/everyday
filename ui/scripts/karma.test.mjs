@@ -1,6 +1,6 @@
 // Behaviour checks for the interface's copy of the Karma rules.
 //
-// The rules belong to `karmayoga_core::karma` and are tested there; this
+// The rules belong to `jatayu_core::karma` and are tested there; this
 // copy answers the mock backend and says what "Default" means in the
 // tracker editor. These are the same cases the Rust tests pin, so the two
 // cannot drift apart without one of them failing.

@@ -1,4 +1,4 @@
-// Karma Yoga Screen time: what the options page and the popup share. Both
+// Jatayu Screen time: what the options page and the popup share. Both
 // talk only to the background page, which owns the connection and the runs.
 
 "use strict";
@@ -28,7 +28,7 @@
 
   // One line on what is being counted right now.
   function liveText(status) {
-    if (!status.connected) return "Not connected to Karma Yoga";
+    if (!status.connected) return "Not connected to Jatayu";
     const live = status.live;
     if (!live) return "Not counting yet";
     switch (live.reason) {
@@ -57,7 +57,7 @@
   function destination(status) {
     if (!status.connected) return "";
     return status.loopback
-      ? "the Karma Yoga app on this computer"
+      ? "the Jatayu app on this computer"
       : status.endpoint;
   }
 

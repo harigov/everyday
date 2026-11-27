@@ -91,10 +91,10 @@ handful of things, and the prompt asks for each of them:
 
 | Where | What |
 |---|---|
-| `karmayoga_core::brief` | Kinds, sections, lengths, the prompt, the digest, the parser |
-| `karmayoga_core::routine` | `RoutineKind::Brief`, `Routine::brief`, `RoutineRun.brief` |
+| `jatayu_core::brief` | Kinds, sections, lengths, the prompt, the digest, the parser |
+| `jatayu_core::routine` | `RoutineKind::Brief`, `Routine::brief`, `RoutineRun.brief` |
 | `Vault::set_brief`, `Vault::briefs` | Switching one on, reading them back |
-| `karmayoga_service::brief` | The run: weather and follow-ups, the read-only turn, keeping the result |
+| `jatayu_service::brief` | The run: weather and follow-ups, the read-only turn, keeping the result |
 | `scheduler.rs` | `Mode::Brief`, beside `Mode::Dream` |
 | `agent.rs` | `Turn::read_only`; `read_brief` |
 | `listen.rs` | `ListenSource::Brief`, `ReadAloud::Brief` |

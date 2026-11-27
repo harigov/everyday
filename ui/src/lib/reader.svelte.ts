@@ -15,7 +15,7 @@
 // paragraph, a heading or a picture in the document's reading order. The
 // views mark every block they draw with `data-block`, and that index is the
 // same one the assistant reads by and a search hit names -- see
-// `karmayoga-core/src/documents.rs`. What the assistant is told is on screen
+// `jatayu-core/src/documents.rs`. What the assistant is told is on screen
 // (`at`) is that place, never the words there.
 //
 // # Rules that shape it

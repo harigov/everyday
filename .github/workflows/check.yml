@@ -39,7 +39,7 @@ jobs:
   rust:
     name: Rust
     runs-on: ubuntu-latest
-    # The `-p karmayoga-app` steps build llama.cpp from source, for the
+    # The `-p jatayu-app` steps build llama.cpp from source, for the
     # desktop app's local decision models (`decisions`) -- with its Vulkan
     # backend, whose shaders add minutes to a build `target/`'s cache has
     # not seen.
@@ -56,7 +56,7 @@ jobs:
         image: postgres:16
         env:
           POSTGRES_PASSWORD: test
-          POSTGRES_DB: karmayoga_test
+          POSTGRES_DB: jatayu_test
         ports:
           - 5432:5432
         options: >-
@@ -76,7 +76,7 @@ jobs:
           rustup default stable
           rustc --version
 
-      # `karmayoga-app` links the platform webview. It is not a default
+      # `jatayu-app` links the platform webview. It is not a default
       # workspace member for that reason, so a plain `cargo test` skips it --
       # which means its tests and its lints run *nowhere* unless this job
       # installs the headers and asks for it by name. It is the crate holding
@@ -89,7 +89,7 @@ jobs:
       # reliably the `libclang` dev headers `bindgen` actually links against,
       # so this is asked for explicitly rather than assumed. The Vulkan
       # headers, SPIRV-Headers and `glslc` are for llama.cpp's Vulkan
-      # backend: see `crates/karmayoga-service/Cargo.toml`.
+      # backend: see `crates/jatayu-service/Cargo.toml`.
       - name: Build dependencies
         run: |
           set -euo pipefail
@@ -128,15 +128,15 @@ jobs:
         run: |
           set -euo pipefail
           cargo clippy --locked --all-targets -- -D warnings
-          cargo clippy --locked -p karmayoga-app --all-targets -- -D warnings
+          cargo clippy --locked -p jatayu-app --all-targets -- -D warnings
 
       - name: Tests
         env:
-          KARMAYOGA_TEST_DATABASE_URL: postgresql://postgres:test@127.0.0.1:5432/karmayoga_test
+          JATAYU_TEST_DATABASE_URL: postgresql://postgres:test@127.0.0.1:5432/jatayu_test
         run: |
           set -euo pipefail
           cargo test --locked
-          cargo test --locked -p karmayoga-app
+          cargo test --locked -p jatayu-app
 
   rust-speech:
     name: Rust (local models)
@@ -167,7 +167,7 @@ jobs:
           rustup default stable
           rustc --version
 
-      # No webview here, but `karmayoga-vault` stores keys through `keyring`,
+      # No webview here, but `jatayu-vault` stores keys through `keyring`,
       # whose Secret Service backend links libdbus; and llama.cpp is built
       # with Vulkan, as in `rust` above.
       - name: Build dependencies
@@ -193,7 +193,7 @@ jobs:
       # directory holding the still-compressed archive, by its exact
       # filename) is set -- see that crate's build script, and this
       # workspace's `sherpa-onnx` dependency comment in
-      # `crates/karmayoga-service/Cargo.toml`. Read from the committed
+      # `crates/jatayu-service/Cargo.toml`. Read from the committed
       # `Cargo.lock` rather than hand-pinned here a second time, so a version
       # bump in `Cargo.toml` cannot silently leave this step caching (and
       # therefore validating nothing against) a stale archive.
@@ -226,12 +226,12 @@ jobs:
       - name: Clippy
         env:
           SHERPA_ONNX_ARCHIVE_DIR: /home/runner/.cache/sherpa-onnx-archives
-        run: cargo clippy --locked -p karmayoga-service --all-targets --features speech,decisions -- -D warnings
+        run: cargo clippy --locked -p jatayu-service --all-targets --features speech,decisions -- -D warnings
 
       - name: Tests
         env:
           SHERPA_ONNX_ARCHIVE_DIR: /home/runner/.cache/sherpa-onnx-archives
-        run: cargo test --locked -p karmayoga-service --features speech,decisions
+        run: cargo test --locked -p jatayu-service --features speech,decisions
 
   ui:
     name: Interface

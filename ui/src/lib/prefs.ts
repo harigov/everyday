@@ -1,14 +1,15 @@
 // Local, unencrypted settings: chrome the interface remembers about itself.
 //
-// A dozen keys, and two ways of spelling them. Nine follow `karmayoga.<name>`,
+// A dozen keys, and two ways of spelling them. Nine follow `jatayu.<name>`,
 // one word per piece of chrome; the assistant rail's two came later, from a
-// different corner of the interface, as `karmayoga:<name>` -- a colon instead
+// different corner of the interface, as `jatayu:<name>` -- a colon instead
 // of a dot. That inconsistency is recorded here rather than fixed: somebody's
 // browser already holds a value under one of these exact strings, and
 // renaming a key without carrying its value across would lose it. A vault's
 // worth of remembered widths and view choices is not worth a tidier spelling.
-// (The one rename these keys have had -- `everyday` to `karmayoga`, with the
-// product -- is carried across by `legacy.ts` before anything reads them.)
+// (The two renames these keys have had -- `everyday`, then `karmayoga`, both
+// now `jatayu` -- are carried across by `legacy.ts`, straight from either,
+// before anything reads them.)
 //
 // What this file does fix is the six or so lines every site repeated around
 // that string: read it, decide whether what came back still means anything,
@@ -18,42 +19,42 @@
 
 /** Every key this file reads or writes, so a typo in one is a compile error. */
 export type PrefKey =
-  | 'karmayoga.theme'
-  | 'karmayoga.section'
-  | 'karmayoga.todo.view'
-  | 'karmayoga.todo.group'
-  | 'karmayoga.calendar.view'
-  | 'karmayoga.library.view'
-  | 'karmayoga.library.capture'
-  | 'karmayoga.library.enrich'
-  | 'karmayoga.feed.filter'
-  | 'karmayoga.feed.kind'
-  | 'karmayoga.feed.folders.closed'
-  | 'karmayoga.feed.newsletters'
-  | 'karmayoga.money.view'
-  | 'karmayoga.screentime.view'
-  | 'karmayoga.screentime.range'
-  | 'karmayoga.screentime.devices'
-  | 'karmayoga.files.view'
-  | 'karmayoga.files.layout'
-  | 'karmayoga.files.sort'
-  | 'karmayoga.files.descending'
-  | 'karmayoga.health.view'
-  | 'karmayoga.health.range'
-  | 'karmayoga.health.vitals'
-  | 'karmayoga.journal.calendar'
-  | 'karmayoga.overview.layout'
-  | 'karmayoga.overview.introduced'
-  | 'karmayoga.tray'
-  | 'karmayoga.tray.meeting'
-  | 'karmayoga.badge'
-  | 'karmayoga.sidebar.folded'
-  | 'karmayoga.phone.bar'
-  | 'karmayoga.mail.accounts.open'
-  | 'karmayoga.mail.list.only'
-  | 'karmayoga.mail.category'
-  | 'karmayoga:assistant-open'
-  | 'karmayoga:assistant-width'
+  | 'jatayu.theme'
+  | 'jatayu.section'
+  | 'jatayu.todo.view'
+  | 'jatayu.todo.group'
+  | 'jatayu.calendar.view'
+  | 'jatayu.library.view'
+  | 'jatayu.library.capture'
+  | 'jatayu.library.enrich'
+  | 'jatayu.feed.filter'
+  | 'jatayu.feed.kind'
+  | 'jatayu.feed.folders.closed'
+  | 'jatayu.feed.newsletters'
+  | 'jatayu.money.view'
+  | 'jatayu.screentime.view'
+  | 'jatayu.screentime.range'
+  | 'jatayu.screentime.devices'
+  | 'jatayu.files.view'
+  | 'jatayu.files.layout'
+  | 'jatayu.files.sort'
+  | 'jatayu.files.descending'
+  | 'jatayu.health.view'
+  | 'jatayu.health.range'
+  | 'jatayu.health.vitals'
+  | 'jatayu.journal.calendar'
+  | 'jatayu.overview.layout'
+  | 'jatayu.overview.introduced'
+  | 'jatayu.tray'
+  | 'jatayu.tray.meeting'
+  | 'jatayu.badge'
+  | 'jatayu.sidebar.folded'
+  | 'jatayu.phone.bar'
+  | 'jatayu.mail.accounts.open'
+  | 'jatayu.mail.list.only'
+  | 'jatayu.mail.category'
+  | 'jatayu:assistant-open'
+  | 'jatayu:assistant-width'
 
 export interface Pref<T> {
   /** The stored value, parsed and validated -- `fallback` for anything else. */

@@ -19,7 +19,7 @@ import { load, stubBrowser } from './harness.mjs'
 // A localStorage that remembers, for the one check that the chip is kept.
 // Every newsletter is taken as followed once already, so the seed's four
 // sources stay four until the check at the end that it is followed unasked.
-const stored = new Map([['karmayoga.feed.newsletters', 'followed']])
+const stored = new Map([['jatayu.feed.newsletters', 'followed']])
 const opened = []
 
 stubBrowser({
@@ -145,7 +145,7 @@ assert.equal(
 await feed.setFilter('all')
 assert.equal(feed.stories.length, 30, 'All is every story')
 assert.equal(
-  globalThis.localStorage.getItem('karmayoga.feed.filter'),
+  globalThis.localStorage.getItem('jatayu.feed.filter'),
   'all',
   'the chip is kept on this device',
 )
@@ -213,7 +213,7 @@ assert.equal(feed.visible.length, 30)
 
   await feed.setKind('podcast')
   assert.equal(
-    globalThis.localStorage.getItem('karmayoga.feed.kind'),
+    globalThis.localStorage.getItem('jatayu.feed.kind'),
     'podcast',
     'the chip is kept on this device',
   )
@@ -297,7 +297,7 @@ assert.equal(feed.visible.length, 30)
   await feed.setKind('podcast')
   await feed.select({ kind: 'folder', name: 'Engineering' })
   assert.equal(feed.kind, 'all', 'asking for it turns the chip off')
-  assert.equal(globalThis.localStorage.getItem('karmayoga.feed.kind'), 'all')
+  assert.equal(globalThis.localStorage.getItem('jatayu.feed.kind'), 'all')
   assert.deepEqual(feed.scope, { kind: 'folder', name: 'Engineering' })
   assert.equal(feed.stories.length, totalOf(inFolder('all')), 'and the folder is all of itself')
   await feed.select({ kind: 'all' })
@@ -598,7 +598,7 @@ assert.equal((await api.story('st-2')).saved, false)
 // ── bodies ───────────────────────────────────────────────────────────
 
 {
-  assert.equal(feed.bodyUrl({ id: 'st-1' }), 'karmayoga://news/body/st-1')
+  assert.equal(feed.bodyUrl({ id: 'st-1' }), 'jatayu://news/body/st-1')
   const body = await feed.loadBody(await api.story('st-1'))
   assert.ok(body.html.startsWith('<!DOCTYPE html>'), 'a whole document for the frame')
   assert.ok(body.html.includes('For two centuries'), 'with the story in it')
@@ -650,12 +650,12 @@ await feed.flush()
 
 // ── every newsletter, followed once unasked ──────────────────────────
 
-stored.delete('karmayoga.feed.newsletters')
+stored.delete('jatayu.feed.newsletters')
 await feed.start()
 await feed.following
 const newsletters = feed.sources.filter((s) => s.source.kind.type === 'newsletters')
 assert.equal(newsletters.length, 1, 'the Feed follows every newsletter in Mail the first time')
-assert.equal(stored.get('karmayoga.feed.newsletters'), 'followed')
+assert.equal(stored.get('jatayu.feed.newsletters'), 'followed')
 
 // Its issues go to the sources found for each newsletter, so a Newsletters
 // source with nothing under it is a row that opens nothing: it is followed,

@@ -26,12 +26,12 @@ server or the command line has none, and so offers none of this.
 
 | Where | What |
 |---|---|
-| `karmayoga-core/src/agent/desk.rs` | Pure: built-in search sites + somebody's own (`SearchSite`, `{query}`), `find_site`, `search_url` (percent-encoded, `%20`), `validate_sites`; `match_app` (tiers: whole name, prefix, word, keyword); `timer_ends` (length or next `HH:MM`, ≤ 24 h, DST by wall clock). |
-| `karmayoga-service/src/desk/mod.rs` | The `Desk` trait the app implements, `Abilities`, `MediaAction`/`NowPlaying`, `VolumeChange`/`Volume`, `DeskSetting`, `Timer`, `SECTIONS`. |
-| `karmayoga-service/src/desk/timers.rs` | In-memory timers on the `Service`; each a task that sleeps by the wall clock in ≤ 15 s steps (the monotonic clock stops in suspend) and rings through `Desk::ring`, carrying the person's zone so the notification tells the time `list_timers` did. |
-| `karmayoga-service/src/desk/tools.rs` | The ten tools, offered per `Desk::abilities`. |
-| `karmayoga-service/src/agent.rs` | `Reach::desk`, `TurnMeta::desk_here`, offering + guidance in `build`, the gate rules below. |
-| `karmayoga-app/src/desk/` | The Linux (GNOME) desk, and the parts every platform has. |
+| `jatayu-core/src/agent/desk.rs` | Pure: built-in search sites + somebody's own (`SearchSite`, `{query}`), `find_site`, `search_url` (percent-encoded, `%20`), `validate_sites`; `match_app` (tiers: whole name, prefix, word, keyword); `timer_ends` (length or next `HH:MM`, ≤ 24 h, DST by wall clock). |
+| `jatayu-service/src/desk/mod.rs` | The `Desk` trait the app implements, `Abilities`, `MediaAction`/`NowPlaying`, `VolumeChange`/`Volume`, `DeskSetting`, `Timer`, `SECTIONS`. |
+| `jatayu-service/src/desk/timers.rs` | In-memory timers on the `Service`; each a task that sleeps by the wall clock in ≤ 15 s steps (the monotonic clock stops in suspend) and rings through `Desk::ring`, carrying the person's zone so the notification tells the time `list_timers` did. |
+| `jatayu-service/src/desk/tools.rs` | The ten tools, offered per `Desk::abilities`. |
+| `jatayu-service/src/agent.rs` | `Reach::desk`, `TurnMeta::desk_here`, offering + guidance in `build`, the gate rules below. |
+| `jatayu-app/src/desk/` | The Linux (GNOME) desk, and the parts every platform has. |
 | `ui/` | Settings switch and search-site editor; tool card labels. |
 
 ## The tools

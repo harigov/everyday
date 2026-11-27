@@ -61,7 +61,7 @@
   let scroller = $state<HTMLElement | null>(null)
   let sentinel = $state<HTMLElement | null>(null)
 
-  const showCalendarPref = onOffPref('karmayoga.journal.calendar')
+  const showCalendarPref = onOffPref('jatayu.journal.calendar')
 
   /**
    * Whether the month is showing above the list.
@@ -75,7 +75,7 @@
       // On a phone, the month starts folded away unless it was asked for: it
       // is a third of the screen, over the entries that are what the page is
       // for. The device keeps its own choice from then on.
-      !(phone.on && localStorage.getItem('karmayoga.journal.calendar') === null),
+      !(phone.on && localStorage.getItem('jatayu.journal.calendar') === null),
   )
   /** Open an entry -- over the list, on a phone (`details`). */
   function open(id: EntryId) {

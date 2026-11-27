@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 # Install the system libraries the desktop shell links against on Linux.
 #
-# Only the GUI needs these. The core, the storage backends and the `karmayoga`
+# Only the GUI needs these. The core, the storage backends and the `jatayu`
 # CLI are portable Rust and build without them -- which is why `cargo test`
 # works on a bare machine and `cargo tauri dev` does not.
 #
 # Four groups, for four reasons: the webview headers Tauri itself needs;
 # PipeWire's development headers, for `capture.rs`'s loopback track (cpal's
 # `pipewire` feature builds unconditionally on this target -- see
-# `crates/karmayoga-app/Cargo.toml`'s own comment); libclang, because
+# `crates/jatayu-app/Cargo.toml`'s own comment); libclang, because
 # `libspa-sys`/`pipewire-sys` generate their bindings with `bindgen` at build
 # time, and `bindgen` needs a real `libclang` to parse PipeWire's C headers
 # against, not just the `clang` binary; and the Vulkan headers, SPIRV-Headers
 # and the `glslc` shader compiler, for the llama.cpp the app builds to run a
-# decision model on a graphics card (`crates/karmayoga-service/Cargo.toml`).
+# decision model on a graphics card (`crates/jatayu-service/Cargo.toml`).
 set -euo pipefail
 
-echo "Karma Yoga needs the platform webview development headers, PipeWire's"
+echo "Jatayu needs the platform webview development headers, PipeWire's"
 echo "headers, libclang (for bindgen) and the Vulkan headers and shader"
 echo "compiler to build its desktop shell. This installs them with your system"
 echo "package manager."

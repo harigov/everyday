@@ -14,7 +14,7 @@ export const BAR_SIZE = 4
 export const DEFAULT_BAR: Section[] = ['overview', 'mail', 'calendar', 'assistant']
 
 const barPref = pref<Section[]>(
-  'karmayoga.phone.bar',
+  'jatayu.phone.bar',
   (raw) => {
     if (raw === null) return DEFAULT_BAR
     const list: unknown = JSON.parse(raw)

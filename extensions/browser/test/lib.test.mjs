@@ -9,7 +9,7 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const L = require("../lib.js");
 
-const PREFIX = "karmayoga-screentime:";
+const PREFIX = "jatayu-screentime:";
 const code = (value) =>
   PREFIX + Buffer.from(JSON.stringify(value)).toString("base64url");
 
@@ -34,12 +34,12 @@ test("parseConnectionCode reads a loopback code", () => {
 test("parseConnectionCode reads a sharing server code, keeping its path", () => {
   const got = L.parseConnectionCode(
     code({
-      endpoint: "https://box.tail1234.ts.net/karmayoga/",
+      endpoint: "https://box.tail1234.ts.net/jatayu/",
       token: "t",
       device: "desk",
     }),
   );
-  assert.equal(got.endpoint, "https://box.tail1234.ts.net/karmayoga");
+  assert.equal(got.endpoint, "https://box.tail1234.ts.net/jatayu");
   assert.equal(got.loopback, false);
   assert.equal(got.device, "desk");
 });
@@ -77,6 +77,30 @@ test("parseConnectionCode leaves device empty when the code has none", () => {
     code({ endpoint: "http://127.0.0.1:7399", token: "x" }),
   );
   assert.equal(got.device, "");
+});
+
+test("parseConnectionCode reads a code made under a former name", () => {
+  const value = {
+    endpoint: "http://127.0.0.1:7399",
+    token: "tok",
+    device: "desk",
+  };
+  const body = Buffer.from(JSON.stringify(value)).toString("base64url");
+  const want = { ...value, loopback: true };
+  assert.deepEqual(L.FORMER_CODE_PREFIXES, [
+    "karmayoga-screentime:",
+    "everyday-screentime:",
+  ]);
+  for (const prefix of L.FORMER_CODE_PREFIXES) {
+    assert.deepEqual(L.parseConnectionCode(prefix + body), want);
+  }
+  // A former prefix is still checked like the current one.
+  assert.throws(
+    () => L.parseConnectionCode("karmayoga-screentime:%%%"),
+    /damaged/,
+  );
+  // And the refusal names only the current one.
+  assert.throws(() => L.parseConnectionCode("hello"), /"jatayu-screentime:"/);
 });
 
 test("parseConnectionCode refuses what is not a good code", () => {
@@ -143,7 +167,7 @@ test("isLoopback knows this computer from another", () => {
 test("originPattern gives a match pattern without the port", () => {
   assert.equal(L.originPattern("http://127.0.0.1:7399"), "http://127.0.0.1/*");
   assert.equal(
-    L.originPattern("https://box.tail1234.ts.net:8443/karmayoga"),
+    L.originPattern("https://box.tail1234.ts.net:8443/jatayu"),
     "https://box.tail1234.ts.net/*",
   );
 });

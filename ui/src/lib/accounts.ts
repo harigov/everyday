@@ -313,7 +313,7 @@ export function providerLabel(baseUrl: string | null | undefined): string {
 /**
  * The decision models the pane offers in one click at a provider: which
  * request shape, at which address, and the model to ask there --
- * `DecisionApi` in `crates/karmayoga-core/src/llm.rs`. `provider` is what a
+ * `DecisionApi` in `crates/jatayu-core/src/llm.rs`. `provider` is what a
  * sentence calls it. A model on this computer is not one of these; see
  * `LOCAL_DECISION_MODEL`.
  */
@@ -377,11 +377,11 @@ export function decisionProviderLabel(d: Pick<DecisionConfig, 'api' | 'url'>): s
 }
 
 /** Where a model's requests go when no base URL is set --
- *  `Provider::OpenAi.default_base_url()` in `crates/karmayoga-core/src/llm.rs`. */
+ *  `Provider::OpenAi.default_base_url()` in `crates/jatayu-core/src/llm.rs`. */
 const OPENAI_BASE_URL = 'https://api.openai.com/v1'
 
 /** Where a Google speech model's audio goes -- `GOOGLE_ENDPOINT` in
- *  `crates/karmayoga-core/src/speech.rs`. */
+ *  `crates/jatayu-core/src/speech.rs`. */
 const GOOGLE_SPEECH_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta'
 
 /**
@@ -455,7 +455,7 @@ export function speechProviderLabel(t: TranscriberConfig): string {
 
 /**
  * The endpoint a base URL reaches, spelt exactly as `LLMProviderConfig::endpoint`
- * spells it in Rust (`crates/karmayoga-core/src/llm.rs`): trimmed, its trailing
+ * spells it in Rust (`crates/jatayu-core/src/llm.rs`): trimmed, its trailing
  * slashes taken off, or OpenAI's own when there is none.
  *
  * A model key is stored under this, so it is what says whether a card in the

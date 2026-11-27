@@ -119,7 +119,7 @@ ok('and it plays on', await until(() => listening.state === 'playing'))
 listening.setSpeed(1.5)
 check('the speed is chosen', listening.speed, 1.5)
 ok('and reaches the session', await until(() => mockListenSpeed() === 1.5))
-check('and is kept', localStorage.getItem('karmayoga.listen.speed'), '1.5')
+check('and is kept', localStorage.getItem('jatayu.listen.speed'), '1.5')
 
 mockListenEmit({ type: 'trouble', message: 'That part could not be read.' })
 check('a trouble is shown', listening.error, 'That part could not be read.')

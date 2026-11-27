@@ -1,9 +1,9 @@
-// The panel: the cards Karma Yoga shows over whatever the person is looking at
+// The panel: the cards Jatayu shows over whatever the person is looking at
 // -- a meeting coming up, one being recorded, new mail, notes written, the
 // assistant talking or asking, voice typing listening. Its own window, like
 // writing help's popup: the main window may be closed or on another workspace,
 // and the panel has to be on screen anyway. See
-// `crates/karmayoga-app/src/panel/`.
+// `crates/jatayu-app/src/panel/`.
 import '../lib/legacy'
 import '../styles/fonts.css'
 import '../styles/theme.css'

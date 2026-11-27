@@ -561,14 +561,14 @@
   // ── dropping a task in from the rail ───────────────────────────────────
 
   function onDragOver(e: DragEvent, iso: string) {
-    if (!e.dataTransfer?.types.includes('text/x-karmayoga-task')) return
+    if (!e.dataTransfer?.types.includes('text/x-jatayu-task')) return
     e.preventDefault()
     e.dataTransfer.dropEffect = 'copy'
     dropAt = { day: iso, minutes: snap(minutesAt(e.currentTarget as HTMLElement, e.clientY)) }
   }
 
   async function onDrop(e: DragEvent, iso: string) {
-    const id = e.dataTransfer?.getData('text/x-karmayoga-task')
+    const id = e.dataTransfer?.getData('text/x-jatayu-task')
     const at = dropAt
     dropAt = null
     if (!id) return
@@ -718,7 +718,7 @@
             style="--c: {calendar.projectOf(task.projectId)?.color ?? 'var(--accent)'}"
             title="Due: {task.title}"
             draggable={!phone.on}
-            ondragstart={(e) => e.dataTransfer?.setData('text/x-karmayoga-task', task.id)}
+            ondragstart={(e) => e.dataTransfer?.setData('text/x-jatayu-task', task.id)}
             onclick={() => (calendar.selection = null)}
             oncontextmenu={(e) => menu.show(e, calendarTaskMenu(task))}
           >

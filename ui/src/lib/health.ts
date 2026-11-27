@@ -11,7 +11,7 @@
 //   1. The vault stores every value in its metric's canonical unit
 //      (kilograms, metres, kilocalories, mg/dL, degrees Celsius) and this is
 //      the one place that converts for display and back, the way
-//      `karmayoga_core::health::units` does on the Rust side. A glucose of
+//      `jatayu_core::health::units` does on the Rust side. A glucose of
 //      5.5 typed as mg/dL when it was mmol/L is a reading eighteen times too
 //      low, so there is exactly one table of what converts and how.
 //   2. Days travel as `YYYY-MM-DD` in the reader's local zone, as in every

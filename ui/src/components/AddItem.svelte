@@ -53,7 +53,7 @@
   let draft = $state('')
   let field = $state<HTMLInputElement | null>(null)
   let busy = $state(false)
-  const enrichPref = onOffPref('karmayoga.library.enrich')
+  const enrichPref = onOffPref('jatayu.library.enrich')
   /** Whether to go and look the title up. Remembered across the session. */
   let enrich = $state(enrichPref.get())
   /**

@@ -305,7 +305,7 @@
   // windows of one app apart from the main one and from each other.
   $effect(() => {
     const open = panels.settings !== null ? 'Settings' : APPS[app.section].label
-    document.title = app.screen === 'main' ? `${open} — Karma Yoga` : 'Karma Yoga'
+    document.title = app.screen === 'main' ? `${open} — Jatayu` : 'Jatayu'
   })
 
   // A rough guess at the first-run wait: past a few seconds on the boot

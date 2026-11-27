@@ -57,7 +57,7 @@ There is also **one router** for anything a job has to say:
   - The person and the assistant can both cancel.
   - Asking the owner happens only in the chat (Matrix), never at the desktop.
 
-## The record (core, `karmayoga_core::job`)
+## The record (core, `jatayu_core::job`)
 
 - `JobKind::Watch { what, probe }` and `JobKind::Project { goal, brief }`, beside
   `Research` and `Task`.
@@ -359,10 +359,10 @@ Each agent owns its files. Changes needed elsewhere are reported, not made.
 
 | Agent | Owns |
 |---|---|
-| A core | `karmayoga-core/src/job.rs` (tests), `agent/tools/jobs.rs`, `store/jobs.rs`, `agent.rs` (QuietHours tests only), `karmayoga-vault/tests/tools/jobs.rs` |
-| B watch | `karmayoga-service/src/jobs/watch.rs`, `connections/tools.rs` (`probe` only), `tests/watches.rs` (new) |
+| A core | `jatayu-core/src/job.rs` (tests), `agent/tools/jobs.rs`, `store/jobs.rs`, `agent.rs` (QuietHours tests only), `jatayu-vault/tests/tools/jobs.rs` |
+| B watch | `jatayu-service/src/jobs/watch.rs`, `connections/tools.rs` (`probe` only), `tests/watches.rs` (new) |
 | C worker+project | `jobs/mod.rs`, `jobs/project.rs`, `jobs/answer.rs`, `jobs/research.rs`, `domains/jobs.rs`, `tests/jobs.rs` |
 | D reach+voice | `reach.rs`, `voice/session.rs`, `voice/phrases.rs`, `voice/assistant.rs` |
-| E chat | `karmayoga-chat/src/**`, `karmayoga-chat/tests/**` |
-| F agent | `karmayoga-service/src/agent.rs` |
+| E chat | `jatayu-chat/src/**`, `jatayu-chat/tests/**` |
+| F agent | `jatayu-service/src/agent.rs` |
 | G UI | `ui/src/**` |

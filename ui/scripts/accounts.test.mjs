@@ -130,7 +130,7 @@ assert.equal(providerLabel('not a url'), 'not a url', 'an unparsable value is ec
 // ── endpointOf ────────────────────────────────────────────────────────
 //
 // The same table as `the_endpoint_is_spelt_as_the_interface_spells_it` in
-// crates/karmayoga-core/src/llm.rs: a model key is stored under the Rust
+// crates/jatayu-core/src/llm.rs: a model key is stored under the Rust
 // side's string, so the pane can only say a card has one if it spells the
 // endpoint identically.
 
@@ -148,7 +148,7 @@ for (const [baseUrl, want] of [
 
 // ── speechEndpointOf ──────────────────────────────────────────────────
 //
-// `TranscriberConfig::endpoint` in crates/karmayoga-core/src/speech.rs: the
+// `TranscriberConfig::endpoint` in crates/jatayu-core/src/speech.rs: the
 // speech model's key is filed under it, and OpenAI speech must spell OpenAI's
 // address exactly as an OpenAI language model does, or the two would be two
 // keys.

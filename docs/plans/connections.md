@@ -27,12 +27,12 @@ the tree. The services differ in three ways only, and all three are data:
 
 | Piece | Where | What |
 | --- | --- | --- |
-| Records and presets | `karmayoga-core/src/connection.rs` | `Connection`, `ConnectionState`, `ConnectionSecret`, `RemoteTool`, `ToolPolicy`, the preset catalogue, tool search. Synchronous, no sockets. |
-| Storage | `karmayoga-store-sql/src/connections.rs`, schema v31 | One sealed singleton row: `settings` (the person's list) and `state` (what the runtime learned), kept apart as backups' two halves are. Credentials are `record_secrets` rows, owner kind `connection`, one per connection. |
-| Vault facade | `karmayoga-core/src/vault/connections.rs` | Read, save and validate connections; seal and open each one's secret. |
-| MCP client | new crate `karmayoga-connect` | JSON-RPC over Streamable HTTP and stdio, both protocol eras, `tools/list`, `tools/call`, and OAuth (discovery, dynamic registration, PKCE, refresh). No vault, no core. |
-| Runtime | `karmayoga-service/src/connections/` | `Hub`: one live client per connection, opened lazily and kept warm, with tokens refreshed, tool lists cached, and status written back. `signin.rs` runs the OAuth sign-in. `tools.rs` holds the assistant's two tools and the gate's judgement. |
-| Commands | `karmayoga-service/src/domains/connections.rs` | Settings → Connections. Scope `All`: a stdio connection runs a program, and nothing narrower may add one. |
+| Records and presets | `jatayu-core/src/connection.rs` | `Connection`, `ConnectionState`, `ConnectionSecret`, `RemoteTool`, `ToolPolicy`, the preset catalogue, tool search. Synchronous, no sockets. |
+| Storage | `jatayu-store-sql/src/connections.rs`, schema v31 | One sealed singleton row: `settings` (the person's list) and `state` (what the runtime learned), kept apart as backups' two halves are. Credentials are `record_secrets` rows, owner kind `connection`, one per connection. |
+| Vault facade | `jatayu-core/src/vault/connections.rs` | Read, save and validate connections; seal and open each one's secret. |
+| MCP client | new crate `jatayu-connect` | JSON-RPC over Streamable HTTP and stdio, both protocol eras, `tools/list`, `tools/call`, and OAuth (discovery, dynamic registration, PKCE, refresh). No vault, no core. |
+| Runtime | `jatayu-service/src/connections/` | `Hub`: one live client per connection, opened lazily and kept warm, with tokens refreshed, tool lists cached, and status written back. `signin.rs` runs the OAuth sign-in. `tools.rs` holds the assistant's two tools and the gate's judgement. |
+| Commands | `jatayu-service/src/domains/connections.rs` | Settings → Connections. Scope `All`: a stdio connection runs a program, and nothing narrower may add one. |
 | Interface | `ui/src/components/ConnectionsPanel.svelte`, `ui/src/lib/connections.svelte.ts` | The list, adding from a preset, signing in, the tools with a policy each, and removing. |
 
 ## Protocol
@@ -133,7 +133,7 @@ side of the wire.
      refresh token. An authorization server whose endpoints are plain HTTP
      off this machine, or that lists challenge methods without S256, is
      refused.
-  5. The browser comes back to `karmayoga_mail::oauth::Loopback`. The
+  5. The browser comes back to `jatayu_mail::oauth::Loopback`. The
      port is fixed by `redirectPort` for providers that match redirect
      URLs exactly (Slack), and ephemeral otherwise.
   6. The code is exchanged. The token endpoint's reply may be JSON or,

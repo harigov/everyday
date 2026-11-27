@@ -1,13 +1,13 @@
 // The one bridge a mail thread view needs between a stored message and the
 // sandboxed frame that shows it -- see
-// `crates/karmayoga-service/src/mailview.rs` for the Rust side this mirrors,
+// `crates/jatayu-service/src/mailview.rs` for the Rust side this mirrors,
 // and `docs/plans/mail.md`'s "Rendering a message" for the shape both are
 // built from.
 //
 // The reason this file exists at all, rather than a thread view calling
-// `fetch('karmayoga://mail/body/…')` directly: the mock backend
+// `fetch('jatayu://mail/body/…')` directly: the mock backend
 // (`ui/src/lib/mock.ts`) cannot answer that address. There is no
-// `karmayoga://` scheme in a plain browser tab -- `npm run dev`'s whole point
+// `jatayu://` scheme in a plain browser tab -- `npm run dev`'s whole point
 // is running without a native build -- so something has to decide, once,
 // which world this session is in, rather than every call site re-deriving
 // it. Keep this the only place that decision is made.
@@ -22,10 +22,10 @@ import type { Frame } from './themes'
 /** What `<iframe sandbox srcdoc>` needs, whichever world this is running in.
  * Exactly one of `url` and `html` is set:
  *
- * - `url` (real mode): the `karmayoga://mail/body/{id}` address to
+ * - `url` (real mode): the `jatayu://mail/body/{id}` address to
  *   `fetch()` -- never assign it straight to `iframe.src`. Fetching it is
  *   what lets the caller read the `X-Mail-Images-Hidden` response header
- *   `karmayoga-app/src/protocol.rs` and `karmayoga-server/src/routes.rs`
+ *   `jatayu-app/src/protocol.rs` and `jatayu-server/src/routes.rs`
  *   both set, which is how "images hidden — show / always show from this
  *   sender" is driven without parsing the document. Once fetched, assign
  *   the *text* to `iframe.srcdoc`.
@@ -66,8 +66,8 @@ export interface MockMailBody {
  * The origin every `mail/…` address hangs off, which is not the same string
  * on every platform.
  *
- * Tauri maps a custom scheme onto an ordinary `http://karmayoga.localhost`
- * origin on Windows and Android, where `karmayoga://` does not resolve at
+ * Tauri maps a custom scheme onto an ordinary `http://jatayu.localhost`
+ * origin on Windows and Android, where `jatayu://` does not resolve at
  * all and the scheme's own host (`mail`) has nowhere to ride but the first
  * path segment. `protocol.rs`'s `mail_path` accepts both shapes; `api.ts`'s
  * `mediaUrl` makes this same check for blobs. Getting it wrong is not a
@@ -81,7 +81,7 @@ export function mailOrigin(): string {
 }
 
 /**
- * Point a stored body's own `karmayoga://mail/…` addresses at the origin this
+ * Point a stored body's own `jatayu://mail/…` addresses at the origin this
  * platform actually resolves.
  *
  * Remote-image and `cid:` addresses are written into the HTML once, by
@@ -92,27 +92,27 @@ export function mailOrigin(): string {
  */
 export function applyPlatformOrigin(html: string): string {
   const origin = mailOrigin()
-  if (origin === 'karmayoga://mail') return html
+  if (origin === 'jatayu://mail') return html
   return allowWebOrigin(pointOwnAddresses(html, `${origin}/`))
 }
 
 /**
- * `html` with `karmayoga://mail/` swapped for `to` where the sanitiser puts
+ * `html` with `jatayu://mail/` swapped for `to` where the sanitiser puts
  * one -- an `src`, a `srcset`, a table's `background`, a CSS `url(` -- and
  * nowhere else. On web access `to` carries the session's media token, and a
  * sender who wrote the scheme into a link's address
- * (`href="https://evil.example/?u=karmayoga://mail/"`) would otherwise be
+ * (`href="https://evil.example/?u=jatayu://mail/"`) would otherwise be
  * handed that token by anyone who clicked it.
  */
 export function pointOwnAddresses(html: string, to: string): string {
-  const own = 'karmayoga://mail/'
+  const own = 'jatayu://mail/'
   return html
     .replace(
       /(\s(?:src|srcset|background)\s*=\s*)("[^"]*"|'[^']*'|[^\s>]+)/gi,
       (_whole, lead: string, value: string) => lead + value.split(own).join(to),
     )
     .replace(
-      /(url\(\s*(?:"|'|&quot;|&#39;|&#x27;)?)karmayoga:\/\/mail\//gi,
+      /(url\(\s*(?:"|'|&quot;|&#39;|&#x27;)?)jatayu:\/\/mail\//gi,
       (_whole, lead: string) => lead + to,
     )
 }
@@ -145,7 +145,7 @@ export function bodyDocument(messageId: string, mock: MockMailBody = {}): MailBo
   return { html: mockDocument(inner), imagesHidden: mock.imagesHidden ?? false }
 }
 
-/** The `karmayoga://mail/part/{message}/{identifier}` (or
+/** The `jatayu://mail/part/{message}/{identifier}` (or
  * `mail/img/{token}?m={message}`) address for an attachment, an inline
  * `cid:` image, or a proxied remote image -- for an `<img src>` or a
  * download link inside the frame, or a chip beside it. `null` in mock
@@ -204,7 +204,7 @@ function placeholderImage(seed: string): string {
 
 /**
  * {@link partUrl}'s mock-mode counterpart, for an attachment chip: a
- * deterministic `data:` URL standing in for the bytes `karmayoga://mail/part`
+ * deterministic `data:` URL standing in for the bytes `jatayu://mail/part`
  * would otherwise serve, so a thumbnail and a download link both have
  * something real to point at without a network request -- see this module's
  * own doc on why nothing here ever fetches. `null` in real mode, where
@@ -241,13 +241,13 @@ function mockDocument(inner: string): string {
  * still on the way: the person's own HTML from the compose sheet, in the same
  * sandboxed frame as a message. Pictures pasted into it are this app's own
  * blob addresses; nothing else loads. Spaced as it goes out
- * (`compose::line_spaced` in `karmayoga-mail`): a paragraph is a line, and an
+ * (`compose::line_spaced` in `jatayu-mail`): a paragraph is a line, and an
  * empty one a blank line.
  */
 export function draftDocument(inner: string): string {
   return (
     `<!DOCTYPE html><html><head><meta charset="utf-8">` +
-    `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src karmayoga: http://karmayoga.localhost data: blob:; style-src 'unsafe-inline'">` +
+    `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src jatayu: http://jatayu.localhost data: blob:; style-src 'unsafe-inline'">` +
     `<base target="_blank">` +
     `<style>body{margin:0;padding:16px;font-family:sans-serif;font-size:15px;line-height:1.45}` +
     `p,ul,ol{margin:0}[data-signature]{margin-top:1em}` +
@@ -300,7 +300,7 @@ export function quoteDocument(quotedHtml: string, dark: boolean, frame?: Frame):
     : safely(() => adaptToPage(quotedHtml, { background: page, text: fg }), quotedHtml)
   return applyPlatformOrigin(
     `<!DOCTYPE html><html><head><meta charset="utf-8">` +
-      `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src karmayoga: http://karmayoga.localhost data:; style-src 'unsafe-inline'; font-src data:">` +
+      `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src jatayu: http://jatayu.localhost data:; style-src 'unsafe-inline'; font-src data:">` +
       `<base target="_blank">` +
       `<style>:root{color-scheme:${paper ? 'light' : 'dark'}}` +
       `html{background:transparent}body{margin:0;${card}color:${fg};` +

@@ -66,8 +66,8 @@ export function partOf(tab: StoryTab): StoryPart | undefined {
 // whole each time a pane opens rather than held, so a second window sees it.
 
 const TAB_KEYS: Record<TabKind, string> = {
-  episode: 'karmayoga.feed.tab.episode',
-  article: 'karmayoga.feed.tab.article',
+  episode: 'jatayu.feed.tab.episode',
+  article: 'jatayu.feed.tab.article',
 }
 
 export function recallTab(kind: TabKind): StoryTab {

@@ -159,7 +159,7 @@ async function reopen(ctx, params) {
   await ctx.page.goto(url.toString())
   const password = ctx.page.locator('input[type=password]')
   await password.waitFor({ timeout: 15000 })
-  await password.fill('karmayoga')
+  await password.fill('jatayu')
   await password.press('Enter')
   await ctx.page.locator('.shell').waitFor({ timeout: 15000 })
   await ctx.settle(600)
