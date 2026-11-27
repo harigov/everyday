@@ -246,6 +246,7 @@ pub fn run_account_delete_cascade_regression(store: &SqlStore) {
         pack: PackRef { account: account_id.to_string(), pack: PackId::new(), offset: 0, len: 0 },
         gmail: None,
         invite: None,
+        unsubscribe: None,
     };
     store.ingest(account_id, vec![IngestMessage { message, mailbox: mailbox.id, uid: 1 }]).unwrap();
 

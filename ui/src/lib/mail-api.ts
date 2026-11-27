@@ -48,6 +48,9 @@ import type {
   ReplySuggestions,
   OutboxItem,
   ScheduledSend,
+  SenderRef,
+  UnsubscribeOffer,
+  UnsubscribeOutcome,
   WrittenText,
 } from './types'
 
@@ -259,6 +262,23 @@ export const suggestAddresses = (prefix: string, limit?: number): Promise<MailAd
  *  `days`, most first, narrowed as `args` says. */
 export const inboxSenders = (args: InboxSendersArgs): Promise<InboxSender[]> =>
   api.inboxSenders(args)
+
+/** File every message from these senders under `category`, and keep their
+ *  future mail there; answers how many messages moved. */
+export const setSenderCategory = (senders: SenderRef[], category: MailCategory): Promise<number> =>
+  api.setSenderCategory(senders, category)
+
+// ── Unsubscribing ──────────────────────────────────────────────────────
+
+/** What unsubscribing from `thread`'s sender would do, or `null`. */
+export const unsubscribeOffer = (thread: ThreadId): Promise<UnsubscribeOffer | null> =>
+  api.unsubscribeOffer(thread)
+
+/** Ask these conversations' senders (only `senders`, when given) to stop. */
+export const unsubscribe = (
+  threads: ThreadId[],
+  senders: string[] | null = null,
+): Promise<UnsubscribeOutcome[]> => api.unsubscribe(threads, senders)
 
 // ── (i) Invitations ─────────────────────────────────────────────────
 //

@@ -517,6 +517,7 @@ fn account_with_unread_priority(
         pack: PackRef { account: account.id.to_string(), pack: PackId::new(), offset: 0, len: 0 },
         gmail: None,
         invite: None,
+        unsubscribe: None,
     };
     vault
         .ingest_mail(account.id, vec![IngestMessage { message, mailbox: mailbox.id, uid: 1 }])

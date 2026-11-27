@@ -696,6 +696,14 @@ impl MailStore for SqlStore {
         write::set_message_invite(self, id, invite)
     }
 
+    fn set_message_unsubscribe(
+        &self,
+        id: MailMessageId,
+        unsubscribe: Option<jatayu_core::mail::ListUnsubscribe>,
+    ) -> Result<()> {
+        write::set_message_unsubscribe(self, id, unsubscribe)
+    }
+
     fn set_message_category(
         &self,
         id: MailMessageId,
@@ -1055,6 +1063,14 @@ impl MailStore for SqlStore {
         category: Category,
     ) -> Result<u32> {
         write::correct_category(self, account, target, category)
+    }
+
+    fn correct_categories(
+        &self,
+        account: AccountId,
+        corrections: &[(CategoryMatch, Category)],
+    ) -> Result<u32> {
+        write::correct_categories(self, account, corrections)
     }
 
     // ---- sorting by a decision model -------------------------------------

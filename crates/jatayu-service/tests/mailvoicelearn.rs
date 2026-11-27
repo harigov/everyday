@@ -245,6 +245,7 @@ fn message(e: &Env, thread: ThreadId, from: Address, to: &str, hours: i64) -> Me
         invite: None,
         pack: PackRef { account: e.account.id.to_string(), pack: PackId::new(), offset: 0, len: 1 },
         gmail: None,
+        unsubscribe: None,
     }
 }
 

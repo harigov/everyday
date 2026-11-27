@@ -131,6 +131,7 @@ import type {
   LogQuery,
   MailAgentOriginKind,
   MailboxId,
+  MailCategory,
   MailMessageId,
   MailSorting,
   MailWriting,
@@ -193,6 +194,7 @@ import type {
   TemplateUse,
   ThreadFilter,
   InboxSendersArgs,
+  SenderRef,
   ThreadId,
   TimeBlock,
   Tracker,
@@ -2451,6 +2453,21 @@ export const api = {
    *  (1..365, `null` for all of it), most first -- narrowed by account, by
    *  kind of mail and by name, see `InboxSendersArgs`. */
   inboxSenders: (args: InboxSendersArgs) => call('inboxSenders', args),
+  /** File every message from these senders under `category`, and keep
+   *  their future mail there. Answers how many messages moved. */
+  setSenderCategory: (senders: SenderRef[], category: MailCategory) =>
+    call('setSenderCategory', { senders, category }),
+
+  // ── Mail: unsubscribing ─────────────────────────────────────────────
+
+  /** What unsubscribing from a conversation's sender would do, or `null`
+   *  when its mail names no way out. Asks nobody anything. */
+  unsubscribeOffer: (thread: ThreadId) => call('unsubscribeOffer', { thread }),
+  /** Ask the senders of these conversations to take you off their lists --
+   *  only `senders`' messages when given (one sender however many threads).
+   *  One outcome per sender; never throws for one sender's failure. */
+  unsubscribe: (threads: ThreadId[], senders: string[] | null = null) =>
+    call('unsubscribe', { threads, senders }),
 
   // ── The Feed ─────────────────────────────────────────────────────────
   //
@@ -2470,6 +2487,13 @@ export const api = {
   saveNewsSource: (source: NewsSource) => call('saveNewsSource', { source }),
   /** Unfollows, and takes the source's stories with it. */
   deleteNewsSource: (id: NewsSourceId) => call('deleteNewsSource', { id }),
+  /** Stop getting each of these: a newsletter's sender is asked to take you
+   *  off the list and it leaves the Feed; a feed or podcast is unfollowed. */
+  unsubscribeNewsSources: (ids: NewsSourceId[]) => call('unsubscribeNewsSources', { ids }),
+  /** These are not newsletters: turned down and out of the Feed, and with
+   *  `category` their mail moves there in Mail. */
+  markNotNewsletters: (ids: NewsSourceId[], category: MailCategory | null) =>
+    call('markNotNewsletters', { ids, category }),
 
   stories: (query: StoryQuery) => call('listStories', { query }),
   story: (id: StoryId) => call('getStory', { id }),

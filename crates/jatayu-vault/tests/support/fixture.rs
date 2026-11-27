@@ -533,6 +533,7 @@ pub fn build(vault: &Vault, base: u128, ts_base: i64) -> Vec<u8> {
         },
         gmail: None,
         invite: None,
+        unsubscribe: None,
     };
     vault
         .ingest_mail(

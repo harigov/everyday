@@ -1154,6 +1154,7 @@ fn issue(account: AccountId, subject: &str, from: &str, date: Timestamp) -> Mess
         pack: MailPackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
         gmail: None,
         invite: None,
+        unsubscribe: None,
     }
 }
 

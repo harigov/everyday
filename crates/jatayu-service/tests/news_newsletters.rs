@@ -156,6 +156,7 @@ impl World {
             },
             gmail: None,
             invite: None,
+            unsubscribe: None,
         };
         let uid = self.next_uid.get() + 1;
         self.next_uid.set(uid);

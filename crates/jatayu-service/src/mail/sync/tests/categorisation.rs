@@ -1,4 +1,4 @@
-use jatayu_core::mail::Category;
+use jatayu_core::mail::{Category, CategorySource};
 
 use super::fixtures::*;
 // ---------------------------------------------------------------------
@@ -225,4 +225,57 @@ async fn recategorize_mail_never_overrides_a_models_own_answer() {
     assert_eq!(changed, 0, "a model's own answer is never the backfill's to touch");
     let after = env.vault.mail_message(msg.id).unwrap();
     assert_eq!(after.category, Some(Category::Other));
+}
+
+/// A person's correction keeps holding for the sender's new mail: what the
+/// correction filed at ingest is stamped as the person's own filing
+/// (`CategorySource::Person`), not the rules', so the model passes -- which
+/// leave a person's own filing alone -- cannot move a sender somebody took
+/// out of Newsletters straight back in the next time they write. A sender
+/// with no correction is still filed by the rules, and still open to them.
+#[tokio::test]
+async fn a_corrected_senders_new_mail_is_filed_as_the_persons_own() {
+    let env = TestEnv::new();
+    let server = plain_server();
+    let (jan1, jan2) = ("01 Jan 2024 09:00:00 +0000", "02 Jan 2024 09:00:00 +0000");
+    {
+        let mut s = server.lock().unwrap();
+        let first = raw_newsletter("fix-1@example.com", "weekly@example.com", "One", jan1);
+        s.append("INBOX", first, flags_seen(), None);
+    }
+    let mut session = FakeMailSession::new(server.clone());
+    env.sync(&mut session).await;
+    env.vault.correct_mail_category(env.account_id, "weekly@example.com", Category::Other).unwrap();
+
+    {
+        let mut s = server.lock().unwrap();
+        let next = raw_newsletter("fix-2@example.com", "weekly@example.com", "Two", jan2);
+        s.append("INBOX", next, flags_seen(), None);
+        let other = raw_newsletter("fix-3@example.com", "digest@example.com", "Three", jan2);
+        s.append("INBOX", other, flags_seen(), None);
+    }
+    env.sync(&mut session).await;
+
+    let next = env
+        .vault
+        .message_by_message_id_header(env.account_id, "fix-2@example.com")
+        .unwrap()
+        .expect("the new newsletter is stored");
+    assert_eq!(next.category, Some(Category::Other), "filed by the correction, not the rules");
+    assert_eq!(next.category_source, CategorySource::Person);
+    // What the Small-model and priority passes write through.
+    env.vault.set_mail_message_category(next.id, Category::Newsletter).unwrap();
+    assert_eq!(
+        env.vault.mail_message(next.id).unwrap().category,
+        Some(Category::Other),
+        "a model cannot file it back under Newsletters"
+    );
+
+    let other = env
+        .vault
+        .message_by_message_id_header(env.account_id, "fix-3@example.com")
+        .unwrap()
+        .expect("the other newsletter is stored");
+    assert_eq!(other.category, Some(Category::Newsletter));
+    assert_eq!(other.category_source, CategorySource::Rules, "nobody corrected this sender");
 }

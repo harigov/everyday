@@ -278,6 +278,156 @@ assert.equal(mail.loading, false, 'loading settles back to false once the load l
   await mail.selectMailbox('unified:inbox')
 }
 
+// ── Unsubscribing, and mail that is not a newsletter ─────────────────
+//
+// Against the mock's unsubscribe seed: its newsletters carry the header --
+// most one click, some an email, a few only a page, some none -- and
+// `unsubscribe` answers one outcome per sender and remembers asking, while
+// `unsubscribe_offer` reads the newest message that is not the person's own.
+// Early, before the tests below archive the top of the Inbox, and leaving it
+// as it was found: only threads already read are opened, and what is
+// archived or re-filed here is put back.
+
+/** Wait for `check` to come true, as an answer on its way lands. */
+async function until(check, what, ms = 2000) {
+  const end = Date.now() + ms
+  while (!check()) {
+    if (Date.now() > end) assert.fail(`timed out waiting for ${what}`)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+}
+
+{
+  assert.equal(mail.selectedMailbox, 'unified:inbox')
+  assert.equal(mail.category, null)
+  const offered = []
+  for (const t of mail.threads.filter((row) => row.category === 'newsletter')) {
+    const offer = await mailApi.unsubscribeOffer(t.id)
+    if (offer) offered.push({ thread: t, offer })
+  }
+  assert.ok(offered.length >= 2, 'the Inbox has newsletters that name a way out')
+
+  // ── The open thread's offer ──
+  // One already read, so opening it marks nothing, and not a page: asking
+  // a sender is remembered, opening their page is not.
+  const reading = offered.find((o) => o.thread.unreadCount === 0 && o.offer.via !== 'web')
+  assert.ok(reading, 'a read newsletter that unsubscribes by one click or an email')
+  let plain = null
+  for (const t of mail.threads) {
+    if (t.unreadCount > 0 || t.category === 'newsletter' || t.category === 'notification') continue
+    if ((await mailApi.unsubscribeOffer(t.id)) === null) {
+      plain = t
+      break
+    }
+  }
+  assert.ok(plain, 'a read conversation from a person, which names no way out')
+
+  assert.equal(mail.openOffer, null, 'nothing open, no offer')
+  await mail.openThreadById(reading.thread.id)
+  await until(() => mail.openOffer !== null, "the open newsletter's offer")
+  assert.equal(mail.openOffer.email, reading.offer.email, "it is the newsletter's sender")
+  assert.equal(mail.openOffer.via, reading.offer.via)
+
+  // Another thread opened: the first one's offer is never shown on it.
+  await mail.openThreadById(plain.id)
+  assert.equal(mail.openOffer, null, 'not carried over to the next thread')
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  assert.equal(mail.openOffer, null, 'and a thread with no way out has none')
+
+  // Unsubscribed from where it is read: nothing archived unasked, and the
+  // offer is read again, so the button can say it was asked.
+  await mail.openThreadById(reading.thread.id)
+  await until(() => mail.openOffer !== null, 'the offer, opened again')
+  const outcomes = await mail.unsubscribeThreads([reading.thread.id])
+  assert.ok(
+    outcomes.some((o) => o.email === reading.offer.email),
+    'an outcome for the sender asked',
+  )
+  assert.ok(
+    mail.threads.some((t) => t.id === reading.thread.id),
+    'unsubscribing alone archives nothing',
+  )
+  assert.equal(mail.openThread?.thread.id, reading.thread.id, 'and the thread stays open')
+  await until(() => !!mail.openOffer?.askedAt, 'the offer to say the sender was asked')
+  mail.closeThread()
+  assert.equal(mail.openOffer, null, 'closed, there is no offer')
+
+  // ── Unsubscribe and archive ──
+  const other = offered.find((o) => o.thread.id !== reading.thread.id)
+  const home = mail.mailboxes.find(
+    (m) => m.accountId === other.thread.accountId && m.role === 'inbox',
+  )
+  const archived = await mail.unsubscribeThreads([other.thread.id], { archive: true })
+  assert.ok(archived.length >= 1, 'one outcome per sender')
+  assert.ok(
+    !mail.threads.some((t) => t.id === other.thread.id),
+    'and archiving takes it out of the Inbox',
+  )
+  await mailApi.moveManyToMailbox([other.thread.id], home.id)
+  await mail.refresh()
+  assert.ok(
+    mail.threads.some((t) => t.id === other.thread.id),
+    'put back for the tests below',
+  )
+
+  // A failed ask answers nothing, says why, and archives nothing either.
+  const unsubscribe = api.unsubscribe
+  api.unsubscribe = () => Promise.reject(new Error('offline'))
+  const failed = await mail.unsubscribeThreads([other.thread.id], { archive: true })
+  api.unsubscribe = unsubscribe
+  assert.deepEqual(failed, [])
+  assert.equal(app.error, 'offline', 'and says why')
+  app.error = null
+  assert.ok(
+    mail.threads.some((t) => t.id === other.thread.id),
+    'nothing archived after a failed ask',
+  )
+  assert.deepEqual(await mail.unsubscribeThreads([]), [], 'nothing to ask about')
+
+  // ── Not a newsletter ──
+  // From the Newsletters tab, a thread filed elsewhere leaves the tab at once.
+  mail.setCategory('newsletter')
+  await mail.refresh()
+  assert.ok(mail.threads.length >= 2, 'the Newsletters tab has a few to work with')
+  assert.ok(mail.threads.every((t) => t.category === 'newsletter'))
+  const moving = mail.threads.at(-1)
+  assert.equal(await mail.moveToCategory([moving.id], 'other'), true, 'it went')
+  assert.ok(!mail.threads.some((t) => t.id === moving.id), 'out of the tab at once')
+  await mail.refresh()
+  assert.ok(!mail.threads.some((t) => t.id === moving.id), 'and still out of it read again')
+
+  // Refused: every row back where it was, and said why.
+  const staying = mail.threads.map((t) => t.id)
+  assert.equal(
+    await mail.moveToCategory(['no-such-thread', staying[0]], 'other'),
+    false,
+    'a refusal is not a move',
+  )
+  assert.deepEqual(
+    mail.threads.map((t) => t.id),
+    staying,
+    'the row is back in its place',
+  )
+  assert.ok(app.error, 'and the refusal is said')
+  app.error = null
+
+  // In All, the row stays and says where it went.
+  mail.setCategory(null)
+  await mail.refresh()
+  const news = mail.threads.find((t) => t.category === 'newsletter')
+  assert.ok(news)
+  assert.equal(await mail.moveToCategory([news.id], 'notification'), true)
+  assert.equal(
+    mail.threads.find((t) => t.id === news.id)?.category,
+    'notification',
+    'patched in place, still listed',
+  )
+
+  // Both filed back, for the tests below.
+  await mailApi.setThreadCategory([moving.id, news.id], 'newsletter')
+  await mail.selectMailbox('unified:inbox')
+}
+
 // ── loadMore ─────────────────────────────────────────────────────────
 
 if (mail.nextCursor) {

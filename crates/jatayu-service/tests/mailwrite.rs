@@ -330,6 +330,7 @@ fn env_with(endpoint: &str, decision: Option<&str>) -> Env {
         invite: None,
         pack: PackRef { account: account.id.to_string(), pack: PackId::new(), offset: 0, len: 1 },
         gmail: None,
+        unsubscribe: None,
     };
     vault
         .ingest_mail(

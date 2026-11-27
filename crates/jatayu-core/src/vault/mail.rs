@@ -484,6 +484,34 @@ impl Vault {
         Ok(())
     }
 
+    /// Take back the "asked" an unsubscribe marked `message_id` with
+    /// ([`crate::mail::ListUnsubscribe::asked_at`]), once the email it queued
+    /// has failed for good and the sender was never told -- the
+    /// [`Self::revert_invite_response`] of unsubscribing. A message that is
+    /// gone, or carries no such mark, is left alone.
+    pub fn forget_unsubscribe_asked(&self, message_id: MailMessageId) -> Result<()> {
+        self.writable()?;
+        let changed = self.with_mail(|m| {
+            let message = match m.get_message(message_id) {
+                Ok(message) => message,
+                Err(crate::Error::NotFound { .. }) => return Ok(false),
+                Err(e) => return Err(e),
+            };
+            let Some(header) = message.unsubscribe.filter(|h| h.asked_at.is_some()) else {
+                return Ok(false);
+            };
+            m.set_message_unsubscribe(
+                message_id,
+                Some(crate::mail::ListUnsubscribe { asked_at: None, ..header }),
+            )?;
+            Ok(true)
+        })?;
+        if changed {
+            self.wrote(RecordKind::MailMessage, message_id);
+        }
+        Ok(())
+    }
+
     // ---- the outbox ----------------------------------------------------------
 
     pub fn enqueue_op(&self, op: &Op) -> Result<()> {
@@ -798,6 +826,49 @@ impl Vault {
         })
     }
 
+    /// [`Self::correct_mail_category`] for several senders of `account` at
+    /// once: every rule recorded in one save, and the account swept once --
+    /// see [`crate::store::mail::MailStore::correct_categories`]. A sender
+    /// named twice takes the last category given. An empty list changes
+    /// nothing. Returns how many messages changed.
+    pub fn correct_mail_categories(
+        &self,
+        account: AccountId,
+        corrections: &[(String, Category)],
+    ) -> Result<u32> {
+        self.writable()?;
+        if corrections.is_empty() {
+            return Ok(0);
+        }
+        self.with_mail(|m| {
+            let mut rules = m.category_rules(account)?;
+            for (sender, category) in corrections {
+                rules.set_sender(sender, *category);
+            }
+            m.put_category_rules(account, &rules)?;
+            let targets: Vec<(CategoryMatch, Category)> = corrections
+                .iter()
+                .map(|(sender, category)| {
+                    (CategoryMatch::Sender(sender.trim().to_ascii_lowercase()), *category)
+                })
+                .collect();
+            m.correct_categories(account, &targets)
+        })
+    }
+
+    /// Set what message `id` keeps of its `List-Unsubscribe` header -- see
+    /// [`crate::store::mail::MailStore::set_message_unsubscribe`].
+    pub fn set_message_unsubscribe(
+        &self,
+        id: MailMessageId,
+        unsubscribe: Option<crate::mail::ListUnsubscribe>,
+    ) -> Result<()> {
+        self.writable()?;
+        self.with_mail(move |m| m.set_message_unsubscribe(id, unsubscribe))?;
+        self.wrote(RecordKind::MailMessage, id);
+        Ok(())
+    }
+
     /// Re-run categorisation over `account`'s mail from scratch, against its
     /// current corrections — the one-off `recategorize_mail` backfill.
     pub fn recategorize_mail(&self, account: AccountId) -> Result<u32> {
@@ -870,6 +941,47 @@ impl Vault {
         self.wrote(RecordKind::MailMessage, target);
         self.wrote(RecordKind::Thread, thread);
         Ok(())
+    }
+
+    /// Move one thread to `category` by hand, whoever wrote its newest
+    /// message -- the half of `set_thread_category` a sender rule cannot do.
+    ///
+    /// A thread shows the category of its newest message (see
+    /// `jatayu_store_sql::mail::write::recompute_thread`), so a correction
+    /// on the sender a person meant -- swept over that sender's mail by
+    /// [`Vault::correct_mail_categories`] -- moves a thread only when that
+    /// sender also wrote its newest message. When the newest is the person's
+    /// own reply, or a draft, or the thread holds nothing but their own mail,
+    /// the thread would stay where it was however many rules were recorded.
+    /// So this stamps that newest message itself, with
+    /// [`CategorySource::Person`] as [`Vault::set_thread_priority`] does,
+    /// which neither the model passes nor the rules backfill will undo. No
+    /// sender rule is recorded: a person's own address must never become
+    /// one.
+    ///
+    /// Answers whether anything was written: nothing, when the newest
+    /// message is already a person's own mark in `category` -- the usual
+    /// case right after a sweep reached it -- or the thread is empty.
+    pub fn set_thread_category_by_hand(
+        &self,
+        thread: ThreadId,
+        category: Category,
+    ) -> Result<bool> {
+        self.writable()?;
+        let stamped = self.with_mail(|m| {
+            let (_, messages) = m.thread(thread)?;
+            let Some(newest) = messages.last() else { return Ok(None) };
+            if newest.category == Some(category) && newest.category_source == CategorySource::Person
+            {
+                return Ok(None);
+            }
+            m.set_message_category_with_source(newest.id, category, CategorySource::Person)?;
+            Ok(Some(newest.id))
+        })?;
+        let Some(message) = stamped else { return Ok(false) };
+        self.wrote(RecordKind::MailMessage, message);
+        self.wrote(RecordKind::Thread, thread);
+        Ok(true)
     }
 
     /// See
@@ -1797,6 +1909,7 @@ mod priority_target_tests {
             pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
             gmail: None,
             invite: None,
+            unsubscribe: None,
         }
     }
 

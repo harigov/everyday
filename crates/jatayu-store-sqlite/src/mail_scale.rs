@@ -55,6 +55,7 @@ fn synthetic_message(account: AccountId, i: usize, base: jiff::Timestamp) -> Mes
         pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
         gmail: None,
         invite: None,
+        unsubscribe: None,
     }
 }
 

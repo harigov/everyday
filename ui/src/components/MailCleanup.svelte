@@ -26,6 +26,15 @@
   // dialog stays open afterwards -- clearing out a newsletter is rarely the
   // only thing somebody opened this to do -- and asks again quietly behind
   // the rows it has already dropped.
+  //
+  // Two more things can be done with a sender than moving their mail. They
+  // can be asked to stop (`unsubscribe`), with their conversations archived
+  // as well or left where they are; the row then says "Unsubscribed" rather
+  // than offering it again as new. And they can be filed under another kind
+  // of mail (`set_sender_category`), their new mail with them -- how the
+  // newsletters that are not newsletters get out of that tab in bulk. Both
+  // hand over the row's own conversations and accounts, never a bare
+  // address, for the reason the archive does.
 
   import { untrack } from 'svelte'
   import { accounts } from '../lib/accounts.svelte'
@@ -34,7 +43,10 @@
   import { CATEGORY_TABS, senderMatches } from '../lib/mail'
   import * as mailApi from '../lib/mail-api'
   import { mail } from '../lib/mail.svelte'
+  import type { MenuItem } from '../lib/menu'
+  import { menu } from '../lib/menu.svelte'
   import { notify } from '../lib/notify.svelte'
+  import { openExternal } from '../lib/open-external'
   import { closesOnBack } from '../lib/phone.svelte'
   import { sorting } from '../lib/sorting.svelte'
   import { handle } from '../lib/state.svelte'
@@ -43,18 +55,35 @@
     InboxSender,
     InboxSendersArgs,
     MailCategory,
+    SenderRef,
     ThreadId,
+    UnsubscribeOutcome,
+    UnsubscribeVia,
   } from '../lib/types'
+  import {
+    askedLine,
+    manyDetail,
+    needsAttention,
+    sortOutcomes,
+    summarize,
+  } from '../lib/unsubscribe'
+  import ChoiceDialog from './ChoiceDialog.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Icon from './Icon.svelte'
   import Loading from './Loading.svelte'
+  import UnsubscribeResults from './UnsubscribeResults.svelte'
 
   let {
     accountId,
+    kind = '',
     onclose,
   }: {
     /** The account to open on, or `null` for every mail account. */
     accountId: AccountId | null
+    /** The kind of mail to open on, spelt as `sort` spells it --
+     *  `tab:newsletter` from Mail's Newsletters tab -- or every kind when
+     *  absent. Only where it starts: the menu changes it from there. */
+    kind?: string
     onclose: () => void
   } = $props()
 
@@ -72,6 +101,16 @@
   const ALL = 20_000
   /** Senders on one page. */
   const PAGE = 50
+  /** How many of a sender's conversations, newest first, are handed over
+   *  to find how to leave their list. The header that counts is on their
+   *  newest mail, and a sender with years of it would otherwise send
+   *  thousands; "and archive" still takes every one. */
+  const LOOK_IN = 20
+  /** Senders asked to stop in one `unsubscribe`, and senders re-filed in
+   *  one `set_sender_category`: well inside what one call takes, so "Select
+   *  all" over a long list goes in turns rather than being refused. */
+  const ASK_AT_ONCE = 100
+  const MOVE_AT_ONCE = 1000
 
   let days = $state<number | null>(30)
   /** Counting mail older than `days` rather than within it. */
@@ -80,7 +119,7 @@
   /** `''` for every kind of mail, `tab:<category>` for an inbox tab,
    *  `own:<id>` for one of the person's own sorted categories -- one
    *  string, so one `<select>` can offer both. */
-  let sort = $state('')
+  let sort = $state(untrack(() => kind))
   let query = $state('')
   let page = $state(0)
   /** Every sender for the period, account and kind. Only ever replaced
@@ -93,14 +132,24 @@
   /** Has any answer landed yet -- what tells "nothing here" from "not yet". */
   let loaded = $state(false)
   let failed = $state(false)
-  /** An archive or a delete is on its way. */
+  /** An archive, a delete, an unsubscribe or a move is on its way. */
   let busy = $state(false)
   /** By sender address, the key `inbox_senders` groups on. */
   let selected = $state<Set<string>>(new Set())
-  /** A bulk action waiting on a yes, because it reaches rows on other pages. */
-  let asking = $state<{ move: 'archive' | 'trash'; list: InboxSender[]; unseen: number } | null>(
-    null,
-  )
+  /** A bulk action waiting on a yes, because it reaches rows on other
+   *  pages: an archive, a trash, or a move to another kind of mail. */
+  type Asking =
+    | { move: 'archive' | 'trash'; list: InboxSender[]; unseen: number }
+    | { move: 'file'; to: MailCategory; list: InboxSender[]; unseen: number }
+  let asking = $state<Asking | null>(null)
+  /** An unsubscribe waiting on how: with the senders' conversations
+   *  archived too, or left where they are. Always asked -- it writes to
+   *  them in the person's name, and cannot be taken back. `unseen` counts
+   *  the senders on other pages, which the question mentions. */
+  let unsubscribing = $state.raw<{ list: InboxSender[]; unseen: number } | null>(null)
+  /** What an unsubscribe left over: pages to open, and senders it could not
+   *  reach. Listed until the person says they are done. */
+  let leftOver = $state.raw<UnsubscribeOutcome[] | null>(null)
 
   // A phone's back button closes the question over the dialog first, then
   // the dialog, as Escape does.
@@ -157,6 +206,10 @@
 
   const chosen = $derived(rows.filter((s) => selected.has(s.email)))
   const chosenThreads = $derived(threadsOf(chosen))
+  /** The ticked senders whose mail says how to leave their list. */
+  const unsubscribable = $derived(chosen.filter((s) => !!s.unsubscribe))
+  /** The inbox tab the list is narrowed to, which "Move to…" leaves out. */
+  const inTab = $derived(sort.startsWith('tab:') ? (sort.slice(4) as MailCategory) : null)
   const pageSelected = $derived(shown.length > 0 && shown.every((s) => selected.has(s.email)))
 
   // A header checkbox's third state is a DOM property with no attribute
@@ -281,14 +334,26 @@
     selected = new Set([...selected, ...rows.map((s) => s.email)])
   }
 
+  /** How many of `list` are on other pages than the one showing. */
+  function offPage(list: readonly InboxSender[]): number {
+    const onPage = new Set(shown.map((s) => s.email))
+    return list.filter((s) => !onPage.has(s.email)).length
+  }
+
   /** The bulk buttons: straight on when every ticked row is on this page,
    *  asked first when some are not. "Select all" reaches rows nobody has
    *  looked at, and two clicks should not clear out an Inbox unseen. */
   function bulk(move: 'archive' | 'trash') {
-    const onPage = new Set(shown.map((s) => s.email))
-    const unseen = chosen.filter((s) => !onPage.has(s.email)).length
+    const unseen = offPage(chosen)
     if (unseen > 0) asking = { move, list: chosen, unseen }
     else void act(move, chosen)
+  }
+
+  /** "Move to…"'s choice, asked first on the same terms as `bulk`. */
+  function fileChosen(to: MailCategory) {
+    const unseen = offPage(chosen)
+    if (unseen > 0) asking = { move: 'file', to, list: chosen, unseen }
+    else void file(chosen, to)
   }
 
   /** Yes to `bulk`'s question. Taken out of `asking` before it is cleared,
@@ -296,7 +361,14 @@
   function answered() {
     const question = asking
     asking = null
-    if (question) void act(question.move, question.list)
+    if (!question) return
+    if (question.move === 'file') void file(question.list, question.to)
+    else void act(question.move, question.list)
+  }
+
+  /** An inbox tab's name, as the tabs and the kind menu say it. */
+  function labelOf(category: MailCategory): string {
+    return CATEGORY_TABS.find((t) => t.key === category)?.label ?? category
   }
 
   async function act(move: 'archive' | 'trash', list: readonly InboxSender[]) {
@@ -332,11 +404,241 @@
     void load(filters(), true)
   }
 
-  /** The question `bulk` asks, in words. */
+  // ── Unsubscribing ───────────────────────────────────────────────────
+
+  /** One row's Unsubscribe, or the ticked rows': always asked first. */
+  function askUnsubscribe(list: readonly InboxSender[]) {
+    if (busy || list.length === 0) return
+    unsubscribing = { list: [...list], unseen: offPage(list) }
+  }
+
+  /** An answer to `askUnsubscribe`'s question, taken out of it before the
+   *  question goes, as `answered` does. */
+  function unsubscribeAnswered(archive: boolean) {
+    const question = unsubscribing
+    unsubscribing = null
+    if (question) void unsubscribeFrom(question.list, archive)
+  }
+
+  /** The row's Unsubscribe, in a few words: how they would be asked. */
+  function wayTitle(via: UnsubscribeVia): string {
+    switch (via) {
+      case 'oneClick':
+        return 'Unsubscribe in one click'
+      case 'mail':
+        return 'Unsubscribe by sending them an email'
+      case 'web':
+        return 'Unsubscribe on their website'
+    }
+  }
+
+  /** What unsubscribing from one sender does, by the way their mail
+   *  offers. */
+  function wayDetail(via: UnsubscribeVia | null | undefined, name: string): string {
+    switch (via) {
+      case 'oneClick':
+        return `${name} is asked to take you off their list, in one click. Nothing opens in your browser.`
+      case 'mail':
+        return `An email asking ${name} to take you off their list goes from your address.`
+      case 'web':
+        return `${name} only unsubscribes on their website, so their page opens in your browser for you to finish there.`
+      default:
+        return `${name}'s mail names no way to unsubscribe.`
+    }
+  }
+
+  /** `unsubscribing`'s question in words, and its two answers -- the one
+   *  that reaches further second, as `ChoiceDialog` orders them. */
+  const unsubscribeQuestion = $derived.by(() => {
+    if (!unsubscribing) return null
+    const { list, unseen } = unsubscribing
+    const [only] = list
+    if (list.length === 1 && only) {
+      const name = nameOf(only)
+      const asked = askedLine(only.unsubscribedAt)
+      const how = `${wayDetail(only.unsubscribe, name)} Their emails already in your inbox stay there unless you archive them too.`
+      const web = only.unsubscribe === 'web'
+      return {
+        title: asked ? `Unsubscribe from ${name} again?` : `Unsubscribe from ${name}?`,
+        detail: asked ? `${asked}. ${how}` : how,
+        plain: web ? 'Open their page' : 'Unsubscribe only',
+        archive: web ? 'Open their page and archive' : 'Unsubscribe and archive',
+      }
+    }
+    // Senders whose mail names no way out are still handed over: the
+    // answer lists them afterwards, and "and archive" clears them out too.
+    const without = list.filter((s) => !s.unsubscribe).length
+    const parts = [manyDetail(list.length - without)]
+    if (without > 0) {
+      parts.push(
+        `${plural(without, 'other sender offers', 'other senders offer')} no way to unsubscribe.`,
+      )
+    }
+    if (unseen > 0) {
+      parts.push(
+        `${plural(unseen, 'of those senders is', 'of those senders are')} on other pages, not on the one showing.`,
+      )
+    }
+    return {
+      title: `Unsubscribe from ${plural(list.length, 'sender')}?`,
+      detail: parts.join(' '),
+      plain: 'Unsubscribe only',
+      archive: 'Unsubscribe and archive',
+    }
+  })
+
+  /**
+   * Ask `list`'s senders to take the person off their lists, then archive
+   * their conversations when that was the answer -- only once the asking
+   * went: if it failed outright, their mail stays where it was, to try
+   * again from. One sender's failure is theirs alone; the outcomes say who
+   * was asked, whose page is left to open and who could not be reached.
+   * The rows asked say "Unsubscribed" straight away, or leave with their
+   * conversations, as `act` drops them. A long selection is asked in turns
+   * (`ASK_AT_ONCE`), each sender by their newest conversations
+   * (`LOOK_IN`).
+   */
+  async function unsubscribeFrom(list: readonly InboxSender[], archive: boolean) {
+    if (busy) return
+    const ids = threadsOf(list)
+    if (ids.length === 0) return
+    busy = true
+    // The rows to mark are the ones the press was on -- unless another
+    // answer replaced them meanwhile, which then has the say.
+    const token = generation
+    const outcomes: UnsubscribeOutcome[] = []
+    let failed = false
+    let archived = false
+    try {
+      for (let at = 0; at < list.length; at += ASK_AT_ONCE) {
+        const part = list.slice(at, at + ASK_AT_ONCE)
+        const look = [...new Set(part.flatMap((s) => s.threads.slice(0, LOOK_IN)))]
+        outcomes.push(
+          ...(await mailApi.unsubscribe(
+            look,
+            part.map((s) => s.email),
+          )),
+        )
+      }
+      if (archive) archived = await mail.archiveThreads(ids)
+    } catch (e) {
+      failed = true
+      await handle(e)
+    } finally {
+      busy = false
+    }
+    // After a failure partway, the senders already asked still were.
+    const heard = !failed || outcomes.length > 0
+    if (heard) {
+      // Every sender pressed for -- or, after a failure partway, the ones
+      // it reached.
+      const acted = new Set(failed ? outcomes.map((o) => o.email) : list.map((s) => s.email))
+      if (archived) {
+        const gone = new Set(ids)
+        senders = senders.filter((s) => !acted.has(s.email) && !s.threads.every((t) => gone.has(t)))
+      } else if (token === generation) {
+        const asked = new Set(outcomes.filter((o) => o.done).map((o) => o.email))
+        const now = new Date().toISOString()
+        senders = senders.map((s) => (asked.has(s.email) ? { ...s, unsubscribedAt: now } : s))
+      }
+      // Done with: a tick left on would only invite the same press again.
+      const kept = (email: string) => !acted.has(email) && senders.some((s) => s.email === email)
+      selected = new Set([...selected].filter(kept))
+      // The button just pressed may have gone with its row.
+      dialog?.focus()
+    }
+    void load(filters(), true)
+    // A page is opened straight away only when it was the way out the
+    // question named for a single sender: after a refused one-click request
+    // it is listed instead, since the question said nothing would open.
+    const promised = list.length === 1 && list[0]?.unsubscribe === 'web'
+    if (heard) await report(outcomes, archived ? ids.length : 0, promised)
+  }
+
+  /**
+   * Say how an unsubscribe went. A single page left to open is opened
+   * straight away when `promised` (the question said a page would open) --
+   * the person pressed Unsubscribe on that one sender, and finishing there
+   * is the rest of the same press -- and anything else left
+   * over (several pages, a sender it could not reach, a page the browser
+   * would not take) is listed, with a button for each page.
+   */
+  async function report(outcomes: UnsubscribeOutcome[], archived: number, promised: boolean) {
+    const tail = archived > 0 ? `Archived ${plural(archived, 'conversation')}.` : ''
+    const [web] = sortOutcomes(outcomes).pages
+    if (promised && outcomes.length === 1 && web?.url && (await openExternal(web.url))) {
+      notify.success(`Finish unsubscribing from ${web.name || web.email} on their page`, {
+        body: ['It is open in your browser.', tail].filter(Boolean).join(' '),
+      })
+      return
+    }
+    const said = summarize(outcomes)
+    const body = [said.body, tail].filter(Boolean).join(' ')
+    const opts = body ? { body } : {}
+    if (said.ok) notify.success(said.title, opts)
+    else notify.warn(said.title, opts)
+    if (needsAttention(outcomes)) leftOver = outcomes
+  }
+
+  // ── Filing senders under another kind of mail ───────────────────────
+
+  /** "Move to…"'s menu: every inbox tab but the one the list is narrowed
+   *  to, which is where these senders already are. */
+  function moveItems(): MenuItem[] {
+    return [
+      { kind: 'heading', label: 'Move their mail to' },
+      ...CATEGORY_TABS.filter((t) => t.key !== inTab).map((t): MenuItem => ({
+        label: t.label,
+        run: () => fileChosen(t.key),
+      })),
+    ]
+  }
+
+  /**
+   * File every message from `list`'s senders under `to`, in each account
+   * they write to, and keep their new mail there -- the newsletters that
+   * are not, moved where they belong. Under a tab, their rows leave at
+   * once; the quiet re-ask settles the rest.
+   */
+  async function file(list: readonly InboxSender[], to: MailCategory) {
+    if (busy || list.length === 0) return
+    const refs: SenderRef[] = list.flatMap((s) =>
+      s.accounts.map((account) => ({ account, email: s.email })),
+    )
+    busy = true
+    let moved = false
+    try {
+      for (let at = 0; at < refs.length; at += MOVE_AT_ONCE) {
+        await mailApi.setSenderCategory(refs.slice(at, at + MOVE_AT_ONCE), to)
+      }
+      moved = true
+    } catch (e) {
+      await handle(e)
+    } finally {
+      busy = false
+    }
+    if (moved) {
+      const acted = new Set(list.map((s) => s.email))
+      if (inTab) senders = senders.filter((s) => !acted.has(s.email))
+      selected = new Set([...selected].filter((email) => !acted.has(email)))
+      notify.success(`Moved ${plural(list.length, 'sender')} to ${labelOf(to)}`, {
+        body: 'Their new mail goes there too.',
+      })
+      dialog?.focus()
+    }
+    // Asked again either way -- after a failure partway, some of them did
+    // move -- and Mail's own list and tab counts, behind this dialog, too.
+    void mail.refresh()
+    void mail.refreshCategoryCounts()
+    void load(filters(), true)
+  }
+
+  /** The question `bulk` and "Move to…" ask, in words. */
   const askingTitle = $derived.by(() => {
     if (!asking) return ''
-    const what = plural(threadsOf(asking.list).length, 'conversation')
     const from = plural(asking.list.length, 'sender')
+    if (asking.move === 'file') return `Move ${from} to ${labelOf(asking.to)}?`
+    const what = plural(threadsOf(asking.list).length, 'conversation')
     return asking.move === 'archive'
       ? `Archive ${what} from ${from}?`
       : `Move ${what} from ${from} to Trash?`
@@ -373,8 +675,8 @@
 
 <svelte:window
   onkeydown={(e: KeyboardEvent) => {
-    // The confirmation over the dialog takes its own Escape.
-    if (e.key !== 'Escape' || asking) return
+    // A question or a list over the dialog takes its own Escape.
+    if (e.key !== 'Escape' || asking || unsubscribing || leftOver) return
     // The first Escape in the filter box empties it, as a search field's
     // does; the next one closes.
     if (e.target === search && query) {
@@ -539,6 +841,31 @@
     <span class="spacer"></span>
     <button
       class="btn"
+      disabled={busy || loading || unsubscribable.length === 0}
+      title={unsubscribable.length > 0
+        ? `Ask ${plural(unsubscribable.length, 'sender')} to take you off their list`
+        : chosen.length > 0
+          ? 'None of these senders says how to unsubscribe'
+          : 'Tick a sender first'}
+      onclick={() => askUnsubscribe(chosen)}
+    >
+      <Icon name="mail-x" size={13} />
+      Unsubscribe
+    </button>
+    <button
+      class="btn"
+      aria-haspopup="menu"
+      disabled={busy || loading || chosen.length === 0}
+      title={chosen.length > 0
+        ? `File ${plural(chosen.length, 'sender')} under another kind of mail`
+        : 'Tick a sender first'}
+      onclick={(e) => menu.show(e, moveItems())}
+    >
+      <Icon name="tag" size={13} />
+      Move to…
+    </button>
+    <button
+      class="btn"
       disabled={busy || loading || chosenThreads.length === 0}
       title={chosenThreads.length > 0
         ? `Archive ${plural(chosenThreads.length, 'conversation')}`
@@ -574,7 +901,7 @@
       <ul class="senders" class:stale={loading}>
         {#each shown as s (s.email)}
           {@const on = selected.has(s.email)}
-          <li class="sender" class:on>
+          <li class="sender" class:on class:plain={!s.unsubscribe && !s.unsubscribedAt}>
             <label class="pick">
               <input
                 type="checkbox"
@@ -590,6 +917,37 @@
             <span class="tally">
               {plural(s.messages, 'email')} · {s.unread.toLocaleString()} unread
             </span>
+            <!-- Asked already: said quietly, and pressed again to ask again
+                 (a list that kept writing, or a page never finished). -->
+            {#if s.unsubscribedAt}
+              {@const asked = askedLine(s.unsubscribedAt) ?? 'You asked to unsubscribe'}
+              {#if s.unsubscribe}
+                <button
+                  class="act out asked"
+                  title="{asked}. Press to ask again."
+                  disabled={busy || loading}
+                  onclick={() => askUnsubscribe([s])}
+                >
+                  <Icon name="check" size={13} />
+                  Unsubscribed
+                </button>
+              {:else}
+                <span class="mark out" title={asked}>
+                  <Icon name="check" size={13} />
+                  Unsubscribed
+                </span>
+              {/if}
+            {:else if s.unsubscribe}
+              <button
+                class="act out"
+                title={wayTitle(s.unsubscribe)}
+                disabled={busy || loading}
+                onclick={() => askUnsubscribe([s])}
+              >
+                <Icon name="mail-x" size={13} />
+                Unsubscribe
+              </button>
+            {/if}
             <button
               class="act"
               title="Archive {plural(s.threads.length, 'conversation')}"
@@ -650,10 +1008,36 @@
       'of those senders is',
       'of those senders are',
     )} on other pages, not on the one showing."
-    confirmLabel={asking.move === 'archive' ? 'Archive' : 'Move to Trash'}
+    confirmLabel={asking.move === 'archive'
+      ? 'Archive'
+      : asking.move === 'trash'
+        ? 'Move to Trash'
+        : 'Move'}
     danger={asking.move === 'trash'}
     onconfirm={answered}
     oncancel={() => (asking = null)}
+  />
+{/if}
+
+{#if unsubscribeQuestion}
+  <ChoiceDialog
+    title={unsubscribeQuestion.title}
+    detail={unsubscribeQuestion.detail}
+    options={[
+      { label: unsubscribeQuestion.plain, run: () => unsubscribeAnswered(false) },
+      { label: unsubscribeQuestion.archive, run: () => unsubscribeAnswered(true) },
+    ]}
+    oncancel={() => (unsubscribing = null)}
+  />
+{/if}
+
+{#if leftOver}
+  <UnsubscribeResults
+    outcomes={leftOver}
+    onclose={() => {
+      leftOver = null
+      dialog?.focus()
+    }}
   />
 {/if}
 
@@ -806,8 +1190,11 @@
     border-color: var(--accent);
   }
 
+  /* Four buttons and the count beside them fill the line; with "Select
+     all" as well, the buttons go on to a second rather than off the edge. */
   .bulk {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: var(--sp-2);
     padding: var(--sp-2) var(--sp-4);
@@ -938,6 +1325,23 @@
     opacity: 0.45;
     pointer-events: none;
   }
+  /* Already asked: said, not offered, until it is hovered. */
+  .act.asked {
+    color: var(--fg-faint);
+  }
+  .act.asked:hover {
+    color: var(--fg);
+  }
+  .mark {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 26px;
+    padding: 0 var(--sp-2);
+    font-size: var(--text-xs);
+    color: var(--fg-faint);
+  }
 
   .pager {
     display: flex;
@@ -1053,11 +1457,14 @@
   :global([data-phone]) .body {
     overscroll-behavior: contain;
   }
+  /* The way out of a sender's list sits beside their name: the line under
+     it already holds the numbers and two buttons. A sender with none has
+     the whole line for their name. */
   :global([data-phone]) .sender {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto auto;
     grid-template-areas:
-      'pick pick pick'
+      'pick pick unsub'
       'tally archive trash';
     align-items: center;
     gap: 0 var(--sp-2);
@@ -1067,6 +1474,9 @@
   :global([data-phone]) .pick {
     grid-area: pick;
     min-height: 48px;
+  }
+  :global([data-phone]) .sender.plain .pick {
+    grid-column: 1 / -1;
   }
   :global([data-phone]) .name,
   :global([data-phone]) .email {
@@ -1086,8 +1496,21 @@
     border: 1px solid var(--border);
     font-size: var(--text-sm);
   }
+  /* Each row is a grid of its own, so the last column is as wide as the
+     wider of Trash and the way out above it; both keep to their own width
+     at its right-hand edge rather than stretching to fill it. */
   :global([data-phone]) .sender .act.danger {
     grid-area: trash;
+    justify-self: end;
+  }
+  :global([data-phone]) .sender .out {
+    grid-area: unsub;
+    justify-self: end;
+    padding: 0 var(--sp-2);
+  }
+  :global([data-phone]) .sender .mark {
+    height: 40px;
+    font-size: var(--text-sm);
   }
   :global([data-phone]) .pager {
     padding: var(--sp-1) var(--sp-3);

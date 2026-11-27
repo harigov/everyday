@@ -80,7 +80,9 @@ use std::collections::HashMap;
 
 use jatayu_core::Vault;
 use jatayu_core::id::{AccountId, MailMessageId, PackId, ThreadId};
-use jatayu_core::mail::{Address as MailAddress, CategorySource, GmailMeta, Message, MessageFlags};
+use jatayu_core::mail::{
+    Address as MailAddress, CategorySource, GmailMeta, ListUnsubscribe, Message, MessageFlags,
+};
 use jatayu_core::packstore::PackRef;
 use jatayu_mail::mime::{self, Address as MimeAddress};
 use jatayu_mail::session::{Flags, RemoteHeader};
@@ -106,6 +108,12 @@ pub struct HeaderIngest {
     pub list_unsubscribe: Option<String>,
     pub precedence: Option<String>,
     pub auto_submitted: Option<String>,
+    /// `List-Unsubscribe-Post`, raw, beside `list_unsubscribe` -- not a
+    /// signal `categorize` reads, but half of what
+    /// [`Message::unsubscribe`] keeps, carried here so a caller holding the
+    /// header can see what the stored row was read from without parsing the
+    /// bytes again.
+    pub list_unsubscribe_post: Option<String>,
 }
 
 /// A [`PackRef`] that names nothing yet: what a freshly ingested message's
@@ -142,6 +150,24 @@ pub fn resolve_header(
         thread_id: Some(g.thrid.to_string()),
         message_id: Some(g.msgid.to_string()),
     });
+    // What the list headers offer a person who wants off the list, read
+    // once here from the same parse the categoriser's signals come from --
+    // the header block is never fetched again once this pass is done, so
+    // what is not kept now has to be read back from the message's own bytes
+    // later. A message with no header, or none with a link this application
+    // could use, is kept as an empty one -- "looked, nothing offered" --
+    // which is what spares every later look at it a read of its whole bytes
+    // (see `crate::mail::unsubscribe::header_of`): only `None` means "never
+    // looked".
+    let unsubscribe = Some(
+        parsed
+            .list_unsubscribe
+            .as_deref()
+            .and_then(|header| {
+                ListUnsubscribe::parse(header, parsed.list_unsubscribe_post.as_deref())
+            })
+            .unwrap_or_default(),
+    );
 
     if let Some(id) = &parsed.message_id {
         // Which existing row this `Message-ID` names, from whichever of the
@@ -191,6 +217,16 @@ pub fn resolve_header(
             existing.flags = flags;
             existing.labels = labels;
             existing.gmail = gmail;
+            // A row stored before headers were kept gets its header now, for
+            // free, the next time it is seen -- under another mailbox or
+            // label, or after a `UIDVALIDITY` reset. Only then: a row that
+            // already has one may carry the moment this person asked to be
+            // taken off the list (`ListUnsubscribe::asked_at`), which a
+            // fresh read of the same header knows nothing about. The caller
+            // stores this row whole, so what is set here is what is kept.
+            if existing.unsubscribe.is_none() {
+                existing.unsubscribe = unsubscribe;
+            }
             threads.remember(id, existing.thread_id);
             threads.seen_by_message_id.insert(id.clone(), existing.id);
             return Ok(HeaderIngest {
@@ -200,6 +236,7 @@ pub fn resolve_header(
                 list_unsubscribe: parsed.list_unsubscribe,
                 precedence: parsed.precedence,
                 auto_submitted: parsed.auto_submitted,
+                list_unsubscribe_post: parsed.list_unsubscribe_post,
             });
         }
     }
@@ -250,10 +287,11 @@ pub fn resolve_header(
         category: None,
         // Not yet categorised -- `passes::categorize_new_message` fills
         // `category` in from the rules engine right after this returns, and
-        // writes `Rules` there too; `Rules` is the correct placeholder even
-        // for the moment in between, since a `None` category is already
-        // rules-eligible for a future backfill regardless of what this field
-        // says.
+        // writes `Rules` there too (or `Person`, when a person's own
+        // correction for this sender is what answered); `Rules` is the
+        // correct placeholder even for the moment in between, since a `None`
+        // category is already rules-eligible for a future backfill
+        // regardless of what this field says.
         category_source: CategorySource::Rules,
         pack: pending_pack_ref(account_id),
         gmail,
@@ -261,6 +299,10 @@ pub fn resolve_header(
         // raw bytes in hand to look for a `text/calendar` part at all --
         // the headers pass, here, never sees more than the envelope.
         invite: None,
+        // Kept from the header block this pass already has, unlike `invite`:
+        // see `unsubscribe` above. The bodies pass re-reads this row before
+        // it writes its own fields, so what is set here survives it.
+        unsubscribe,
     };
     threads.seen_by_message_id.insert(message.message_id_header.clone(), message.id);
     Ok(HeaderIngest {
@@ -270,6 +312,7 @@ pub fn resolve_header(
         list_unsubscribe: parsed.list_unsubscribe,
         precedence: parsed.precedence,
         auto_submitted: parsed.auto_submitted,
+        list_unsubscribe_post: parsed.list_unsubscribe_post,
     })
 }
 

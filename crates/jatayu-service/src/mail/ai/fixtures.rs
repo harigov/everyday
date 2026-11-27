@@ -44,6 +44,7 @@ pub(super) fn message(from: &str, to: &[&str], subject: &str, snippet: &str) -> 
             len: 1,
         },
         gmail: None,
+        unsubscribe: None,
     }
 }
 

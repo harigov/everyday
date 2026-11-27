@@ -1054,6 +1054,36 @@ fn reap_labels_off_all_mail(
 /// Always on, and sends nothing anywhere -- see
 /// `jatayu_core::mail::categorize`'s own module docs for the whole of the
 /// rules this runs.
+///
+/// # A corrected sender's new mail is stamped `Person`
+///
+/// When `rules` holds a person's own correction for the sender
+/// ([`jatayu_core::mail::CategoryRules::for_sender`] answers -- and it is the
+/// first thing `categorize` asks, so it is also what the category is), the
+/// message is stamped [`CategorySource::Person`] rather than `Rules`: the
+/// person decided where this sender's mail goes, and this message is just
+/// the next of it. Stamped `Rules`, it was fair game for every model pass,
+/// and a sender somebody had moved out of Newsletters by hand was moved
+/// straight back in the next time they wrote. Now:
+///
+/// - the Small-model pass (`mail::ai::categorize`) and the priority pass
+///   write through [`jatayu_core::Vault::set_mail_message_category`], whose
+///   store method drops any write over a `Person` mark;
+/// - the decision-model sort (`mail::sort::ask`) does not ask about a thread
+///   whose newest message is `Person`, and its store write
+///   (`MailStore::sort_message`) refuses one too;
+/// - the rules backfill (`MailStore::recategorize`) leaves it alone, as it
+///   leaves every `Person` mark.
+///
+/// What that costs: `recompute_thread` in `jatayu-store-sql` drops a
+/// thread's [`jatayu_core::mail::Thread::sorted_as`] once its newest message
+/// is `Person`, so a corrected sender's conversations are never filed under
+/// one of the person's own decision-model categories -- only under the tab
+/// they chose. Changing the correction still reaches these messages, since
+/// `MailStore::correct_categories`'s sweep overrides any source; but
+/// `CategoryRules` has no way to take a correction back, and whatever adds
+/// one has to sweep that sender's `Person` marks back to `Rules` as well, or
+/// the backfill will never touch their mail again.
 fn categorize_new_message(
     resolved: &mut ingest::HeaderIngest,
     rules: &jatayu_core::mail::CategoryRules,
@@ -1062,6 +1092,7 @@ fn categorize_new_message(
     if resolved.message.category.is_some() {
         return;
     }
+    let corrected = rules.for_sender(&resolved.message.from.email).is_some();
     let input = CategorizeInput {
         from: &resolved.message.from.email,
         list_id: resolved.list_id.as_deref(),
@@ -1072,7 +1103,8 @@ fn categorize_new_message(
         ever_written_to: contacts.is_some_and(|c| c.has_sent_to(&resolved.message.from.email)),
     };
     resolved.message.category = Some(categorize::categorize(&input, rules));
-    resolved.message.category_source = jatayu_core::mail::CategorySource::Rules;
+    resolved.message.category_source =
+        if corrected { CategorySource::Person } else { CategorySource::Rules };
 }
 
 /// How the sender of a message being stored stands with the account -- see
@@ -1472,7 +1504,9 @@ async fn store_bodies<S: MailSession>(
             // stops that write from reverting `flags`, `labels`,
             // `category` and `category_source` back to whatever the
             // headers pass originally saw. See this function's own
-            // regression test.
+            // regression test. `unsubscribe` is the headers pass's, not
+            // this one's, and is kept by the same re-read -- along with an
+            // `asked_at` an unsubscribe may have stamped on it meanwhile.
             let refreshed: Vec<(IngestMessage, MailDoc)> = processed
                 .iter()
                 .map(|(message, uid, body)| {

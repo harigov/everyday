@@ -102,6 +102,9 @@ pub struct ParsedMessage {
     /// how to parse it without this module changing.
     pub list_id: Option<String>,
     pub list_unsubscribe: Option<String>,
+    /// `List-Unsubscribe-Post`, raw: `List-Unsubscribe=One-Click` when the
+    /// sender takes RFC 8058's one-click POST at the https link above.
+    pub list_unsubscribe_post: Option<String>,
     /// `Auto-Submitted`, raw (`auto-replied`, `auto-generated`, ...). Absent
     /// on almost every message a person sent by hand.
     pub auto_submitted: Option<String>,
@@ -212,6 +215,9 @@ impl ParsedMessage {
             // room for), so this reads the header, not the address parse.
             list_id: message.header_raw("List-Id").map(|s| s.trim().to_string()),
             list_unsubscribe: message.header_raw("List-Unsubscribe").map(|s| s.trim().to_string()),
+            list_unsubscribe_post: message
+                .header_raw("List-Unsubscribe-Post")
+                .map(|s| s.trim().to_string()),
             auto_submitted: message.header_raw("Auto-Submitted").map(|s| s.trim().to_string()),
             precedence: message.header_raw("Precedence").map(|s| s.trim().to_string()),
             html: message.body_html(0).map(|body| body.into_owned()),
@@ -367,6 +373,26 @@ Hello.\r\n";
         let parsed = parse(raw).unwrap();
         assert_eq!(parsed.list_id.as_deref(), Some("Example Newsletter <newsletter.example.com>"));
         assert_eq!(parsed.list_unsubscribe.as_deref(), Some("<https://example.com/unsubscribe>"));
+        assert_eq!(parsed.list_unsubscribe_post, None);
+    }
+
+    #[test]
+    fn the_one_click_header_is_read_folded_lines_and_all() {
+        let raw = b"From: news@example.com\r\n\
+To: reader@example.com\r\n\
+Subject: Digest\r\n\
+List-Unsubscribe: <mailto:leave@example.com>,\r\n <https://example.com/u/abc>\r\n\
+list-unsubscribe-post: List-Unsubscribe=One-Click\r\n\
+Content-Type: text/plain\r\n\
+\r\n\
+Hello.\r\n";
+        let parsed = parse(raw).unwrap();
+        assert_eq!(parsed.list_unsubscribe_post.as_deref(), Some("List-Unsubscribe=One-Click"));
+        let header = parsed.list_unsubscribe.unwrap();
+        assert!(
+            header.contains("<mailto:leave@example.com>")
+                && header.contains("<https://example.com/u/abc>")
+        );
     }
 
     #[test]

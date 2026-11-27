@@ -55,22 +55,38 @@
 //! The buttons still move a conversation whole, so they can move more than a
 //! row counted -- see `jatayu_core::mail::cleanup`'s module docs.
 //!
+//! # Unsubscribing
+//!
+//! Each row also says how unsubscribing from that sender would go, and when
+//! the person last asked them, so the interface can offer the button only
+//! where there is a way out and say "asked on 26 Nov" where it was used. Both
+//! come from what the counted messages kept of their `List-Unsubscribe`
+//! header. Mail synced before headers were kept has none, so for a row with
+//! nothing kept the sender's newest counted message has its header read from
+//! its own bytes -- see [`crate::mail::unsubscribe::header_of`] -- for at
+//! most [`MAX_HEADER_READS`] rows a call, busiest first. Nothing is written:
+//! the unsubscribe itself keeps what it read. The button hands the row's
+//! threads and sender to the `unsubscribe` command, which looks again.
+//!
 //! # Gating
 //!
 //! The `Mail` scope, and nothing finer -- the same as `mail_activity`, which
 //! decrypts the same messages to count the same senders for the Overview,
 //! and `list_threads`, whose rows these thread ids are.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::command;
 use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult, codes};
+use crate::mail::unsubscribe;
 use crate::service::{Service, blocking};
 use jatayu_core::Vault;
-use jatayu_core::id::{AccountId, MailboxId, ThreadId};
+use jatayu_core::id::{AccountId, MailMessageId, MailboxId, ThreadId};
 use jatayu_core::mail::cleanup::{self, InboxSender};
 use jatayu_core::mail::{Category, Mailbox, MailboxRole, Message};
+use jatayu_core::packstore::PackStore;
 use jatayu_core::store::mail::ThreadFilter;
 use jiff::{SignedDuration, Timestamp};
 use serde::Deserialize;
@@ -120,6 +136,13 @@ const INBOX_PAGE: u32 = 500;
 /// can count, and the cap is still only for an Inbox of twenty thousand old
 /// ones.
 const MAX_INBOX_THREADS: usize = 20_000;
+
+/// The most messages one call reads the header of from their own bytes, for
+/// rows whose counted mail kept none -- see "Unsubscribing" in the module
+/// docs. Each is a decrypt of one stored message; past this many, a row just
+/// does not offer the button until the sender's newer mail arrives with its
+/// header kept.
+const MAX_HEADER_READS: usize = 2_000;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -195,6 +218,7 @@ async fn inbox_senders(
     }
     let limit = args.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT) as usize;
     let vault = svc.require()?;
+    let packs = svc.packs();
     let now = svc.now();
     let days_ago = |days: u32| now - SignedDuration::from_hours(i64::from(days) * 24);
     let since = args.days.map_or(Timestamp::MIN, days_ago);
@@ -235,9 +259,40 @@ async fn inbox_senders(
         let mut senders = cleanup::inbox_senders(&messages, &me, since, usize::MAX);
         senders.retain(|s| s.matches(&query));
         senders.truncate(limit);
+        read_unsubscribe(&mut senders, &messages, packs.as_deref());
         Ok(senders)
     })
     .await
+}
+
+/// Fill in [`InboxSender::unsubscribe`] for the rows whose counted messages
+/// kept no header, from their newest message's own bytes -- see
+/// "Unsubscribing" in the module docs. `messages` is what the rows were
+/// counted from, so each row's newest message is already in hand and only
+/// its bytes are read, at most [`MAX_HEADER_READS`] of them.
+fn read_unsubscribe(
+    senders: &mut [InboxSender],
+    messages: &[Message],
+    packs: Option<&dyn PackStore>,
+) {
+    if packs.is_none() {
+        return;
+    }
+    let by_id: HashMap<MailMessageId, &Message> = messages.iter().map(|m| (m.id, m)).collect();
+    let mut reads = 0;
+    for sender in senders.iter_mut().filter(|s| s.unsubscribe.is_none()) {
+        let Some(&newest) = by_id.get(&sender.newest) else { continue };
+        // Only a real read of a message's bytes counts against the budget:
+        // one already read this run is answered from memory, and once the
+        // budget is spent those are still answered.
+        if unsubscribe::reads_bytes(packs, newest) {
+            if reads >= MAX_HEADER_READS {
+                continue;
+            }
+            reads += 1;
+        }
+        sender.unsubscribe = unsubscribe::header_of(packs, newest).and_then(|h| h.via());
+    }
 }
 
 /// The mailbox that is an account's Inbox: the one synced with

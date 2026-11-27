@@ -10,9 +10,14 @@
 import assert from 'node:assert/strict'
 import { load } from './harness.mjs'
 
-const { module: entryRows, close } = await load('/src/lib/entry-rows.ts')
+// One server for both modules: a second `load` was a second Vite server that
+// nothing closed, and when it was the one holding the HMR port the test
+// printed its pass and then never exited.
+const {
+  modules: [entryRows, timeModule],
+  close,
+} = await load(['/src/lib/entry-rows.ts', '/src/lib/time.ts'])
 const { toRows, pieces } = entryRows
-const { module: timeModule } = await load('/src/lib/time.ts')
 const { todayIso, addDays } = timeModule
 
 function entry(id, daysAgo) {

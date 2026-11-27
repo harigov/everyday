@@ -805,7 +805,9 @@ async fn on_permanent_failure(
 /// was an invite RSVP -- undo the optimistic
 /// [`jatayu_core::mail::Invite::my_response`] `respond_to_invite` set
 /// before the reply ever reached anyone, via
-/// [`jatayu_core::Vault::revert_invite_response`]. Shared between
+/// [`jatayu_core::Vault::revert_invite_response`]; when it was an
+/// unsubscribe's email, take back the "asked" on the message it was about,
+/// via [`jatayu_core::Vault::forget_unsubscribe_asked`]. Shared between
 /// [`on_permanent_failure`] (the op just failed for good) and
 /// [`reconcile_stranded_drafts`] (a crash between that failure and this very
 /// write left the draft `Queued` regardless) -- both are "this `Send` is not
@@ -855,6 +857,11 @@ async fn revert_queued_send(
             Err(e) => return Err(e.into()),
         };
         let reverted = reverted.then(|| draft.subject.clone());
+        // An unsubscribe's email that never went: the message it was sent
+        // about must stop saying its sender was asked.
+        if let Some(asked) = draft.unsubscribes {
+            vault_for_draft.forget_unsubscribe_asked(asked)?;
+        }
         // `in_reply_to` alone does not mean this draft answered an
         // invitation -- it is set on every ordinary reply too, since that
         // is also the field the thread view uses to find a message's

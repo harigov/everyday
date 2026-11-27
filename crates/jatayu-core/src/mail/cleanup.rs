@@ -26,9 +26,9 @@ use std::collections::{HashMap, HashSet};
 use jiff::Timestamp;
 use serde::Serialize;
 
-use crate::id::{AccountId, ThreadId};
+use crate::id::{AccountId, MailMessageId, ThreadId};
 use crate::insights::Me;
-use crate::mail::Message;
+use crate::mail::{Message, UnsubscribeVia};
 
 /// One sender, as Quick Cleanup lists them: how much of what is in the Inbox
 /// is theirs, and the threads an archive or a trash of "everything from
@@ -55,6 +55,19 @@ pub struct InboxSender {
     pub accounts: Vec<AccountId>,
     /// Their newest counted message.
     pub latest: Timestamp,
+    /// The id of that newest counted message -- where an unsubscribe looks
+    /// for their `List-Unsubscribe` header first.
+    pub newest: MailMessageId,
+    /// How unsubscribing from them would go: read from the newest counted
+    /// message that kept a header (see [`crate::mail::ListUnsubscribe`]).
+    /// `None` when none did -- including mail synced before headers were
+    /// kept, which `jatayu-service` fills in from the message itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unsubscribe: Option<UnsubscribeVia>,
+    /// When this person last asked to be taken off their list, from any
+    /// counted message: so a row can say so rather than offer it as new.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unsubscribed_at: Option<Timestamp>,
 }
 
 impl InboxSender {
@@ -125,6 +138,9 @@ pub fn inbox_senders(
                 threads: Vec::new(),
                 accounts: Vec::new(),
                 latest: message.date,
+                newest: message.id,
+                unsubscribe: None,
+                unsubscribed_at: None,
             },
             named: false,
             threads: HashSet::new(),
@@ -142,6 +158,15 @@ pub fn inbox_senders(
         }
         if !sender.accounts.contains(&message.account_id) {
             sender.accounts.push(message.account_id);
+        }
+        if let Some(header) = &message.unsubscribe {
+            if sender.unsubscribe.is_none() {
+                sender.unsubscribe = header.via();
+            }
+            if let Some(asked) = header.asked_at {
+                sender.unsubscribed_at =
+                    Some(sender.unsubscribed_at.map_or(asked, |t| t.max(asked)));
+            }
         }
     }
 
@@ -198,6 +223,7 @@ mod tests {
             pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
             gmail: None,
             invite: None,
+            unsubscribe: None,
         }
     }
 

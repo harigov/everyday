@@ -43,6 +43,7 @@ pub mod outbox;
 pub mod rate_limit;
 pub mod records;
 pub mod sorting;
+pub mod unsubscribe;
 pub mod voice;
 pub mod writing;
 
@@ -59,6 +60,7 @@ pub use outbox::{
 pub use rate_limit::{RateLimitState, TokenBucket};
 pub use records::*;
 pub use sorting::{MailSorting, SortCategory, SortMark, SortedAs};
+pub use unsubscribe::{ListUnsubscribe, UnsubscribeVia};
 pub use writing::{MailWriting, SendCheck};
 
 /// What is wrong with `label` as a mail label, or `None` if nothing is.

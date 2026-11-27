@@ -151,7 +151,7 @@ import { WEEKDAYS, expandDays, weekdayOf } from './recurrence'
 import { DIGEST_MARKER, ordinal } from './dream'
 import { sitesCover } from './agent'
 import { noteOrigin } from './note-list'
-import type { Draft, ImproveMode, MailCategory } from './types'
+import type { Draft, ImproveMode, MailCategory, SenderRef } from './types'
 import type {
   ChatDevice,
   ChatLink,
@@ -191,6 +191,8 @@ import {
   mockAddToQueue,
   mockCancelDownload,
   mockDeleteNewsSource,
+  mockMarkNotNewsletters,
+  mockUnsubscribeNewsSources,
   mockDiscoverFeeds,
   mockDownloadEpisode,
   mockExportOpml,
@@ -255,6 +257,9 @@ import {
   mockPreviewAttachment,
   mockGetThread,
   mockInboxSenders,
+  mockSetSenderCategory,
+  mockUnsubscribe,
+  mockUnsubscribeOffer,
   mockLabel,
   mockListDrafts,
   mockListMailboxes,
@@ -8531,6 +8536,21 @@ export const mockInvoke = async <T>(
       requireUnlocked()
       mockSetThreadCategory(strArray(args.threads), args.category as MailCategory)
       return undefined as T
+    case 'set_sender_category':
+      requireUnlocked()
+      return mockSetSenderCategory(
+        Array.isArray(args.senders) ? (args.senders as SenderRef[]) : [],
+        args.category as MailCategory,
+      ) as T
+    case 'unsubscribe_offer':
+      requireUnlocked()
+      return mockUnsubscribeOffer(str(args.thread)) as T
+    case 'unsubscribe':
+      requireUnlocked()
+      return mockUnsubscribe(
+        strArray(args.threads),
+        Array.isArray(args.senders) ? strArray(args.senders) : null,
+      ) as T
     case 'summarize_thread':
       requireUnlocked()
       return mockSummarizeThread(str(args.id)) as T
@@ -8810,6 +8830,15 @@ export const mockInvoke = async <T>(
       requireUnlocked()
       mockDeleteNewsSource(str(args.id))
       return undefined as T
+    case 'unsubscribe_news_sources':
+      requireUnlocked()
+      return mockUnsubscribeNewsSources(strArray(args.ids)) as T
+    case 'mark_not_newsletters':
+      requireUnlocked()
+      return mockMarkNotNewsletters(
+        strArray(args.ids),
+        typeof args.category === 'string' ? (args.category as MailCategory) : null,
+      ) as T
     case 'list_stories':
       requireUnlocked()
       return mockListStories((args.query as StoryQuery | undefined) ?? {}) as T

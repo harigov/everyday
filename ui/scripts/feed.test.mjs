@@ -771,5 +771,29 @@ assert.equal(clampPoints(150.4), 150)
   )
 }
 
+// "Not newsletters" says what happened in Mail, not what was asked.
+{
+  const note = feed.notNewslettersNote
+  assert.equal(
+    note(['The Download'], 'other', { moved: 4, shared: 0 }).body,
+    'Its emails are now under Other in Mail.',
+  )
+  assert.equal(
+    note(['The Download'], 'other', { moved: 0, shared: 1 }).body,
+    'Its emails stay in Newsletters in Mail: another newsletter in the Feed comes from the same address.',
+    'a sibling newsletter from the same address keeps the mail where it is',
+  )
+  assert.match(
+    note(['A', 'B'], 'important', { moved: 3, shared: 1 }).body,
+    /^Moved 3 emails to Important in Mail\. Mail from an address another newsletter/,
+  )
+  assert.equal(
+    note(['A', 'B'], 'other', { moved: 0, shared: 0 }).body,
+    'They had no emails in Mail to move.',
+  )
+  assert.equal(note(['A'], null).body, 'Its emails stay where they were in Mail.')
+  assert.equal(note(['A', 'B'], null).title, 'Took 2 sources out of the Feed')
+}
+
 await close()
 console.log('feed: all checks passed')

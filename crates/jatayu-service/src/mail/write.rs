@@ -1128,6 +1128,7 @@ mod tests {
             invite: None,
             pack: PackRef { account: "a".into(), pack: PackId::new(), offset: 0, len: 1 },
             gmail: None,
+            unsubscribe: None,
         }
     }
 

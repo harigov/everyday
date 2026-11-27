@@ -1649,14 +1649,30 @@ pub struct SetThreadCategory {
 }
 
 /// Set `category` on every thread named, and record it as a standing
-/// correction for each distinct sender among them — see
-/// `jatayu_core::vault::mail::Vault::correct_mail_category` for what
-/// "record" actually does, including the sweep across that sender's other
-/// threads the plan asks for ("as a batch, to that sender's existing
-/// threads"). One correction per distinct `(account, sender)` pair among the
-/// given threads, derived from each thread's own last message — the plan's
-/// contract takes only a category, not a sender, so the sender a person
-/// meant is the one the thread they clicked on actually shows.
+/// correction for the sender each one is from -- see
+/// [`Vault::correct_mail_categories`] for what "record" actually does,
+/// including the sweep across that sender's other threads the plan asks for
+/// ("as a batch, to that sender's existing threads"), made once per account
+/// however many senders the threads name between them.
+///
+/// # Which sender
+///
+/// The plan's contract takes only a category, not a sender, so the sender a
+/// person meant is read off each thread: its newest message that is neither
+/// a draft nor from one of the account's own addresses -- see
+/// [`thread_sender`]. It used to be simply the newest message, which is as
+/// often as not the person's own reply or a draft of one: a rule was then
+/// recorded for their own address, and every message they had ever sent was
+/// swept into the category.
+///
+/// # Every thread named moves
+///
+/// A thread shows its newest message's category, so the sweep alone moves
+/// only the threads whose newest message that sender wrote. Each thread
+/// named is then settled by [`Vault::set_thread_category_by_hand`], which
+/// stamps its newest message itself -- the person's own reply, a draft, or
+/// the newest of a thread holding nothing but their own mail, whose sender
+/// is left alone -- without recording a rule for anybody.
 async fn set_thread_category(
     svc: Arc<Service>,
     _ctx: Ctx,
@@ -1664,19 +1680,129 @@ async fn set_thread_category(
 ) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || {
+        // Each account's own addresses, read once however many of its
+        // threads were named.
+        let mut own_by_account = std::collections::HashMap::new();
         let mut senders: std::collections::BTreeMap<AccountId, BTreeSet<String>> =
             std::collections::BTreeMap::new();
         for &thread_id in &args.threads {
             let (thread, messages) = vault.thread(thread_id)?;
-            let Some(last) = messages.last() else { continue };
-            senders.entry(thread.account_id).or_default().insert(last.from.email.clone());
-        }
-        for (account_id, addresses) in senders {
-            for address in addresses {
-                vault.correct_mail_category(account_id, &address, args.category)?;
+            let account_id = thread.account_id;
+            let own = match own_by_account.entry(account_id) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(crate::mail::address::own_mailboxes(&vault.account(account_id)?))
+                }
+            };
+            if let Some(sender) = thread_sender(&messages, own) {
+                senders.entry(account_id).or_default().insert(sender);
             }
         }
+        for (account_id, addresses) in senders {
+            let corrections: Vec<(String, Category)> =
+                addresses.into_iter().map(|address| (address, args.category)).collect();
+            vault.correct_mail_categories(account_id, &corrections)?;
+        }
+        for &thread_id in &args.threads {
+            vault.set_thread_category_by_hand(thread_id, args.category)?;
+        }
         Ok(())
+    })
+    .await
+}
+
+/// The sender a person means when they move the thread `messages` make up:
+/// the newest message that is neither a draft (flagged `\Draft`, or carrying
+/// Gmail's `\Draft` label) nor from one of `own`
+/// ([`crate::mail::address::own_mailboxes`]), its address trimmed and
+/// lower-cased. A message with no usable address is passed over for the one
+/// before it. `None` when nothing is left -- a thread of the person's own
+/// mail and drafts. `messages` oldest first, as [`Vault::thread`] returns
+/// them (by date, then id), so the newest is the last one that qualifies.
+fn thread_sender(messages: &[Message], own: &std::collections::HashSet<String>) -> Option<String> {
+    messages
+        .iter()
+        .rev()
+        .filter(|m| !m.flags.draft && !m.labels.iter().any(|l| l == "\\Draft"))
+        .map(|m| m.from.email.trim().to_lowercase())
+        .find(|email| email.contains('@') && !crate::mail::address::is_own(email, own))
+}
+
+/// One sender of one account -- what Quick Cleanup's rows name.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SenderRef {
+    pub account: AccountId,
+    pub email: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetSenderCategory {
+    pub senders: Vec<SenderRef>,
+    pub category: Category,
+}
+
+/// The most senders one [`set_sender_category`] call takes. Quick Cleanup
+/// lists a few hundred at the very most; a longer list is not one somebody
+/// picked by hand, and every one of them is a rule kept for good.
+const MAX_SENDERS: usize = 2000;
+
+/// File every message from each of `senders` under `category`, and keep
+/// their future mail there: [`set_thread_category`] for senders named
+/// outright rather than read off a thread, with one sweep per account
+/// however many senders an account has among them. Returns how many
+/// messages moved.
+///
+/// Each address is trimmed and lower-cased, and one with no `@` in it is
+/// dropped rather than refused, as a blank row would be; the same sender
+/// named twice for one account counts once. More than [`MAX_SENDERS`] is
+/// refused. An account that does not exist is refused with `not_found`
+/// before anything is written -- a rule kept for an account that is gone
+/// would never be deleted with it -- and one with mail turned off is passed
+/// over, since nothing arrives there to keep filed.
+///
+/// The declared change is `Thread/Updated` with no ids: the sweep can reach
+/// any number of threads, which no list of ids could name, and an open list
+/// reloads on a bare `Thread/Updated` -- what `set_thread_category`'s own
+/// sweep beyond the threads it names already relies on.
+async fn set_sender_category(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: SetSenderCategory,
+) -> CommandResult<u32> {
+    if args.senders.len() > MAX_SENDERS {
+        return Err(CommandError::new(
+            codes::INVALID,
+            format!("move at most {MAX_SENDERS} senders at a time"),
+        ));
+    }
+    let category = args.category;
+    let mut by_account: std::collections::BTreeMap<AccountId, BTreeSet<String>> =
+        std::collections::BTreeMap::new();
+    for sender in args.senders {
+        let email = sender.email.trim().to_lowercase();
+        if email.contains('@') {
+            by_account.entry(sender.account).or_default().insert(email);
+        }
+    }
+    let vault = svc.require()?;
+    blocking(move || {
+        // Every account checked before any is written to, so a request
+        // naming one that is gone moves nothing rather than half.
+        let mut wanted = Vec::with_capacity(by_account.len());
+        for (account_id, emails) in by_account {
+            if vault.account(account_id)?.services.mail {
+                wanted.push((account_id, emails));
+            }
+        }
+        let mut moved = 0u32;
+        for (account_id, emails) in wanted {
+            let corrections: Vec<(String, Category)> =
+                emails.into_iter().map(|email| (email, category)).collect();
+            moved += vault.correct_mail_categories(account_id, &corrections)?;
+        }
+        Ok(moved)
     })
     .await
 }
@@ -2480,6 +2606,13 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: SetThreadCategory, returns: "void",
         signature: &[("threads", "ThreadId[]", true), ("category", "MailCategory", true)],
         run: set_thread_category,
+    },
+    command! {
+        name: "set_sender_category", scope: Mail, effect: Write,
+        change: Thread/Updated,
+        args: SetSenderCategory, returns: "number",
+        signature: &[("senders", "SenderRef[]", true), ("category", "MailCategory", true)],
+        run: set_sender_category,
     },
     command! {
         name: "set_thread_priority", scope: Mail, effect: Write,

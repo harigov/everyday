@@ -83,6 +83,11 @@ import type {
   StoryPart,
   StoryQuery,
   WorkItem,
+  AccountId,
+  MailCategory,
+  NotNewslettersReport,
+  UnsubscribeOutcome,
+  UnsubscribeVia,
 } from './types'
 import { VaultError } from './types'
 
@@ -1136,18 +1141,17 @@ export function mockSaveNewsSource(updated: NewsSource): void {
 
 export function mockDeleteNewsSource(id: NewsSourceId): void {
   const gone = sourceById(id)
-  const at = sources.findIndex((s) => s.id === id)
-  sources.splice(at, 1)
-  fetched.delete(id)
+  removeSource(id)
   // Unfollowing a newsletter that was found is saying it is not one, so the
   // next message from it does not bring it back.
-  if (gone.found && gone.kind.type === 'mail') {
-    const ref: NewsletterRef = { sender: gone.kind.sender }
-    if (gone.kind.name) ref.name = gone.kind.name
-    const listed = settings.notNewsletters ?? []
-    const known = listed.some((n) => n.sender === ref.sender && (n.name ?? '') === (ref.name ?? ''))
-    if (!known) settings.notNewsletters = [...listed, ref]
-  }
+  if (gone.found && gone.kind.type === 'mail') turnDown(gone.kind)
+}
+
+/** A source gone, with its stories, their bodies and what was fetched for it. */
+function removeSource(id: NewsSourceId): void {
+  const at = sources.findIndex((s) => s.id === id)
+  if (at >= 0) sources.splice(at, 1)
+  fetched.delete(id)
   for (let i = stories.length - 1; i >= 0; i--) {
     const doomed = stories[i]!
     if (doomed.sourceId !== id) continue
@@ -1156,6 +1160,15 @@ export function mockDeleteNewsSource(id: NewsSourceId): void {
     summaries.delete(doomed.id)
     stories.splice(i, 1)
   }
+}
+
+/** Put a newsletter on Settings → Feed's list of what is not one, once. */
+function turnDown(kind: { sender: string; name?: string }): void {
+  const ref: NewsletterRef = { sender: kind.sender }
+  if (kind.name) ref.name = kind.name
+  const listed = settings.notNewsletters ?? []
+  const known = listed.some((n) => n.sender === ref.sender && (n.name ?? '') === (ref.name ?? ''))
+  if (!known) settings.notNewsletters = [...listed, ref]
 }
 
 // ── Refreshing ───────────────────────────────────────────────────────────
@@ -2920,4 +2933,83 @@ export function mockSearchFeeds(query: string, limit: number | null | undefined)
   return FEEDS.filter((f) => matches(q, `${f.title} ${f.description} ${f.siteUrl}`))
     .slice(0, limit && limit > 0 ? limit : 25)
     .map((f) => ({ ...f, icon: artwork(f.title), followed: followedFeed(f.feedUrl) }))
+}
+
+// ── Stopping many sources at once ────────────────────────────────────
+
+/** The account Mail's mock files every newsletter under: its Google one. */
+const NEWSLETTER_ACCOUNT: AccountId = 'acct-google'
+
+/**
+ * How each newsletter in the seed offers a way out, as its mail's
+ * `List-Unsubscribe` would -- one of each, so the Feed's toast and the list of
+ * pages left to open can both be seen: The Download a one-click request, The
+ * Algorithm only a page on the sender's site, TLDR an email to the list. One
+ * address sends the first two, so a name, when given, has to match as well;
+ * the first that does wins. A sender not here names no way out.
+ */
+const WAYS_OUT: { sender: string; name?: string; via: UnsubscribeVia; url?: string }[] = [
+  {
+    sender: 'newsletters@technologyreview.com',
+    name: 'The Algorithm',
+    via: 'web',
+    url: 'https://technologyreview.example/unsubscribe/the-algorithm',
+  },
+  { sender: 'newsletters@technologyreview.com', via: 'oneClick' },
+  { sender: 'dan@tldrnewsletter.com', via: 'mail' },
+]
+
+/** How asking one newsletter's sender went, by `WAYS_OUT`. */
+function askToLeave(kind: { sender: string; name?: string }, title: string): UnsubscribeOutcome {
+  const name = kind.name?.trim() ?? ''
+  const way = WAYS_OUT.find((w) => w.sender === kind.sender && (w.name ?? name) === name)
+  const asked = { account: NEWSLETTER_ACCOUNT, email: kind.sender, name: name || title }
+  if (!way) return { ...asked, done: false }
+  if (way.via === 'web') return { ...asked, via: 'web', done: false, url: way.url ?? null }
+  return { ...asked, via: way.via, done: true }
+}
+
+/**
+ * `unsubscribe_news_sources {ids}`: each newsletter's sender asked, and the
+ * source gone and turned down, whether it was found or followed -- after
+ * unsubscribing, an issue that still turns up is not one to bring it back
+ * for. A feed or a show is unfollowed and says nothing. The Newsletters source
+ * is how they are found and is never taken, and an id that is not followed is
+ * passed over, as the service passes over one already gone.
+ */
+export function mockUnsubscribeNewsSources(ids: NewsSourceId[]): UnsubscribeOutcome[] {
+  const outcomes: UnsubscribeOutcome[] = []
+  for (const id of new Set(ids)) {
+    const source = sources.find((s) => s.id === id)
+    if (!source || source.kind.type === 'newsletters') continue
+    if (source.kind.type === 'mail') {
+      outcomes.push(askToLeave(source.kind, source.title))
+      turnDown(source.kind)
+    }
+    removeSource(id)
+  }
+  return outcomes
+}
+
+/**
+ * `mark_not_newsletters {ids, category}`: each newsletter among `ids` turned
+ * down and out of the Feed. Anything else is left alone, as the Newsletters
+ * source is. Mail's mock has no messages from these senders, so a `category`
+ * has nothing to move.
+ */
+export function mockMarkNotNewsletters(
+  ids: NewsSourceId[],
+  category: MailCategory | null,
+): NotNewslettersReport {
+  let removed = 0
+  for (const id of new Set(ids)) {
+    const source = sources.find((s) => s.id === id)
+    if (!source || source.kind.type !== 'mail') continue
+    turnDown(source.kind)
+    removeSource(id)
+    removed += 1
+  }
+  // The mock's Feed has no mail of its own to move, so two messages a
+  // newsletter stand in for what the service would have moved in Mail.
+  return { removed, moved: category ? removed * 2 : 0, shared: 0 }
 }

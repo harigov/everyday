@@ -5745,6 +5745,31 @@
       "args": [
         {
           "name": "ids",
+          "required": true,
+          "type": "NewsSourceId[]"
+        },
+        {
+          "name": "category",
+          "required": false,
+          "type": "MailCategory | null"
+        }
+      ],
+      "changes": {
+        "kind": "newsSource",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "mark_not_newsletters",
+      "orScope": null,
+      "returns": "NotNewslettersReport",
+      "scope": "news",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "ids",
           "required": false,
           "type": "ProposalId[]"
         }
@@ -10192,6 +10217,31 @@
     {
       "args": [
         {
+          "name": "senders",
+          "required": true,
+          "type": "SenderRef[]"
+        },
+        {
+          "name": "category",
+          "required": true,
+          "type": "MailCategory"
+        }
+      ],
+      "changes": {
+        "kind": "thread",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "set_sender_category",
+      "orScope": null,
+      "returns": "number",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "on",
           "required": true,
           "type": "boolean"
@@ -11235,6 +11285,68 @@
       "name": "unstar",
       "orScope": null,
       "returns": "Op[]",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "threads",
+          "required": true,
+          "type": "ThreadId[]"
+        },
+        {
+          "name": "senders",
+          "required": false,
+          "type": "string[] | null"
+        }
+      ],
+      "changes": {
+        "kind": "thread",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "unsubscribe",
+      "orScope": null,
+      "returns": "UnsubscribeOutcome[]",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "ids",
+          "required": true,
+          "type": "NewsSourceId[]"
+        }
+      ],
+      "changes": {
+        "kind": "newsSource",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "unsubscribe_news_sources",
+      "orScope": null,
+      "returns": "UnsubscribeOutcome[]",
+      "scope": "news",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "thread",
+          "required": true,
+          "type": "ThreadId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "unsubscribe_offer",
+      "orScope": null,
+      "returns": "UnsubscribeOffer | null",
       "scope": "mail",
       "sensitive": false,
       "streams": false

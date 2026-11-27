@@ -2596,6 +2596,14 @@
         },
         "type": "array"
       },
+      "unsubscribes": {
+        "description": "The message whose list this draft asks to be taken off: set on the\nemail an unsubscribe queues (`jatayu-service`'s `mail::unsubscribe`),\nso a send that fails for good can take back the \"asked\" that message\nwas marked with ([`super::ListUnsubscribe::asked_at`]) -- the thread\nmust not go on saying \"Unsubscribed\" about an email nobody received.\n`None` on every other draft.",
+        "format": "uuid",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "updatedAt": {
         "format": "date-time",
         "type": "string"
@@ -7094,6 +7102,31 @@
         ],
         "type": "string"
       },
+      "ListUnsubscribe": {
+        "description": "What a message's `List-Unsubscribe` header offered, read once when the\nmessage arrived, and when this person last used it.\n\nKept on [`super::Message::unsubscribe`]. One with no `links` there means\nthe message was looked at and offered no way out; `None` means it arrived\nbefore headers were kept, and `jatayu-service` reads the message itself\nto find out.",
+        "properties": {
+          "askedAt": {
+            "description": "When this person last asked to be taken off the list from this\nmessage -- a POST the sender accepted, or an email queued to them.\nOpening a web page does not count: what happened there is unknown.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "links": {
+            "description": "The header's links in the sender's order, each unfolded and with its\nscheme lower-cased: `mailto:`, `https:` and `http:` only.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "oneClick": {
+            "description": "Whether `List-Unsubscribe-Post: List-Unsubscribe=One-Click` came with\nit and an https link is there to POST to (RFC 8058).",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
       "MessageFlags": {
         "description": "The IMAP flags this application tracks, plus Gmail's own read/unread\nnotion (`\\Seen`), packed as a small set of booleans rather than a\n`Vec<String>` of keyword strings: these five are the only ones anything\nhere ever reads or writes, and a fixed shape is what lets\n[`MessageFlags::bits`] pack them into the clear `messages.flags` column\nthe unread count is summed from without decrypting a single row.",
         "properties": {
@@ -7275,6 +7308,17 @@
           "$ref": "#/$defs/Address"
         },
         "type": "array"
+      },
+      "unsubscribe": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ListUnsubscribe"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "What this message's `List-Unsubscribe` header offered (and\n`List-Unsubscribe-Post` beside it), read when the headers arrived --\nsee [`super::unsubscribe`]. One with no `links` means the headers\nwere looked at and offered no way out. `None` means they never were:\na message synced before headers were kept, whose header\n`jatayu-service` reads back from the message's own bytes when it is\nwanted. Additive on the same terms as `invite`, so no schema-version\nbump."
       }
     },
     "required": [

@@ -107,6 +107,7 @@ fn ingest_eml(
         pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
         gmail: None,
         invite: None,
+        unsubscribe: None,
     };
     vault
         .ingest_mail(account, vec![IngestMessage { message, mailbox, uid }])
@@ -646,6 +647,7 @@ fn seed_invite_message(
         pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
         gmail: None,
         invite: Some(invite),
+        unsubscribe: None,
     };
     v.ingest_mail(account, vec![IngestMessage { message, mailbox, uid }]).unwrap();
     (message_id, thread_id)

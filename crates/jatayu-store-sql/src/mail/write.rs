@@ -249,6 +249,26 @@ pub(super) fn set_message_invite(
     tx.commit()
 }
 
+/// See [`jatayu_core::store::mail::MailStore::set_message_unsubscribe`].
+/// No [`recompute_thread`], as for [`set_message_invite`]: nothing a thread
+/// row keeps is drawn from it.
+pub(super) fn set_message_unsubscribe(
+    store: &SqlStore,
+    id: MailMessageId,
+    unsubscribe: Option<jatayu_core::mail::ListUnsubscribe>,
+) -> Result<()> {
+    let mut conn = store.write();
+    let mut tx = conn.begin()?;
+    let Some(mut message) = message_by_id(store, tx.as_mut(), id)? else {
+        return Ok(()); // deleted since the caller last looked: nothing to update
+    };
+    message.unsubscribe = unsubscribe;
+    let sealed = store.seal(&message_aad(id), &message)?;
+    let (sql, args) = upsert_stmt(&message, sealed);
+    tx.execute(&sql, &args)?;
+    tx.commit()
+}
+
 /// See [`jatayu_core::store::mail::MailStore::set_message_category`].
 ///
 /// A no-op whenever the message already carries
@@ -1468,14 +1488,20 @@ pub(super) fn recategorize(
         |message| {
             let input = CategorizeInput {
                 from: &message.from.email,
-                // Neither of these two headers survives on a stored
-                // `Message` -- see this function's own trait docs -- so a
-                // message that would have read as a newsletter purely on a
-                // `List-Id`/`List-Unsubscribe` header it arrived with, and
-                // was never corrected or model-answered since, is the one
-                // accepted gap in re-running the rules from storage alone.
+                // `List-Id` does not survive on a stored `Message` -- see
+                // this function's own trait docs -- so a message that would
+                // have read as a newsletter purely on that header, and was
+                // never corrected or model-answered since, is the accepted
+                // gap in re-running the rules from storage alone.
+                // `List-Unsubscribe` is kept (`Message::unsubscribe`, when it
+                // named a usable link) for mail synced since it was; older
+                // mail is the same gap.
                 list_id: None,
-                list_unsubscribe: None,
+                list_unsubscribe: message
+                    .unsubscribe
+                    .as_ref()
+                    .and_then(|u| u.links.first())
+                    .map(String::as_str),
                 precedence: None,
                 auto_submitted: None,
                 gmail_labels: &message.labels,
@@ -1493,11 +1519,40 @@ pub(super) fn correct_category(
     target: CategoryMatch,
     category: Category,
 ) -> Result<u32> {
+    correct_categories(store, account, &[(target, category)])
+}
+
+/// See [`jatayu_core::store::mail::MailStore::correct_categories`]: one
+/// sweep, each message given the category of the correction that names it,
+/// an exact address before a domain and the last of either.
+pub(super) fn correct_categories(
+    store: &SqlStore,
+    account: AccountId,
+    corrections: &[(CategoryMatch, Category)],
+) -> Result<u32> {
+    if corrections.is_empty() {
+        return Ok(0);
+    }
+    let pick = |email: &str| -> Option<Category> {
+        let named = |by_sender: bool| {
+            corrections
+                .iter()
+                .rev()
+                .find(|(target, _)| {
+                    matches!(target, CategoryMatch::Sender(_)) == by_sender
+                        && matches_target(target, email)
+                })
+                .map(|(_, category)| *category)
+        };
+        named(true).or_else(|| named(false))
+    };
     sweep_categories(
         store,
         account,
-        |message| matches_target(&target, &message.from.email),
-        |_message| (category, CategorySource::Person),
+        |message| pick(&message.from.email).is_some(),
+        // `eligible` has already said a correction names this sender, so the
+        // fallback is never reached.
+        |message| (pick(&message.from.email).unwrap_or(Category::Other), CategorySource::Person),
     )
 }
 
@@ -1730,6 +1785,7 @@ pub fn run_recategorize_staleness_regression(store: &SqlStore) {
         pack: PackRef { account: account_id.to_string(), pack: PackId::new(), offset: 0, len: 0 },
         gmail: None,
         invite: None,
+        unsubscribe: None,
     };
     store.ingest(account_id, vec![IngestMessage { message, mailbox: mailbox.id, uid: 1 }]).unwrap();
 

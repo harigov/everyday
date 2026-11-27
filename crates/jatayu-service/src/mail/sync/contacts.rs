@@ -366,6 +366,7 @@ mod tests {
             },
             gmail: None,
             invite: None,
+            unsubscribe: None,
         };
         vault.ingest_mail(account, vec![IngestMessage { message, mailbox, uid }]).unwrap();
     }

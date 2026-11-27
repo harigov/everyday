@@ -365,6 +365,7 @@ const SKIPPED_COMMANDS: &[(&str, &str)] = &[
     ("sync_account", "starts a supervised sync task against a real mail server"),
     ("sync_calendar", "refreshes one calendar from its remote source"),
     ("sync_due_calendars", "refreshes every subscribed calendar from its remote source"),
+    ("unsubscribe", "asks a sender's server, or queues mail to them"),
     ("update_event", "writes to an account calendar's server over the network"),
 ];
 
@@ -639,6 +640,20 @@ async fn every_offline_write_announces_what_was_written_down() {
         &h,
         "set_thread_category",
         json!({ "threads": [thread_id.to_string()], "category": "important" }),
+    )
+    .await;
+    // The same sender and category the line above already filed them under,
+    // so nothing moves and the rest of this script sees the thread exactly as
+    // before: what is pinned is the bare `Thread/Updated` it announces all
+    // the same.
+    run(
+        &svc,
+        &h,
+        "set_sender_category",
+        json!({
+            "senders": [{ "account": mail_account_id.to_string(), "email": "sender@example.com" }],
+            "category": "important",
+        }),
     )
     .await;
     run(
@@ -2018,6 +2033,7 @@ fn seed_thread(
         pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
         gmail: None,
         invite: None,
+        unsubscribe: None,
     };
     vault.ingest_mail(account, vec![IngestMessage { message, mailbox, uid }]).unwrap();
     thread_id
