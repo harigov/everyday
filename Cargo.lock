@@ -1529,9 +1529,9 @@ dependencies = [
 
 [[package]]
 name = "cookie"
-version = "0.18.2"
+version = "0.18.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a373e3602691c3cdea496d2f0ee5935151e6168fe87739483c463db1b2f2f87"
+checksum = "d55f2d6c30eeec7d5c6f98bd4395d4abb1895629eab97ee6522d340623615f8a"
 dependencies = [
  "time",
  "version_check",
@@ -4372,6 +4372,432 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
+name = "jatayu-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "ashpd",
+ "audioadapter-buffers",
+ "axum",
+ "base64 0.22.1",
+ "cpal",
+ "enigo",
+ "futures-util",
+ "gdkx11",
+ "gethostname",
+ "gtk",
+ "hound",
+ "jatayu-chat",
+ "jatayu-core",
+ "jatayu-focus",
+ "jatayu-mail",
+ "jatayu-server",
+ "jatayu-service",
+ "jatayu-vault",
+ "jiff",
+ "keyring",
+ "ndk-context",
+ "objc2",
+ "pipewire",
+ "raw-window-handle",
+ "rubato",
+ "serde",
+ "serde_json",
+ "sonora",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-notification",
+ "tauri-plugin-opener",
+ "tauri-plugin-single-instance",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zbus",
+]
+
+[[package]]
+name = "jatayu-chat"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "futures",
+ "if-addrs",
+ "jatayu-core",
+ "jatayu-service",
+ "jatayu-vault",
+ "jiff",
+ "matrix-sdk",
+ "matrix-sdk-crypto",
+ "mime",
+ "opus",
+ "prost",
+ "pulldown-cmark",
+ "ring",
+ "rustls",
+ "rustls-platform-verifier",
+ "serde",
+ "serde_json",
+ "str0m",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "jatayu-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "jatayu-chat",
+ "jatayu-core",
+ "jatayu-mcp",
+ "jatayu-server",
+ "jatayu-service",
+ "jatayu-transfer",
+ "jatayu-vault",
+ "jiff",
+ "mime_guess",
+ "qrcode",
+ "reqwest",
+ "rpassword",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "jatayu-connect"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "futures",
+ "jiff",
+ "rand 0.9.5",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "jatayu-core"
+version = "0.1.0"
+dependencies = [
+ "argon2",
+ "blake3",
+ "chacha20poly1305",
+ "fs4 1.1.0",
+ "jiff",
+ "psl",
+ "quick-xml 0.41.0",
+ "rand 0.9.5",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tracing",
+ "url",
+ "uuid",
+ "zeroize",
+ "zip",
+]
+
+[[package]]
+name = "jatayu-docindex"
+version = "0.1.0"
+dependencies = [
+ "jatayu-core",
+ "jatayu-mailindex",
+ "tantivy",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "jatayu-focus"
+version = "0.1.0"
+dependencies = [
+ "objc2",
+ "objc2-app-kit",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation",
+ "thiserror 2.0.20",
+ "tracing",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-wlr",
+ "windows-sys 0.61.2",
+ "x11rb",
+ "zbus",
+]
+
+[[package]]
+name = "jatayu-mail"
+version = "0.1.0"
+dependencies = [
+ "ammonia",
+ "async-imap",
+ "axum",
+ "base64 0.22.1",
+ "blake3",
+ "calcard",
+ "chrono",
+ "css-inline",
+ "futures",
+ "htmd",
+ "html2text",
+ "imap-proto",
+ "jatayu-core",
+ "jiff",
+ "lettre",
+ "lol_html",
+ "mail-builder 1.0.0",
+ "mail-parser",
+ "oauth2",
+ "oauth2-reqwest",
+ "proptest",
+ "rand 0.9.5",
+ "reqwest",
+ "rustls",
+ "rustls-platform-verifier",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "socket2",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "url",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "jatayu-mailindex"
+version = "0.1.0"
+dependencies = [
+ "jatayu-core",
+ "jiff",
+ "lru",
+ "serde",
+ "serde_json",
+ "tantivy",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
+name = "jatayu-mcp"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "jatayu-server"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "axum-server",
+ "base64 0.22.1",
+ "blake3",
+ "futures",
+ "hyper",
+ "hyper-util",
+ "jatayu-core",
+ "jatayu-mail",
+ "jatayu-mcp",
+ "jatayu-service",
+ "jatayu-vault",
+ "jiff",
+ "qrcode",
+ "rand 0.9.5",
+ "rcgen",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite",
+ "tower",
+ "tower-service",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "jatayu-service"
+version = "0.1.0"
+dependencies = [
+ "audioadapter-buffers",
+ "axum",
+ "base64 0.22.1",
+ "blake3",
+ "bytes",
+ "bzip2 0.6.1",
+ "calcard",
+ "chrono",
+ "dom_query 0.28.0",
+ "dom_smoothie",
+ "encoding_rs",
+ "feed-rs",
+ "flate2",
+ "frizbee",
+ "futures",
+ "gethostname",
+ "hound",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "image",
+ "jatayu-connect",
+ "jatayu-core",
+ "jatayu-docindex",
+ "jatayu-mail",
+ "jatayu-mailindex",
+ "jatayu-transfer",
+ "jatayu-vault",
+ "jiff",
+ "jpeg-encoder",
+ "kamadak-exif",
+ "libc",
+ "libdav",
+ "llama-cpp-sys-2",
+ "lol_html",
+ "lopdf",
+ "loqui-g2p",
+ "minijinja",
+ "mp4",
+ "notify",
+ "num_cpus",
+ "ogg",
+ "opus",
+ "pdf-extract",
+ "ptts",
+ "pulldown-cmark",
+ "rand 0.9.5",
+ "reqwest",
+ "resvg",
+ "rig-agent",
+ "rig-core",
+ "ring",
+ "roxmltree 0.21.1",
+ "rubato",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sherpa-onnx",
+ "symphonia",
+ "tar",
+ "tempfile",
+ "tokio",
+ "tower-http",
+ "tower-service",
+ "tracing",
+ "url",
+ "uuid",
+ "xn",
+ "zip",
+]
+
+[[package]]
+name = "jatayu-store-postgres"
+version = "0.1.0"
+dependencies = [
+ "jatayu-core",
+ "jatayu-store-sql",
+ "jiff",
+ "postgres",
+ "rustls",
+ "rustls-platform-verifier",
+ "tempfile",
+ "tokio-postgres-rustls",
+ "tracing",
+]
+
+[[package]]
+name = "jatayu-store-sql"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "blake3",
+ "jatayu-core",
+ "jiff",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "jatayu-store-sqlite"
+version = "0.1.0"
+dependencies = [
+ "jatayu-core",
+ "jatayu-store-sql",
+ "jiff",
+ "rusqlite",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "jatayu-transfer"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "flate2",
+ "jatayu-core",
+ "jatayu-vault",
+ "jiff",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "jatayu-vault"
+version = "0.1.0"
+dependencies = [
+ "directories",
+ "jatayu-core",
+ "jatayu-mail",
+ "jatayu-store-postgres",
+ "jatayu-store-sqlite",
+ "jiff",
+ "keyring",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "javascriptcore-rs"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4595,432 +5021,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8772c92c0f41c4a672cbdee6728253e5ae8fcc1c5eb5c6c676579565684bbf68"
 dependencies = [
  "mutate_once",
-]
-
-[[package]]
-name = "jatayu-app"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arboard",
- "ashpd",
- "audioadapter-buffers",
- "axum",
- "base64 0.22.1",
- "cpal",
- "enigo",
- "futures-util",
- "gdkx11",
- "gethostname",
- "gtk",
- "hound",
- "jiff",
- "jatayu-chat",
- "jatayu-core",
- "jatayu-focus",
- "jatayu-mail",
- "jatayu-server",
- "jatayu-service",
- "jatayu-vault",
- "keyring",
- "ndk-context",
- "objc2",
- "pipewire",
- "raw-window-handle",
- "rubato",
- "serde",
- "serde_json",
- "sonora",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-notification",
- "tauri-plugin-opener",
- "tauri-plugin-single-instance",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "zbus",
-]
-
-[[package]]
-name = "jatayu-chat"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "base64 0.22.1",
- "futures",
- "if-addrs",
- "jiff",
- "jatayu-core",
- "jatayu-service",
- "jatayu-vault",
- "matrix-sdk",
- "matrix-sdk-crypto",
- "mime",
- "opus",
- "prost",
- "pulldown-cmark",
- "ring",
- "rustls",
- "rustls-platform-verifier",
- "serde",
- "serde_json",
- "str0m",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "jatayu-cli"
-version = "0.1.0"
-dependencies = [
- "clap",
- "jiff",
- "jatayu-chat",
- "jatayu-core",
- "jatayu-mcp",
- "jatayu-server",
- "jatayu-service",
- "jatayu-transfer",
- "jatayu-vault",
- "mime_guess",
- "qrcode",
- "reqwest",
- "rpassword",
- "serde_json",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "jatayu-connect"
-version = "0.1.0"
-dependencies = [
- "axum",
- "base64 0.22.1",
- "futures",
- "jiff",
- "rand 0.9.5",
- "reqwest",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "jatayu-core"
-version = "0.1.0"
-dependencies = [
- "argon2",
- "blake3",
- "chacha20poly1305",
- "fs4 1.1.0",
- "jiff",
- "psl",
- "quick-xml 0.41.0",
- "rand 0.9.5",
- "schemars 1.2.2",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.20",
- "tracing",
- "url",
- "uuid",
- "zeroize",
- "zip",
-]
-
-[[package]]
-name = "jatayu-docindex"
-version = "0.1.0"
-dependencies = [
- "jatayu-core",
- "jatayu-mailindex",
- "tantivy",
- "tempfile",
- "tracing",
-]
-
-[[package]]
-name = "jatayu-focus"
-version = "0.1.0"
-dependencies = [
- "objc2",
- "objc2-app-kit",
- "objc2-core-foundation",
- "objc2-core-graphics",
- "objc2-foundation",
- "thiserror 2.0.20",
- "tracing",
- "wayland-client",
- "wayland-protocols",
- "wayland-protocols-wlr",
- "windows-sys 0.61.2",
- "x11rb",
- "zbus",
-]
-
-[[package]]
-name = "jatayu-mail"
-version = "0.1.0"
-dependencies = [
- "ammonia",
- "async-imap",
- "axum",
- "base64 0.22.1",
- "blake3",
- "calcard",
- "chrono",
- "css-inline",
- "futures",
- "htmd",
- "html2text",
- "imap-proto",
- "jiff",
- "jatayu-core",
- "lettre",
- "lol_html",
- "mail-builder 1.0.0",
- "mail-parser",
- "oauth2",
- "oauth2-reqwest",
- "proptest",
- "rand 0.9.5",
- "reqwest",
- "rustls",
- "rustls-platform-verifier",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "socket2",
- "thiserror 2.0.20",
- "tokio",
- "tokio-rustls",
- "tracing",
- "url",
- "uuid",
- "zeroize",
-]
-
-[[package]]
-name = "jatayu-mailindex"
-version = "0.1.0"
-dependencies = [
- "jiff",
- "jatayu-core",
- "lru",
- "serde",
- "serde_json",
- "tantivy",
- "tempfile",
- "thiserror 2.0.20",
- "tracing",
-]
-
-[[package]]
-name = "jatayu-mcp"
-version = "0.1.0"
-dependencies = [
- "serde_json",
-]
-
-[[package]]
-name = "jatayu-server"
-version = "0.1.0"
-dependencies = [
- "axum",
- "axum-server",
- "base64 0.22.1",
- "blake3",
- "futures",
- "hyper",
- "hyper-util",
- "jiff",
- "jatayu-core",
- "jatayu-mail",
- "jatayu-mcp",
- "jatayu-service",
- "jatayu-vault",
- "qrcode",
- "rand 0.9.5",
- "rcgen",
- "reqwest",
- "rustls",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-rustls",
- "tokio-tungstenite",
- "tower",
- "tower-service",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "jatayu-service"
-version = "0.1.0"
-dependencies = [
- "audioadapter-buffers",
- "axum",
- "base64 0.22.1",
- "blake3",
- "bytes",
- "bzip2 0.6.1",
- "calcard",
- "chrono",
- "dom_query 0.28.0",
- "dom_smoothie",
- "encoding_rs",
- "feed-rs",
- "flate2",
- "frizbee",
- "futures",
- "gethostname",
- "hound",
- "http",
- "http-body-util",
- "hyper",
- "hyper-rustls",
- "hyper-util",
- "image",
- "jiff",
- "jpeg-encoder",
- "kamadak-exif",
- "jatayu-connect",
- "jatayu-core",
- "jatayu-docindex",
- "jatayu-mail",
- "jatayu-mailindex",
- "jatayu-transfer",
- "jatayu-vault",
- "libc",
- "libdav",
- "llama-cpp-sys-2",
- "lol_html",
- "lopdf",
- "loqui-g2p",
- "minijinja",
- "mp4",
- "notify",
- "num_cpus",
- "ogg",
- "opus",
- "pdf-extract",
- "ptts",
- "pulldown-cmark",
- "rand 0.9.5",
- "reqwest",
- "resvg",
- "rig-agent",
- "rig-core",
- "ring",
- "roxmltree 0.21.1",
- "rubato",
- "rustls",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "sherpa-onnx",
- "symphonia",
- "tar",
- "tempfile",
- "tokio",
- "tower-http",
- "tower-service",
- "tracing",
- "url",
- "uuid",
- "xn",
- "zip",
-]
-
-[[package]]
-name = "jatayu-store-postgres"
-version = "0.1.0"
-dependencies = [
- "jiff",
- "jatayu-core",
- "jatayu-store-sql",
- "postgres",
- "rustls",
- "rustls-platform-verifier",
- "tempfile",
- "tokio-postgres-rustls",
- "tracing",
-]
-
-[[package]]
-name = "jatayu-store-sql"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "blake3",
- "jiff",
- "jatayu-core",
- "serde",
- "serde_json",
- "tempfile",
- "tracing",
-]
-
-[[package]]
-name = "jatayu-store-sqlite"
-version = "0.1.0"
-dependencies = [
- "jiff",
- "jatayu-core",
- "jatayu-store-sql",
- "rusqlite",
- "tempfile",
- "tracing",
-]
-
-[[package]]
-name = "jatayu-transfer"
-version = "0.1.0"
-dependencies = [
- "crc32fast",
- "flate2",
- "jiff",
- "jatayu-core",
- "jatayu-vault",
- "serde",
- "serde_json",
- "tempfile",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "jatayu-vault"
-version = "0.1.0"
-dependencies = [
- "directories",
- "jiff",
- "jatayu-core",
- "jatayu-mail",
- "jatayu-store-postgres",
- "jatayu-store-sqlite",
- "keyring",
- "serde",
- "serde_json",
- "tempfile",
- "tracing",
 ]
 
 [[package]]
