@@ -66,7 +66,7 @@ import {
   type Object3D,
 } from 'three'
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
-import { plumageOf, type Act, type Look } from './companion'
+import { parks, plumageOf, type Act, type Look } from './companion'
 
 // ── The scene's public face ─────────────────────────────────────────────
 
@@ -75,10 +75,25 @@ export interface CompanionScene {
   setAct(act: Act): void
   /** The canvas's size in CSS pixels. */
   resize(width: number, height: number): void
-  /** Run the animation. */
+  /**
+   * Run the animation. A bird with nothing to do is drawn until it settles
+   * and then held on that frame (see `parks`), until a new act, a pat or the
+   * pointer moves it again.
+   */
   play(): void
   /** Stop drawing, keeping everything for `play` to pick up. */
   pause(): void
+  /**
+   * Whether `play` was asked for and nothing has paused it since -- drawing,
+   * or holding a settled frame that a pointer or a pat will wake.
+   */
+  readonly playing: boolean
+  /**
+   * Whether the window has the focus. A bird with nothing to do in a window
+   * nobody is at is held as soon as it has come to rest (see `parks`); one at
+   * work keeps moving, since that is how a turn shows from across the room.
+   */
+  attend(focused: boolean): void
   /**
    * Draw the current act once, standing still: for reduced motion. `at` is
    * how many seconds into the act to draw it -- far enough, left alone, that
@@ -157,6 +172,20 @@ export function createCompanionScene(
   let frame = 0
   let width = 0
   let height = 0
+  /** `play` was asked for, and nothing has paused it since. */
+  let wanted = false
+  /** The window has the focus: see `attend`. */
+  let watched = true
+  /** Settled with nothing to do: the loop has stopped on a finished frame. */
+  let parked = false
+  /** When it was held, by `performance.now()`. */
+  let parkedAt = 0
+  /** A held idle bird's nap, still to come. */
+  let doze: ReturnType<typeof setTimeout> | null = null
+  /** When it last changed what it was acting out, on `clock`. */
+  let stirredAt = 0
+  /** How open the eyes were last drawn. */
+  let eyes = 1
 
   function step(dt: number) {
     clock += dt
@@ -167,6 +196,7 @@ export function createCompanionScene(
       from = { ...pose }
       blend = 0
       current = acting
+      stirredAt = clock
     }
     const target = poseFor(acting, clock, u)
     if (from && blend < 1) {
@@ -176,7 +206,8 @@ export function createCompanionScene(
       pose = target
     }
     const live = life.over(pose, current, clock, dt)
-    apply(rig, live, clock, blink.open(clock, live))
+    eyes = blink.open(clock, live)
+    apply(rig, live, clock, eyes)
     life.settle(rig, live, dt)
     props.animate(clock, live, rig)
   }
@@ -199,6 +230,53 @@ export function createCompanionScene(
     // A tab that slept for a minute must not wake into a minute's blend.
     step(Math.min(elapsed, 0.1))
     draw()
+    const settled = parks({
+      act: current,
+      blend,
+      quietFor: clock - stirredAt,
+      watched,
+      busy: life.busy(clock) || props.busy(clock),
+      resting: eyes >= 1 && (current !== 'idle' || fidget(clock) < 0.02),
+    })
+    if (settled) park()
+  }
+
+  /**
+   * Stop the loop on the frame just drawn, until something moves it: a new
+   * act, a pat, the pointer, the focus coming back. An idle bird still nods
+   * off when it would have, so its nap is put on a timer.
+   */
+  function park() {
+    cancelAnimationFrame(frame)
+    frame = 0
+    parked = true
+    parkedAt = performance.now()
+    if (act === 'idle' && current === 'idle') {
+      const left = DOZE_AFTER_S - (clock - actStart)
+      // A beat late, so it wakes past the moment rather than just short of it.
+      doze = setTimeout(wake, Math.max(0, left) * 1000 + 250)
+    }
+  }
+
+  /**
+   * Let go of a held frame. The time it was held counts towards an idle
+   * bird's nap -- it was on screen all along -- and moving the act's start
+   * back moves nothing drawn: idle's pose is read from the scene's clock.
+   */
+  function unpark() {
+    if (!parked) return
+    parked = false
+    if (doze) clearTimeout(doze)
+    doze = null
+    if (act === 'idle') actStart -= (performance.now() - parkedAt) / 1000
+  }
+
+  /** Start the loop again for something that moves, if it is wanted. */
+  function wake() {
+    if (!wanted || frame) return
+    unpark()
+    last = 0
+    frame = requestAnimationFrame(loop)
   }
 
   /** Between frames, or with no loop running: bring the picture up to date. */
@@ -220,10 +298,13 @@ export function createCompanionScene(
     },
     setAct(next) {
       if (next === act) return
+      // Before the act changes: a held frame's time belongs to the old one.
+      unpark()
       act = next
       actStart = clock
       blink = new Blinker(clock)
       refresh()
+      wake()
     },
     resize(w, h) {
       width = w
@@ -237,15 +318,30 @@ export function createCompanionScene(
       if (!frame) draw()
     },
     play() {
-      if (frame) return
+      wanted = true
+      if (frame || parked) return
       last = 0
       frame = requestAnimationFrame(loop)
     },
     pause() {
+      wanted = false
+      unpark()
       cancelAnimationFrame(frame)
       frame = 0
     },
+    get playing() {
+      return wanted
+    },
+    attend(focused) {
+      if (focused === watched) return
+      watched = focused
+      // Back in front of somebody: moving again, until it settles as a
+      // watched bird does. Held already, if it has been quiet that long.
+      if (focused) wake()
+    },
     still(at = 1.2) {
+      wanted = false
+      unpark()
       cancelAnimationFrame(frame)
       frame = 0
       // Far enough into the act that it has arrived, and not blinking. A
@@ -260,13 +356,17 @@ export function createCompanionScene(
     },
     lookAt(x, y) {
       life.look(x, y, clock)
+      // Only a bird that turns its head to the pointer is woken by it.
+      if (ATTENTIVE[current]) wake()
     },
     pet() {
       life.pet(clock)
       props.hearts(clock)
       refresh()
+      wake()
     },
     dispose() {
+      unpark()
       cancelAnimationFrame(frame)
       frame = 0
       dispose(scene)
@@ -470,6 +570,22 @@ function hash(n: number): number {
   return x - Math.floor(x)
 }
 
+/** How long each of idle's little things to do lasts, from one to the next. */
+const IDLE_SLOT_S = 4.6
+/** The share of those slots in which it just sits. */
+const IDLE_SITS = 0.22
+
+/**
+ * How far into one of idle's little things the bird is at `t`, 0 to 1: 0
+ * between two of them, and all through a slot where it just sits. Where an
+ * idle bird can be held without stopping mid-stretch.
+ */
+function fidget(t: number): number {
+  const slot = Math.floor(t / IDLE_SLOT_S)
+  if (hash(slot) < IDLE_SITS) return 0
+  return envelope(t - slot * IDLE_SLOT_S, IDLE_SLOT_S, 0.7)
+}
+
 /** Fades in over `edge` seconds at the start of a slot and out at its end. */
 function envelope(local: number, length: number, edge: number): number {
   return ease(Math.max(0, Math.min(1, local / edge, (length - local) / edge)))
@@ -526,12 +642,12 @@ function poseFor(act: Act, t: number, u: number): Pose {
   const p = rest(t)
   switch (act) {
     case 'idle': {
-      const LENGTH = 4.6
+      const LENGTH = IDLE_SLOT_S
       const slot = Math.floor(t / LENGTH)
       const r = hash(slot)
       const side = hash(slot + 17) < 0.5 ? -1 : 1
       const w = envelope(t - slot * LENGTH, LENGTH, 0.7)
-      if (r < 0.22) {
+      if (r < IDLE_SITS) {
         // Sit.
       } else if (r < 0.42) {
         // The quick, sideways tilt a bird gives something it is curious about.
@@ -761,6 +877,19 @@ class Life {
 
   pet(now: number) {
     this.#petAt = now
+  }
+
+  /**
+   * Whether anything laid over the act is still moving: a pat, the head
+   * following the pointer or easing back from it, the crest's wobble.
+   */
+  busy(t: number): boolean {
+    return (
+      t - this.#petAt < PET_S ||
+      this.#gaze.lengthSq() > 1e-4 ||
+      Math.abs(this.#crest.x) > 0.01 ||
+      Math.abs(this.#crest.v) > 0.05
+    )
   }
 
   /** The pose with attention and petting on it. `still` skips the easing. */
@@ -1803,8 +1932,13 @@ interface Props {
   group: Group
   /** Send a few hearts up. */
   hearts(now: number): void
+  /** Whether any hearts are still in the air. */
+  busy(now: number): boolean
   animate(t: number, pose: Pose, rig: Rig): void
 }
+
+/** How long a heart takes to float up and fade. */
+const HEART_S = 1.3
 
 const scratch = new Vector3()
 
@@ -1917,6 +2051,9 @@ function buildProps(accent: Color): Props {
         h.x = (i % 2 === 0 ? -1 : 1) * (0.08 + i * 0.05)
       })
     },
+    busy(now) {
+      return hearts.some((h) => now - h.born < HEART_S)
+    },
     animate(t, pose, rig) {
       // Thought dots pulse one after another.
       thought.forEach((dot, i) => {
@@ -1954,7 +2091,6 @@ function buildProps(accent: Color): Props {
       })
 
       // Hearts float up from the head, pop in, wobble, and fade.
-      const HEART_S = 1.3
       for (const h of hearts) {
         const age = (t - h.born) / HEART_S
         h.mesh.visible = age >= 0 && age < 1

@@ -300,8 +300,10 @@ const SNOOZED_PAGE: u32 = 200;
 /// service's unread total (a clear-column `SUM`, cached until the next mail
 /// write -- see `mail::sync::unread_cache`), less what the inbox's snoozed
 /// threads hold. The first is exact and costs nothing between writes; the
-/// second decrypts only the snoozed threads, which are a handful, where
-/// listing every unread thread would decrypt all of them once a minute.
+/// second reads the snoozed threads, which are a handful, from clear columns
+/// through the index of snoozed threads -- where listing them walked the
+/// whole inbox, and listing every unread thread would decrypt all of them
+/// once a minute.
 ///
 /// The sidebar leaves snoozed threads out of the Inbox row's number -- see
 /// `mail.svelte.ts`'s `refreshUnreadCounts` -- and so does this.
@@ -337,11 +339,13 @@ fn unread_inbox(service: &Service, vault: &Vault) -> u64 {
                 }
             },
         };
-        for inbox in inboxes {
+        let lists: Vec<_> = inboxes.iter().map(|&inbox| (inbox, snoozed)).collect();
+        let held = vault.mail_listed_unread(&lists, SNOOZED_PAGE).unwrap_or_default();
+        for (i, inbox) in inboxes.into_iter().enumerate() {
             let unread: u64 = counts.iter().filter(|(id, _)| *id == inbox).map(|(_, n)| n).sum();
-            let held: u64 = vault
-                .list_threads(inbox, &snoozed, None, SNOOZED_PAGE)
-                .map(|page| page.threads.iter().map(|t| u64::from(t.unread_count)).sum())
+            let held: u64 = held
+                .get(i)
+                .map(|threads| threads.iter().map(|&(_, n)| u64::from(n)).sum())
                 .unwrap_or(0);
             total += unread.saturating_sub(held);
         }

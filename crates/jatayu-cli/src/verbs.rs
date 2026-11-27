@@ -102,13 +102,13 @@ pub(crate) fn init(
 /// sitting somewhere it can be read -- which includes a terminal someone else
 /// can scroll back through, and a CI log.
 pub(crate) fn backend(vault: &Vault, pairs: &[String], supplied: Option<&str>) -> Result<()> {
-    let name = vault.status().backend;
+    let name = vault.backend();
     let specs = jatayu_vault::backend_settings(&name)?;
 
     // The settings are sealed under the vault key, so reading them at all
     // needs the password -- and only the password, which is what makes this
     // reachable on a vault that cannot be opened.
-    let password = match (vault.status().encrypted, supplied) {
+    let password = match (vault.is_encrypted(), supplied) {
         (false, _) => None,
         (true, Some(p)) => Some(p.to_string()),
         (true, None) => Some(prompt_password("Password: ")?),
@@ -146,7 +146,9 @@ pub(crate) fn backend(vault: &Vault, pairs: &[String], supplied: Option<&str>) -
 
 pub(crate) fn status(vault: &Vault) -> Result<()> {
     let s = vault.status();
-    let stats = s.stats.unwrap_or_default();
+    // The full figures, media included: a vault's status leaves the media
+    // folder alone, and this is the one place that prints its size.
+    let stats = vault.stats().ok().or(s.stats).unwrap_or_default();
     println!("name       {}", s.name);
     println!("path       {}", s.path.display());
     println!("backend    {}", s.backend);
@@ -556,7 +558,7 @@ pub(crate) fn passwd(vault: &Vault, supplied: Option<&str>) -> Result<()> {
     // have to be sealed again, which this version cannot do. The vault
     // refuses too, and writes nothing; this is the friendlier answer, and it
     // saves typing a password twice for nothing.
-    if !vault.status().encrypted {
+    if !vault.is_encrypted() {
         return Err(Error::Invalid(
             "this vault has no password, and one cannot be added to it. To have an encrypted \
              vault, make a new one with `jatayu init`, then bring everything across with \

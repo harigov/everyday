@@ -2964,6 +2964,23 @@ export interface CategoryCount {
   unread: number
 }
 
+/** One badge `mail_unread_badges` is asked for: the unread total of
+ *  `mailboxes`' threads that are not snoozed (`snoozed: false`), or only of
+ *  the snoozed ones (`snoozed: true`). `key` comes back unchanged. */
+export interface UnreadTarget {
+  key: string
+  mailboxes: MailboxId[]
+  snoozed: boolean
+}
+
+/** What one `UnreadTarget` counts: the sum of `unreadCount` over the newest
+ *  200 threads each member mailbox lists (filtered by `snoozed` as
+ *  `list_threads` filters), a thread listed by two members counted once. */
+export interface UnreadBadge {
+  key: string
+  unread: number
+}
+
 /** One keyset-paged page of threads. `nextCursor` is opaque: hand it back as
  * `cursor` for the next page, and never inspect it. */
 export interface ThreadPage {
@@ -4813,6 +4830,10 @@ export interface AgentMessage {
    *  the assistant. A picture among them also has a small copy in
    *  `attachments`, which is what a model is shown. */
   files?: FileId[]
+  /** The toolkits a routed assistant turn was offered beyond what it
+   *  called, by name -- kept so later turns offer the same tools. Absent
+   *  when none; the interface does not read it. */
+  kits?: string[]
   createdAt: string
 }
 

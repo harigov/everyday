@@ -226,6 +226,11 @@ function whenOf(file: FileEntry): string {
   return file.media.takenAt ?? file.modifiedAt
 }
 
+/** Names compared as a person reads them: `file2` before `file10`, case and
+ *  accents aside. One collator, made once: `localeCompare` with options
+ *  builds a new one for every comparison. */
+const byName = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
+
 /** Browse sorts what the disk listed here; the catalog's views are sorted by
  *  the vault. Ties are broken by id, in the same direction, as the vault does. */
 function sortFiles(list: FileEntry[], sort: FileSort, descending: boolean): FileEntry[] {
@@ -233,7 +238,7 @@ function sortFiles(list: FileEntry[], sort: FileSort, descending: boolean): File
   const by = (a: FileEntry, b: FileEntry): number => {
     switch (sort) {
       case 'name':
-        return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
+        return byName.compare(a.name, b.name)
       case 'size':
         return a.size - b.size
       case 'added':

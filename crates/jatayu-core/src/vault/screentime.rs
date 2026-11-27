@@ -19,9 +19,12 @@
 //!
 //! Joining a batch onto the last span, saving a label that must be the only
 //! one for its key, deleting a category out from under its labels: each
-//! reads before it writes, so each does both inside one [`Vault::write`],
-//! which is exclusive. Two batches from one stream arriving together are
-//! then joined one after the other rather than both onto the same last span.
+//! reads before it writes, so each does both inside one
+//! [`Vault::write_in`] under the screen-time gate, which every write here
+//! takes. Two batches from one stream arriving together are then joined one
+//! after the other rather than both onto the same last span -- and a
+//! heartbeat, every half minute, no longer stops every other read in the
+//! vault while it does.
 
 use super::Vault;
 use super::session::Domain;
@@ -82,16 +85,16 @@ impl Vault {
     /// Take one batch from one collector: check it
     /// ([`merge::clean`](crate::screentime::merge::clean)), join it onto the
     /// stream's last span ([`merge::fold`](crate::screentime::merge::fold)),
-    /// and write what changed -- one exclusive section. Now and then clears
-    /// titles past [`ScreenTimeSettings::title_days`].
+    /// and write what changed -- one section under the screen-time gate. Now
+    /// and then clears titles past [`ScreenTimeSettings::title_days`].
     ///
     /// The stream's key is derived from the session's own cipher, inside
-    /// the section: [`Vault::derive_subkey`] takes the lock this already
-    /// holds.
+    /// the section: [`Vault::derive_subkey`] would take the lock this
+    /// already holds.
     pub fn record_heartbeats(&self, batch: &HeartbeatBatch) -> Result<IngestReport> {
         self.writable()?;
         let now = Timestamp::now();
-        self.write(|u| {
+        self.write_in(&self.gates.screen, |u| {
             let key = u.subkey(SCREEN_KEY_LABEL);
             let screen = u.screentime()?;
             let settings = screen.screen_settings()?;
@@ -132,9 +135,9 @@ impl Vault {
     /// The report for a range. Validates the range (`from <= to`, at most
     /// 400 days) and the time zone.
     ///
-    /// Reads the range and the equally long one before it in one read, so a
-    /// batch landing in between cannot make "compared with last week"
-    /// compare two different moments.
+    /// Reads the range and the equally long one before it in one query, so a
+    /// batch landing in between -- heartbeats no longer wait for readers --
+    /// cannot make "compared with last week" compare two different moments.
     pub fn screen_report(&self, query: &ScreenQuery) -> Result<ScreenReport> {
         let days = range_days(query.from, query.to)?;
         let tz = report::zone(&query.tz)?;
@@ -145,8 +148,8 @@ impl Vault {
         let (start, end) = report::day_bounds(query.from, query.to, &tz);
         let (previous_start, _) = report::day_bounds(previous_from, query.from, &tz);
         self.with_screen(|s| {
-            let current = s.spans(start, end)?;
-            let previous = s.spans(previous_start, start)?;
+            let (current, previous) =
+                split_at(s.spans(previous_start, end)?, previous_start, start, end);
             let (apps, categories, settings) = labels_of(s)?;
             let labels = Labels { apps: &apps, categories: &categories, settings: &settings };
             Ok(report::build(query, &tz, &current, &previous, &labels))
@@ -274,7 +277,7 @@ impl Vault {
                 ));
             }
         }
-        let id = self.write(|u| {
+        let id = self.write_in(&self.gates.screen, |u| {
             let screen = u.screentime()?;
             if let Some(category) = app.category {
                 existing_category(screen, category)?;
@@ -295,7 +298,9 @@ impl Vault {
 
     pub fn delete_screen_app(&self, id: ScreenAppId) -> Result<()> {
         self.writable()?;
-        self.with_screen(|s| s.delete_app(id))?;
+        // Under the gate with every other screen-time write, so it cannot
+        // land inside `save_screen_app`'s look-then-write.
+        self.write_in(&self.gates.screen, |u| u.screentime()?.delete_app(id))?;
         self.wrote(RecordKind::ScreenApp, id);
         Ok(())
     }
@@ -325,7 +330,7 @@ impl Vault {
     /// person deleted every starter and made their own.
     pub fn ensure_screen_defaults(&self) -> Result<()> {
         self.writable()?;
-        let written = self.write(|u| {
+        let written = self.write_in(&self.gates.screen, |u| {
             let screen = u.screentime()?;
             if !screen.list_categories()?.is_empty() {
                 return Ok(Vec::new());
@@ -358,7 +363,7 @@ impl Vault {
         if !category.color.is_empty() && !is_hex_colour(&category.color) {
             return Err(Error::Invalid("a category's colour must be like #2563eb".into()));
         }
-        self.write(|u| {
+        self.write_in(&self.gates.screen, |u| {
             let screen = u.screentime()?;
             let all = screen.list_categories()?;
             let folded = category.name.to_lowercase();
@@ -412,7 +417,7 @@ impl Vault {
                 )));
             }
         }
-        let cleared = self.write(|u| {
+        let cleared = self.write_in(&self.gates.screen, |u| {
             let screen = u.screentime()?;
             let now = Timestamp::now();
             let mut cleared = Vec::new();
@@ -473,7 +478,7 @@ impl Vault {
         if browsers.len() > MAX_BROWSERS {
             return Err(Error::Invalid(format!("at most {MAX_BROWSERS} browsers can be named")));
         }
-        self.write(|u| {
+        self.write_in(&self.gates.screen, |u| {
             let screen = u.screentime()?;
             // The sweep's own bookmark is the vault's, not the caller's: the
             // interface never sees it, so whatever it sent is ignored.
@@ -496,7 +501,7 @@ impl Vault {
     pub fn forget_screen_item(&self, key: &str) -> Result<u64> {
         self.writable()?;
         let (key, kind) = parse_key(key)?;
-        self.write(|u| {
+        self.write_in(&self.gates.screen, |u| {
             let screen = u.screentime()?;
             let Some(earliest) = screen.earliest_span()? else { return Ok(0) };
             let split: HashSet<String> = screen
@@ -530,7 +535,7 @@ impl Vault {
         if from >= to {
             return Err(Error::Invalid("the end of the range must be after its start".into()));
         }
-        self.write(|u| {
+        self.write_in(&self.gates.screen, |u| {
             let screen = u.screentime()?;
             let ids: Vec<ScreenSpanId> =
                 screen.spans(from, to)?.into_iter().map(|span| span.id).collect();
@@ -545,7 +550,7 @@ impl Vault {
     /// many spans changed; nothing when titles are kept as long as spans.
     pub fn prune_screen_time(&self, now: Timestamp) -> Result<u64> {
         self.writable()?;
-        self.write(|u| {
+        self.write_in(&self.gates.screen, |u| {
             let screen = u.screentime()?;
             let settings = screen.screen_settings()?;
             if settings.title_days == 0 {
@@ -556,8 +561,27 @@ impl Vault {
     }
 }
 
+/// The spans of `from..to` and of `before..from`, out of the spans of
+/// `before..to`, each by the rule [`ScreenTimeStore::spans`] answers with --
+/// a span overlaps a range when it starts before the range ends and ends
+/// after it starts -- so one crossing `from` is in both, as two reads would
+/// have had it. Start order is kept.
+fn split_at(
+    spans: Vec<ScreenSpan>,
+    before: Timestamp,
+    from: Timestamp,
+    to: Timestamp,
+) -> (Vec<ScreenSpan>, Vec<ScreenSpan>) {
+    let overlaps = |span: &ScreenSpan, a: Timestamp, b: Timestamp| span.start < b && span.end > a;
+    let previous: Vec<ScreenSpan> =
+        spans.iter().filter(|span| overlaps(span, before, from)).cloned().collect();
+    let current: Vec<ScreenSpan> =
+        spans.into_iter().filter(|span| overlaps(span, from, to)).collect();
+    (current, previous)
+}
+
 /// Empty the titles of spans that aged past the cut-off since the last
-/// sweep, and move the bookmark up to it. Called inside `Vault::write`.
+/// sweep, and move the bookmark up to it. Called inside the gated section.
 fn clear_old_titles(
     screen: &dyn ScreenTimeStore,
     mut settings: ScreenTimeSettings,
@@ -720,6 +744,31 @@ mod tests {
         assert_ne!(a, stream_key(&key, "laptop", "firefox"));
         assert_ne!(stream_key(&key, "ab", "c"), stream_key(&key, "a", "bc"));
         assert_ne!(a, stream_key(&SecretKey::from_bytes([8u8; 32]), "laptop", "gnome"));
+    }
+
+    #[test]
+    fn one_read_split_in_two_answers_as_two_reads_would() {
+        let at = |s: i64| Timestamp::from_second(s).unwrap();
+        let span = |start: i64, end: i64| ScreenSpan {
+            id: ScreenSpanId::new(),
+            device: "laptop".into(),
+            collector: "gnome".into(),
+            kind: SpanKind::App,
+            app: format!("{start}-{end}"),
+            name: String::new(),
+            host: String::new(),
+            title: String::new(),
+            start: at(start),
+            end: at(end),
+        };
+        // Before 100..200 and 200..300: ends at the edge, inside, crosses
+        // the boundary, starts at the boundary, inside, starts at the end.
+        let spans =
+            vec![span(90, 100), span(110, 120), span(190, 210), span(200, 220), span(250, 260)];
+        let (current, previous) = split_at(spans, at(100), at(200), at(300));
+        let names = |spans: &[ScreenSpan]| spans.iter().map(|s| s.app.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&previous), ["110-120", "190-210"]);
+        assert_eq!(names(&current), ["190-210", "200-220", "250-260"]);
     }
 
     #[test]

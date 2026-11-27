@@ -36,6 +36,7 @@ mod connections;
 mod files;
 mod header;
 mod health;
+mod index;
 mod jobs;
 mod journal;
 mod karma;
@@ -237,6 +238,8 @@ pub struct Vault {
     /// The store's integrity check, from the first unlock on; `None` until
     /// then. See [`Vault::start_integrity_check`].
     integrity_check: Mutex<Option<maintenance::IntegrityCheck>>,
+    /// The per-domain write gates -- see [`Vault::write_in`].
+    gates: session::Gates,
 }
 
 impl Vault {
@@ -341,6 +344,7 @@ impl Vault {
             // new vault at the same instant.
             write_lock: crate::lockfile::acquire(root)?,
             integrity_check: Mutex::new(None),
+            gates: session::Gates::default(),
         };
 
         // A backend that cannot be opened must not leave a vault behind.
@@ -456,6 +460,7 @@ impl Vault {
             kept_for_chat: AtomicBool::new(false),
             write_lock,
             integrity_check: Mutex::new(None),
+            gates: session::Gates::default(),
         };
         if activate && !encrypted {
             vault.activate(None)?;
@@ -479,6 +484,12 @@ impl Vault {
         self.header_read().clone()
     }
 
+    /// What the interface needs to pick a screen, and the counts beside it.
+    ///
+    /// Cheap enough to ask on every settings change: the record counts and
+    /// nothing that walks the media folder, so `stats.blobs` and
+    /// `stats.blob_bytes` are always 0 here. [`Vault::stats`] has them, at
+    /// the cost of a look at every attachment on disk.
     pub fn status(&self) -> VaultStatus {
         let header = self.header_read().clone();
         let guard = self.state_read();
@@ -492,12 +503,29 @@ impl Vault {
             path: self.root.clone(),
             writable: self.write_lock.is_some(),
             stats: guard.as_ref().and_then(|u| {
-                let mut stats = u.store.stats().ok()?;
+                let mut stats = u.store.counts().ok()?;
                 stats.assistant_entries = assistant_entries(u.store.as_ref());
                 Some(stats)
             }),
             capabilities: guard.as_ref().map(|u| u.store.capabilities()),
         }
+    }
+
+    /// The vault's name, from its header: for a caller that wants only that
+    /// and not the rest of [`Vault::status`].
+    pub fn name(&self) -> String {
+        self.header_read().name.clone()
+    }
+
+    /// The storage backend's id (`"sqlite"`, `"postgres"`), from the header.
+    pub fn backend(&self) -> String {
+        self.header_read().backend.clone()
+    }
+
+    /// Whether the vault has a password, from the header -- what
+    /// [`Vault::status`] reports as `encrypted`.
+    pub fn is_encrypted(&self) -> bool {
+        self.header_read().cipher != SUITE_NONE
     }
 }
 

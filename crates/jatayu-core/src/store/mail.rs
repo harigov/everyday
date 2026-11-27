@@ -110,6 +110,93 @@ pub struct CategoryCount {
     pub unread: u64,
 }
 
+/// One badge the mail sidebar shows: the unread total of `mailboxes`' threads,
+/// either the ones not snoozed (`snoozed: false`, an ordinary mailbox or a
+/// unified row of several) or only the snoozed ones (`snoozed: true`, the
+/// Snoozed row). `key` is the caller's own name for the badge, handed back
+/// unchanged in [`UnreadBadge::key`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnreadTarget {
+    pub key: String,
+    pub mailboxes: Vec<MailboxId>,
+    pub snoozed: bool,
+}
+
+/// What [`UnreadTarget`] asked for: the sum of [`Thread::unread_count`] over
+/// the newest [`UNREAD_BADGE_WINDOW`] threads each member mailbox lists
+/// (newest first, filtered by `snoozed` exactly as `list_threads` filters),
+/// a thread listed by two members counted once. The window is what the
+/// sidebar has always counted, so the numbers do not move.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnreadBadge {
+    pub key: String,
+    pub unread: u64,
+}
+
+/// How many of each mailbox's newest threads an [`UnreadBadge`] counts.
+pub const UNREAD_BADGE_WINDOW: u32 = 200;
+
+/// Every badge `targets` ask for, counted from
+/// [`MailStore::listed_unread`] -- each member mailbox's list read once, however
+/// many targets name it, and nothing decrypted. See [`UnreadBadge`] for what
+/// each number is.
+pub fn unread_badges(store: &dyn MailStore, targets: &[UnreadTarget]) -> Result<Vec<UnreadBadge>> {
+    use std::collections::{HashMap, HashSet};
+    let mut lists: Vec<(MailboxId, ThreadFilter)> = Vec::new();
+    let mut index: HashMap<(MailboxId, bool), usize> = HashMap::new();
+    for target in targets {
+        for &mailbox in &target.mailboxes {
+            index.entry((mailbox, target.snoozed)).or_insert_with(|| {
+                lists.push((
+                    mailbox,
+                    ThreadFilter { snoozed: Some(target.snoozed), ..Default::default() },
+                ));
+                lists.len() - 1
+            });
+        }
+    }
+    let rows = store.listed_unread(&lists, UNREAD_BADGE_WINDOW)?;
+    Ok(targets
+        .iter()
+        .map(|target| {
+            let mut seen = HashSet::new();
+            let mut unread = 0u64;
+            for &mailbox in &target.mailboxes {
+                let Some(list) = index.get(&(mailbox, target.snoozed)).and_then(|&i| rows.get(i))
+                else {
+                    continue;
+                };
+                for &(thread, count) in list {
+                    if seen.insert(thread) {
+                        unread += u64::from(count);
+                    }
+                }
+            }
+            UnreadBadge { key: target.key.clone(), unread }
+        })
+        .collect())
+}
+
+/// One optimistic local change, as [`MailStore::apply_and_enqueue`] makes it:
+/// each is exactly what the single-row method it names does.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LocalChange {
+    /// [`MailStore::set_message_flags`].
+    Flags(MailMessageId, MessageFlags),
+    /// [`MailStore::set_message_labels`].
+    Labels(MailMessageId, Vec<String>),
+    /// [`MailStore::hide_thread_from_mailbox`].
+    Hide(ThreadId, MailboxId),
+    /// [`MailStore::set_thread_snoozed_until`].
+    Snooze(ThreadId, Option<Timestamp>),
+}
+
+/// One page of a listing as `(thread, listed-by date)` keys, and the cursor
+/// for the next -- what [`MailStore::list_thread_keys`] answers.
+pub type ThreadKeyPage = (Vec<(ThreadId, Timestamp)>, Option<String>);
+
 /// One page of [`Thread`]s, keyset-paged -- see `jatayu-store-sql::keyset`
 /// for why a mailbox pages this way rather than by offset.
 ///
@@ -180,6 +267,43 @@ pub trait MailStore: Send + Sync {
     /// error -- the sync engine's own diff can name a uid that arrived and
     /// left between two syncs -- and is a no-op.
     fn update_flags(&self, mailbox: MailboxId, uid: u32, flags: MessageFlags) -> Result<()>;
+
+    /// [`MailStore::update_flags`] for many uids of one mailbox, each change
+    /// made exactly as that makes one -- but a few hundred to a transaction,
+    /// each thread they touch recomputed once per transaction rather than
+    /// once per message. A uid this store does not hold is a no-op.
+    ///
+    /// A change that fails loses only itself: every other change still
+    /// lands, and the first error comes back once all have been tried. A
+    /// caller that keeps a server's change cursor (`HIGHESTMODSEQ`) should
+    /// hold it back on an error, or the lost change is never reported again.
+    fn update_flags_many(&self, mailbox: MailboxId, changes: &[(u32, MessageFlags)]) -> Result<()> {
+        let mut first_err = None;
+        for &(uid, flags) in changes {
+            if let Err(e) = self.update_flags(mailbox, uid, flags) {
+                first_err.get_or_insert(e);
+            }
+        }
+        first_err.map_or(Ok(()), Err)
+    }
+
+    /// The flags stored for each of `uids` filed in `mailbox`, read from the
+    /// clear column -- nothing is decrypted. A uid the mailbox does not hold
+    /// is left out. What sync compares a server's report against, to write
+    /// only what changed.
+    fn stored_flags(
+        &self,
+        mailbox: MailboxId,
+        uids: &[u32],
+    ) -> Result<std::collections::HashMap<u32, MessageFlags>> {
+        let mut out = std::collections::HashMap::with_capacity(uids.len());
+        for &uid in uids {
+            if let Some(m) = self.message_by_uid(mailbox, uid)? {
+                out.insert(uid, m.flags);
+            }
+        }
+        Ok(out)
+    }
 
     /// Replace the label set of the message filed as `uid` in `mailbox`.
     /// Whole-set rather than add/remove, the same contract
@@ -263,6 +387,58 @@ pub trait MailStore: Send + Sync {
         threads: &[ThreadId],
     ) -> Result<Vec<ThreadId>>;
 
+    /// For each of `lists`, the first page [`MailStore::list_threads`] would
+    /// answer for that mailbox and filter with `limit` -- the same threads in
+    /// the same order -- as each thread's id and [`Thread::unread_count`],
+    /// read from clear columns rather than decrypted. What the unread badges
+    /// count (see [`unread_badges`]).
+    fn listed_unread(
+        &self,
+        lists: &[(MailboxId, ThreadFilter)],
+        limit: u32,
+    ) -> Result<Vec<Vec<(ThreadId, u32)>>> {
+        lists
+            .iter()
+            .map(|(mailbox, filter)| {
+                Ok(self
+                    .list_threads(*mailbox, filter, None, limit)?
+                    .threads
+                    .iter()
+                    .map(|t| (t.id, t.unread_count))
+                    .collect())
+            })
+            .collect()
+    }
+
+    /// [`MailStore::list_threads`] without the threads: each listed thread's
+    /// id and the date it is listed by, and the same cursor. Nothing is
+    /// decrypted, for a caller that needs only which threads, in order.
+    fn list_thread_keys(
+        &self,
+        mailbox: MailboxId,
+        filter: &ThreadFilter,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> Result<ThreadKeyPage> {
+        let page = self.list_threads(mailbox, filter, cursor, limit)?;
+        Ok((page.threads.iter().map(|t| (t.id, t.last_date)).collect(), page.next_cursor))
+    }
+
+    /// The threads named in `ids` that this store has, each its own record
+    /// as [`MailStore::thread`] answers it, without the messages. In no
+    /// particular order; an id it does not have is left out.
+    fn threads_by_ids(&self, ids: &[ThreadId]) -> Result<Vec<Thread>> {
+        let mut out = Vec::with_capacity(ids.len());
+        for &id in ids {
+            match self.thread(id) {
+                Ok((thread, _)) => out.push(thread),
+                Err(crate::error::Error::NotFound { .. }) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(out)
+    }
+
     /// Every thread of `account`'s carrying `category`, across every
     /// mailbox, newest first. What a split-inbox tab reads, once phase 7
     /// assigns categories -- the query works today against whatever
@@ -306,6 +482,16 @@ pub trait MailStore: Send + Sync {
     /// a forward reads a subject, quoted body and recipients from, and what
     /// the outbox executor's `Lookups` reads a reply's parent from.
     fn get_message(&self, id: MailMessageId) -> Result<Message>;
+
+    /// The thread message `id` is in, or `None` for a message this store
+    /// does not have -- from the clear column, nothing decrypted.
+    fn thread_of(&self, id: MailMessageId) -> Result<Option<ThreadId>> {
+        match self.get_message(id) {
+            Ok(m) => Ok(Some(m.thread_id)),
+            Err(crate::error::Error::NotFound { .. }) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
 
     // ---- bodies ------------------------------------------------------------
 
@@ -354,6 +540,21 @@ pub trait MailStore: Send + Sync {
             .list_drafts(account)?
             .into_iter()
             .filter(|d| matches!(d.state, DraftState::Editing | DraftState::Queued { .. }))
+            .collect())
+    }
+
+    /// [`MailStore::list_open_drafts`], and the sent drafts touched at or
+    /// after `sent_since` besides -- what a thread shows its replies on their
+    /// way out from. Most recently touched first.
+    fn list_live_drafts(&self, account: AccountId, sent_since: Timestamp) -> Result<Vec<Draft>> {
+        Ok(self
+            .list_drafts(account)?
+            .into_iter()
+            .filter(|d| match d.state {
+                DraftState::Editing | DraftState::Queued { .. } => true,
+                DraftState::Sent => d.updated_at >= sent_since,
+                DraftState::Discarded => false,
+            })
             .collect())
     }
 
@@ -463,9 +664,50 @@ pub trait MailStore: Send + Sync {
     /// first.
     fn message_by_key(&self, account: AccountId, key: &str) -> Result<Option<MailMessageId>>;
 
+    /// What `key` names in `account`, as [`MailStore::message_by_key`] finds
+    /// it but telling apart the two ways it can find nothing: `None` for a key
+    /// never stored, and `Some((id, None))` for one still naming a message
+    /// since deleted -- when another row with the same `Message-ID` may be
+    /// stored, unkeyed, since the key went to the first. `Some((id,
+    /// Some(thread)))` names a live message and the thread it is in, from
+    /// clear columns.
+    fn keyed_thread(
+        &self,
+        account: AccountId,
+        key: &str,
+    ) -> Result<Option<(MailMessageId, Option<ThreadId>)>> {
+        match self.message_by_key(account, key)? {
+            Some(id) => Ok(Some((id, self.thread_of(id)?))),
+            None => Ok(None),
+        }
+    }
+
     /// Remember which message each key names. A key already naming a live
-    /// message keeps it: the first row stored is the one.
+    /// message keeps it: the first row stored is the one. A key naming a
+    /// message since deleted is taken over.
+    ///
+    /// Removing a message leaves its key in place, still naming it: that is
+    /// how [`MailStore::keyed_thread`] can say "since deleted" rather than
+    /// "never stored".
     fn put_message_keys(&self, account: AccountId, keys: &[(String, MailMessageId)]) -> Result<()>;
+
+    /// Drop `key` from `account` if the message it names is gone, and keep it
+    /// if that message is still there. Threading calls this once a full scan
+    /// has found no other row with the same `Message-ID`, so the next lookup
+    /// of that key reads "never stored" without another scan.
+    fn forget_dead_message_key(&self, account: AccountId, key: &str) -> Result<()>;
+
+    /// Drop every `account` key whose message is gone, once there are more
+    /// than `above` of them; returns how many went. A dead key is kept on
+    /// purpose (a reply to an expunged message can still find a copy of it
+    /// stored under the same `Message-ID`, see [`MailStore::keyed_thread`]),
+    /// but not without bound: past `above` the oldest replies' chance of
+    /// meeting one is worth less than the rows. A store with no keys answers
+    /// 0, as this default does.
+    fn prune_dead_message_keys(&self, account: AccountId, above: u64) -> Result<u64> {
+        let _ = (account, above);
+        Ok(0)
+    }
 
     /// Have `account`'s messages stored before keys existed been keyed (and
     /// their duplicates merged)? See [`MailStore::mark_account_keyed`].
@@ -647,6 +889,31 @@ pub trait MailStore: Send + Sync {
     /// transaction: emptying a Trash of thousands is one commit rather than
     /// two per conversation, and never half done.
     fn hide_and_enqueue(&self, mailbox: MailboxId, ops: &[Op]) -> Result<()>;
+
+    /// Every one of `changes`, each made exactly as the method it names makes
+    /// it, then every op in `ops` enqueued -- in one transaction where the
+    /// backend has them. A thread whose messages a flag or label change
+    /// touched is recomputed once, after all of them, rather than once per
+    /// message. What a batch thread action writes: one commit for the batch,
+    /// not two per thread.
+    fn apply_and_enqueue(&self, changes: &[LocalChange], ops: &[Op]) -> Result<()> {
+        for change in changes {
+            match change {
+                LocalChange::Flags(id, flags) => self.set_message_flags(*id, *flags)?,
+                LocalChange::Labels(id, labels) => self.set_message_labels(*id, labels.clone())?,
+                LocalChange::Hide(thread, mailbox) => {
+                    self.hide_thread_from_mailbox(*thread, *mailbox)?
+                }
+                LocalChange::Snooze(thread, until) => {
+                    self.set_thread_snoozed_until(*thread, *until)?
+                }
+            }
+        }
+        for op in ops {
+            self.enqueue_op(op)?;
+        }
+        Ok(())
+    }
 
     /// Set message `id`'s own category directly -- what the model-assisted
     /// categorisation pass writes once it has an answer for a message the
@@ -989,6 +1256,30 @@ pub trait MailStore: Send + Sync {
     fn correct_categories(
         &self,
         account: AccountId,
+        corrections: &[(crate::mail::CategoryMatch, Category)],
+    ) -> Result<u32>;
+
+    /// Every message id `account` has, from the clear column, newest first
+    /// -- what [`MailStore::correct_categories_in`] is handed in chunks, so a
+    /// caller can let other writes in between them, and so a sweep cut off
+    /// part way (the vault locked) has already done the mail anyone sees.
+    fn message_ids(&self, account: AccountId) -> Result<Vec<MailMessageId>> {
+        let mut dated = Vec::new();
+        self.each_message(account, &mut |m| dated.push((m.date, m.id)))?;
+        dated.sort_by(|a, b| b.cmp(a));
+        Ok(dated.into_iter().map(|(_, id)| id).collect())
+    }
+
+    /// [`MailStore::correct_categories`] over only the messages named in
+    /// `ids`: each one a correction names is given that correction's category
+    /// (an exact address before a domain, the last of either) with
+    /// [`CategorySource::Person`], read afresh inside the write that changes
+    /// it, and every thread touched is recomputed in that same write. The
+    /// messages no correction names are read on a reader and never hold the
+    /// writer. Returns how many changed.
+    fn correct_categories_in(
+        &self,
+        ids: &[MailMessageId],
         corrections: &[(crate::mail::CategoryMatch, Category)],
     ) -> Result<u32>;
 

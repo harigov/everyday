@@ -666,6 +666,16 @@ pub struct Message {
     /// [`Message::attachments`], which is what a model is shown.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<crate::id::FileId>,
+    /// The toolkits a routed assistant turn was offered by what was on
+    /// screen, what was said or a decision model's pick, by name (see
+    /// [`crate::agent::tools::Kit`]). Only ever non-empty on
+    /// [`Role::Assistant`]. Read back by the next turns while this message
+    /// is in their replay window, so a kit offered once stays offered and
+    /// the provider's cached prefix -- tools first -- stays the same; the
+    /// kits a turn called are already in [`Message::tool_calls`]. A name no
+    /// longer a kit is ignored.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kits: Vec<String>,
     pub created_at: Timestamp,
 }
 
@@ -706,6 +716,7 @@ impl Message {
             mail_link: None,
             attachments: Vec::new(),
             files: Vec::new(),
+            kits: Vec::new(),
             created_at: Timestamp::now(),
         }
     }

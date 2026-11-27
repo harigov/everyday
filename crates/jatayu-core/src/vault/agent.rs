@@ -230,32 +230,55 @@ impl Vault {
     /// [`Conversation::title_from`] for why that beats asking the model.
     ///
     /// A failure to update the conversation is not allowed to lose the
-    /// message: the turn is written first, and the touch is best-effort.
+    /// message: the touch is best-effort. See [`Vault::save_messages`].
     pub fn save_message(&self, message: &Message) -> Result<()> {
-        self.writable()?;
-        self.with_agent(|a| a.put_message(message))?;
-        self.track_file_refs(
-            RefOwner::new(RefKind::Message, message.id),
-            message.files.iter().copied(),
-        );
-        self.wrote(RecordKind::Message, message.id);
+        self.save_messages(std::slice::from_ref(message))
+    }
 
-        let touched = self.conversation(message.conversation_id).and_then(|mut c| {
-            c.updated_at = message.created_at.max(c.updated_at);
-            if c.title.is_empty() && message.role == crate::agent::Role::User {
-                c.title = Conversation::title_from(&message.content);
-                // A picture sent with nothing said is named by its file,
-                // rather than leaving a thread with no name at all.
-                if c.title.is_empty()
-                    && let Some(picture) = message.attachments.first()
-                {
-                    c.title = Conversation::title_from(&picture.filename);
+    /// [`Vault::save_message`] for several messages of one conversation at
+    /// once -- a reply and the results of the tools it ran -- written with
+    /// the one touch of their thread they come to, in one commit rather than
+    /// two for each.
+    ///
+    /// The thread is read first and touched as each message in turn would
+    /// have touched it. Should it fail to read, or the write with it fail,
+    /// the messages are written without it: a failed touch never loses a
+    /// message.
+    pub fn save_messages(&self, messages: &[Message]) -> Result<()> {
+        self.writable()?;
+        let Some(first) = messages.first() else { return Ok(()) };
+        let thread = first.conversation_id;
+        debug_assert!(messages.iter().all(|m| m.conversation_id == thread), "one thread at a time");
+        let touched = match self.conversation(thread) {
+            Ok(mut conversation) => {
+                for message in messages.iter().filter(|m| m.conversation_id == thread) {
+                    touch(&mut conversation, message);
                 }
+                Some(conversation)
             }
-            self.save_conversation(&c)
-        });
-        if let Err(e) = touched {
-            tracing::warn!(error = %e, "wrote a message but could not touch its conversation");
+            Err(e) => {
+                tracing::warn!(error = %e, "writing messages without touching their conversation");
+                None
+            }
+        };
+        let mut touched_it = touched.is_some();
+        if let Err(e) = self.with_agent(|a| a.put_messages_touching(messages, touched.as_ref())) {
+            if touched.is_none() {
+                return Err(e);
+            }
+            tracing::warn!(error = %e, "writing messages without touching their conversation");
+            touched_it = false;
+            self.with_agent(|a| a.put_messages_touching(messages, None))?;
+        }
+        for message in messages {
+            self.track_file_refs(
+                RefOwner::new(RefKind::Message, message.id),
+                message.files.iter().copied(),
+            );
+            self.wrote(RecordKind::Message, message.id);
+        }
+        if touched_it {
+            self.wrote(RecordKind::Conversation, thread);
         }
         Ok(())
     }
@@ -431,5 +454,22 @@ impl Vault {
         self.with_agent(|a| a.delete_skill(id))?;
         self.wrote(RecordKind::Skill, id);
         Ok(())
+    }
+}
+
+/// Move `conversation` on for `message`, as writing it does: to the top of
+/// the history list, and named from the first thing the person said if it
+/// has no name yet.
+fn touch(conversation: &mut Conversation, message: &Message) {
+    conversation.updated_at = message.created_at.max(conversation.updated_at);
+    if conversation.title.is_empty() && message.role == crate::agent::Role::User {
+        conversation.title = Conversation::title_from(&message.content);
+        // A picture sent with nothing said is named by its file, rather than
+        // leaving a thread with no name at all.
+        if conversation.title.is_empty()
+            && let Some(picture) = message.attachments.first()
+        {
+            conversation.title = Conversation::title_from(&picture.filename);
+        }
     }
 }

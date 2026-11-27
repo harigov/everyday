@@ -509,6 +509,12 @@ fn what_is_left_out_of_the_settings_folder() {
     assert!(out("mail-index/0123/meta.json"));
     assert!(out("chat/abc/matrix-sdk-crypto.sqlite3"));
     assert!(out("vault.lock"));
+    // Machine- and copy-local: a restored stamp would skip the restored
+    // vault's first integrity check, and a restored search list would skip
+    // carrying an older key over from this keychain.
+    assert!(out("vault.checked"));
+    assert!(out("vault.checked.open"));
+    assert!(out("keychain-searched"));
     assert!(!out("devices.json"));
     assert!(!out("server.key"));
     assert!(!out("mcp.json"));

@@ -50,7 +50,9 @@
 use crate::legacy::Folders;
 use jatayu_core::crypto::KeyText;
 use jatayu_core::{Error, Result};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 /// The keychain service every entry is filed under. Shared with `remotes.rs`:
 /// one application, one service name, distinguished by the account.
@@ -81,10 +83,72 @@ pub fn enabled(vault: &Path) -> bool {
 }
 
 fn stored(service: &str, account: &str) -> Option<String> {
-    keyring::Entry::new(service, account)
-        .and_then(|e| e.get_password())
-        .ok()
-        .filter(|k| !k.is_empty())
+    looked_up(service, account).ok().flatten()
+}
+
+/// [`stored`], telling "nothing filed there" (`Ok(None)`) apart from a
+/// keychain that did not answer (`Err`): only the first is worth
+/// remembering -- see [`carry_over`].
+fn looked_up(service: &str, account: &str) -> std::result::Result<Option<String>, ()> {
+    match keyring::Entry::new(service, account).and_then(|e| e.get_password()) {
+        Ok(key) => Ok(Some(key).filter(|k| !k.is_empty())),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(_) => Err(()),
+    }
+}
+
+/// Where the vaults whose earlier entries have all been looked through, and
+/// held nothing, are noted, one account per line. See [`carry_over`].
+const SEARCHED_FILENAME: &str = "keychain-searched";
+
+/// The same, for this process: the file's lines once read, and every vault
+/// searched since, whether or not it went into the file.
+static SEARCHED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+fn searched_file() -> PathBuf {
+    crate::config_dir().join(SEARCHED_FILENAME)
+}
+
+fn read_searched(file: &Path) -> HashSet<String> {
+    std::fs::read_to_string(file)
+        .map(|text| text.lines().filter(|l| !l.is_empty()).map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+/// Whether `account`'s earlier entries are known to hold nothing.
+fn already_searched(account: &str) -> bool {
+    let mut searched = SEARCHED.lock().unwrap_or_else(|p| p.into_inner());
+    searched.get_or_insert_with(|| read_searched(&searched_file())).contains(account)
+}
+
+/// Note that `account`'s earlier entries hold nothing: for this process, and
+/// in the file too when `keep`.
+fn note_searched(account: &str, keep: bool) {
+    let mut searched = SEARCHED.lock().unwrap_or_else(|p| p.into_inner());
+    searched.get_or_insert_with(|| read_searched(&searched_file())).insert(account.to_string());
+    drop(searched);
+    if keep {
+        add_searched(&searched_file(), account);
+    }
+}
+
+/// Add `account` to the file, best effort: a file that cannot be written
+/// only means the next start looks again.
+fn add_searched(file: &Path, account: &str) {
+    if account.contains('\n') {
+        return;
+    }
+    let mut lines: Vec<String> = read_searched(file).into_iter().collect();
+    if lines.iter().any(|l| l == account) {
+        return;
+    }
+    lines.push(account.to_string());
+    lines.sort();
+    let mut text = lines.join("\n");
+    text.push('\n');
+    if let Err(e) = jatayu_core::fsutil::write_atomic(file, text.as_bytes(), "keychain") {
+        tracing::debug!(error = %e, "could not note the keychain's earlier entries as searched");
+    }
 }
 
 /// Every (service, account) this vault's key may have been filed under
@@ -180,19 +244,42 @@ fn move_put_off_in(vault: &Path, folders: Option<&Folders>) -> bool {
 /// own service and the vault's current path, and the earlier entry deleted
 /// once the new one is written -- unless the vault's own move is still put
 /// off. `None` when there is none.
+///
+/// That is ten or so keychain lookups for the default vault, each a new
+/// D-Bus connection on Linux, and with the switch off it was every start,
+/// every window and every unlock. So a search that found nothing, with
+/// every lookup answered, is remembered for the process -- and, once the
+/// vault is where it is going to stay, in the settings folder, so later
+/// starts skip it too. A keychain that did not answer is not remembered: a
+/// key it was hiding is still to be found.
 fn carry_over(vault: &Path) -> Option<String> {
+    let current = account(vault);
+    if already_searched(&current) {
+        return None;
+    }
+    let mut answered = true;
     for (service, earlier) in earlier_entries(vault) {
-        let Some(key) = stored(service, &earlier) else { continue };
+        let key = match looked_up(service, &earlier) {
+            Ok(Some(key)) => key,
+            Ok(None) => continue,
+            Err(()) => {
+                answered = false;
+                continue;
+            }
+        };
         if move_put_off(vault) {
             return Some(key);
         }
-        let filed = keyring::Entry::new(SERVICE, &account(vault))
+        let filed = keyring::Entry::new(SERVICE, &current)
             .and_then(|entry| entry.set_password(&key))
             .is_ok();
         if filed && let Ok(entry) = keyring::Entry::new(service, &earlier) {
             let _ = entry.delete_credential();
         }
         return Some(key);
+    }
+    if answered {
+        note_searched(&current, !move_put_off(vault));
     }
     None
 }
@@ -297,6 +384,22 @@ mod tests {
         // is filed again under the new path.
         assert!(!move_put_off_in(&f.new_data, Some(&f)));
         assert!(!move_put_off_in(&ky.data, Some(&f)));
+    }
+
+    #[test]
+    fn the_searched_file_keeps_each_vault_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(SEARCHED_FILENAME);
+        assert!(read_searched(&file).is_empty(), "no file is nothing searched");
+        add_searched(&file, "vault-key:/b");
+        add_searched(&file, "vault-key:/a");
+        add_searched(&file, "vault-key:/b");
+        add_searched(&file, "vault-key:/odd\nname");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "vault-key:/a\nvault-key:/b\n");
+        assert_eq!(
+            read_searched(&file),
+            HashSet::from(["vault-key:/a".to_string(), "vault-key:/b".to_string()])
+        );
     }
 
     #[test]

@@ -71,6 +71,12 @@ const SHORTEST_SLEEP: Duration = Duration::from_secs(1);
 /// anything becomes old enough to matter, and costs one pass over a table.
 const EXPIRE_EVERY_SECS: i64 = 60 * 60;
 
+/// How long after an unlock the first pass waits, unless somebody opens the
+/// Feed first: see [`super::first_wait`]. A pass after a night locked reads
+/// days of mail for the newsletters, which mail's own first look is reading
+/// too.
+const FIRST: Duration = Duration::from_secs(15);
+
 /// How many articles a source with "always fetch the full article" is asked
 /// for in one turn. The first read of a big feed brings a hundred new
 /// stories, and a hundred page loads from one refresh is not a polite thing
@@ -176,6 +182,9 @@ pub async fn run(
     vault: Arc<Vault>,
     mut stop: watch::Receiver<bool>,
 ) -> TaskResult {
+    if super::first_wait(&svc, &mut stop, FIRST, None).await {
+        return Ok(Outcome::Done);
+    }
     let mut expired_at: Option<Timestamp> = None;
     loop {
         if *stop.borrow() {

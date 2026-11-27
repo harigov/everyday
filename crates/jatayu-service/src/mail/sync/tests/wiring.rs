@@ -918,10 +918,11 @@ async fn a_drain_that_moved_mail_is_followed_by_a_pass() {
 
 /// Read on a phone while the task was draining rather than in `IDLE`, which
 /// hears only what changes after it starts: the inbox's `HIGHESTMODSEQ` has
-/// moved since the last pass, so a pass runs now rather than at the sync
-/// interval.
+/// moved since the last pass, so the selected inbox is reconciled now rather
+/// than at the sync interval -- its changed flags read and applied, without a
+/// whole pass over every folder.
 #[tokio::test(start_paused = true)]
-async fn an_inbox_changed_outside_idle_gets_a_pass_after_an_outbox_wake() {
+async fn an_inbox_changed_outside_idle_is_reconciled_after_an_outbox_wake() {
     let (svc, vault, account_id, _dir) = service_test_env();
     let server = plain_server();
     let uid = server.lock().unwrap().append(
@@ -940,14 +941,12 @@ async fn an_inbox_changed_outside_idle_gets_a_pass_after_an_outbox_wake() {
     let session = FakeMailSession::new(server.clone()).blocking_idle();
     let sender = PassCountingSender::new(&session);
     let (stop_tx, handle) = spawn_idling(&svc, &vault, account_id, session, sender.clone()).await;
-    let passes = sender.passes();
 
     // The fake's `IDLE` hears nothing of a flag change: as if it happened
     // between one `IDLE` and the next.
     server.lock().unwrap().set_flags("INBOX", uid, jatayu_mail::session::Flags::SEEN);
     svc.notify_outbox(account_id);
 
-    settle(|| sender.passes() > passes).await;
     let inbox = vault
         .mailboxes(account_id)
         .unwrap()

@@ -14,9 +14,11 @@
 
   import { accounts } from '../lib/accounts.svelte'
   import { accountColor } from '../lib/avatar'
+  import { untrack } from 'svelte'
   import {
     emptiableRole,
     gmailSystemLabel,
+    mailAccountKey,
     mailboxDisplayName,
     syncInProgress,
     unifiedMailboxId,
@@ -55,11 +57,18 @@
   // Mail had already been opened showed no mailboxes until a lock/unlock.
   // `accounts.list` changing is the same signal `refreshSyncStatus` already
   // reacts to here, so a newly-signed-in account's mailboxes show up the
-  // same beat its sync status does.
+  // same beat its sync status does. Only when the accounts with mail, or how
+  // they stand, are not what the mailboxes were last read for: every visit
+  // to Mail mounts this again, and the list loading under it changes nothing
+  // `mail.start()` is not already reading. Until that first read has asked
+  // which accounts there are (`accountKey` null), it is left to it.
   $effect(() => {
-    void accounts.list
-    void mail.refreshSyncStatus()
-    void mail.refreshMailboxes()
+    const key = mailAccountKey(accounts.list)
+    untrack(() => {
+      void mail.refreshSyncStatus()
+      const read = mail.accountKey
+      if (read !== null && read !== key) void mail.refreshMailboxes()
+    })
   })
   let wasSyncing = false
   $effect(() => {

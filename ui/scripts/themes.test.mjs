@@ -8,6 +8,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { runInNewContext } from 'node:vm'
 import { load, makeCheck, stubBrowser } from './harness.mjs'
 
 let dark = false
@@ -263,6 +264,31 @@ check('system on a light desktop is Paper', resolveTheme('system'), 'light')
 dark = true
 check('system on a dark desktop is Ink', resolveTheme('system'), 'dark')
 check('a chosen theme ignores the desktop', resolveTheme('lagoon'), 'lagoon')
+
+// `public/boot.js`, which sets the theme before the application has loaded,
+// must land on the theme the application then applies: otherwise the first
+// frame is one theme and the next another, which is the flash it is there to
+// prevent. Run as the page runs it, against every stored value.
+const bootJs = readFileSync(join(styles, '..', '..', 'public', 'boot.js'), 'utf8')
+function bootTheme(stored, desktopDark) {
+  let set = null
+  runInNewContext(bootJs, {
+    localStorage: { getItem: (key) => (key === 'jatayu.theme' ? stored : null) },
+    matchMedia: () => ({ matches: desktopDark }),
+    document: { documentElement: { setAttribute: (name, value) => (set = { [name]: value }) } },
+  })
+  return set?.['data-theme']
+}
+for (const stored of [...THEMES.map((t) => t.id), 'system', null, 'sepia']) {
+  for (const desktop of [false, true]) {
+    dark = desktop
+    check(
+      `boot.js shows what the app does for ${stored} on a ${desktop ? 'dark' : 'light'} desktop`,
+      bootTheme(stored, desktop),
+      resolveTheme(parseThemeChoice(stored)),
+    )
+  }
+}
 
 await close()
 finish('themes')

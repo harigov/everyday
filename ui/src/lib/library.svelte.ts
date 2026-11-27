@@ -86,6 +86,9 @@ const viewPref = pref<View | null>(
 )
 const captureShelfPref = pref<KindId | null>('jatayu.library.capture', (raw) => raw, null)
 
+/** How long a shelf read on one visit is shown as it is on the next. */
+const FRESH_MS = 60_000
+
 /** Whoever is most overdue first, in the backend's order; everyone else after,
  *  in the order the shelf was read in. */
 function dueOrder(items: Item[], due: PersonDue[]): Item[] {
@@ -206,14 +209,48 @@ class LibraryState {
   /**
    * Load the shelves and the current view. Called by `LibraryView` on mount.
    *
-   * Idempotent: mounting the view again -- which happens on every switch back
-   * to this app -- refreshes rather than reloading from nothing, so the grid
-   * does not blank out on the way in.
+   * Mounting the view again -- which happens on every switch back to this
+   * app -- keeps what is drawn when it was read a moment ago and nothing has
+   * changed since (see `#current`), and otherwise reads it again over what is
+   * there, so the grid does not blank out on the way in. The shelves are
+   * awaited only the first time: they are what seeds an empty library, and
+   * the Contacts shelf has to be known before its people are asked for.
    */
   async start() {
-    if (!app.supportsLibrary) return
-    await this.refreshKinds()
+    if (!app.supportsLibrary || this.#current()) return
+    this.stale = false
+    if (this.kinds.length === 0) await this.refreshKinds()
+    else void this.refreshKinds()
     await this.refresh()
+  }
+
+  /** Set when a change arrived while this app was not on screen and the
+   *  live router skipped the reload: the next start() reloads in full. */
+  stale = false
+
+  /** What the live router calls instead of reloading an app nobody is
+   *  looking at. */
+  markStale(): void {
+    this.stale = true
+  }
+
+  /** When the shelf on screen was last read whole. */
+  #readAt = 0
+
+  /**
+   * Is what is drawn recent enough to show again as it is?
+   *
+   * Read in the last minute, today, and with no change heard of since. The
+   * minute is for whatever writes without saying so; the day is for the
+   * Contacts shelf, whose "due in" lines are counted from today.
+   */
+  #current(): boolean {
+    return (
+      !this.stale &&
+      this.#readAt > 0 &&
+      Date.now() - this.#readAt < FRESH_MS &&
+      new Date(this.#readAt).toDateString() === new Date().toDateString()
+    )
   }
 
   /**
@@ -230,6 +267,10 @@ class LibraryState {
     // Nothing loaded before the lock may land after it: those rows are the
     // decrypted contents this reset exists to drop.
     this.#generation.next()
+    this.#readAt = 0
+    this.stale = false
+    this.#served = new Map()
+    this.#kindsServed = null
     this.kinds = []
     this.items = []
     this.logs = []
@@ -252,7 +293,7 @@ class LibraryState {
     try {
       // Also what seeds the built-in shelves into an empty library; see
       // `list_kinds` in the Rust shell for why that hangs off a read.
-      this.kinds = await api.kinds()
+      this.#landKinds(await api.kinds())
     } catch (e) {
       await handle(e)
     }
@@ -262,11 +303,40 @@ class LibraryState {
   async refreshCounts() {
     try {
       const [kinds, stats] = await Promise.all([api.kinds(), api.libraryStats()])
-      this.kinds = kinds
+      this.#landKinds(kinds)
       this.stats = stats
     } catch (e) {
       await quietly(e)
     }
+  }
+
+  /** The shelves as last read, counts left out: see `#landKinds`. */
+  #kindsServed: string | null = null
+
+  /**
+   * Put freshly read shelves in place.
+   *
+   * After every autosave the shelves are read again for their counts, and
+   * replacing them made every card on screen redraw, since each finds its
+   * shelf by object. When only the counts moved they are changed where they
+   * are; anything else about a shelf replaces the list.
+   */
+  #landKinds(fresh: KindInfo[]) {
+    const served = JSON.stringify(fresh.map((k) => ({ ...k, items: 0, open: 0 })))
+    const same =
+      served === this.#kindsServed &&
+      fresh.length === this.kinds.length &&
+      fresh.every((k, i) => this.kinds[i]?.id === k.id)
+    this.#kindsServed = served
+    if (!same) {
+      this.kinds = fresh
+      return
+    }
+    fresh.forEach((k, i) => {
+      const kept = this.kinds[i]!
+      if (kept.items !== k.items) kept.items = k.items
+      if (kept.open !== k.open) kept.open = k.open
+    })
   }
 
   async selectShelf(shelf: Shelf) {
@@ -442,6 +512,7 @@ class LibraryState {
    */
   async refresh() {
     if (!app.supportsLibrary) return
+    const asked = Date.now()
     await guardedRefresh(
       this.#generation,
       async (isCurrent) => {
@@ -464,8 +535,14 @@ class LibraryState {
         ])
         if (!isCurrent()) return
         this.due = due
-        this.items = this.dueFirst && this.due.length > 0 ? dueOrder(items, this.due) : items
+        const kept = this.#reconcile(items)
+        const next = this.dueFirst && this.due.length > 0 ? dueOrder(kept, this.due) : kept
+        // Nothing changed and nothing moved: the grid is left alone.
+        if (next.length !== this.items.length || next.some((item, i) => item !== this.items[i])) {
+          this.items = next
+        }
         this.stats = stats
+        this.#readAt = asked
         // A selection that has scrolled out of the filter is dropped rather
         // than left pointing at a card nobody can see.
         if (this.selected && !items.some((i) => i.id === this.selected)) {
@@ -475,6 +552,32 @@ class LibraryState {
       },
       { setLoading: (v) => (this.loading = v), onError: (e) => handle(e) },
     )
+  }
+
+  /** Each item as the backend last sent it, for `#reconcile`. */
+  #served = new Map<ItemId, string>()
+
+  /**
+   * A fresh read, with every item the backend sent exactly as before swapped
+   * for the one already on screen.
+   *
+   * A refresh used to replace every object, so every card on the shelf
+   * redrew for a read that changed nothing. Compared with what the backend
+   * sent last time rather than with what is on screen, so an edit still
+   * waiting for its autosave is kept rather than read over with the copy from
+   * before it; an item the backend changed is taken as it now is.
+   */
+  #reconcile(fresh: Item[]): Item[] {
+    const shown = new Map(this.items.map((item) => [item.id, item]))
+    const served = new Map<ItemId, string>()
+    const kept = fresh.map((item) => {
+      const text = JSON.stringify(item)
+      served.set(item.id, text)
+      const had = shown.get(item.id)
+      return had && this.#served.get(item.id) === text ? had : item
+    })
+    this.#served = served
+    return kept
   }
 
   /**

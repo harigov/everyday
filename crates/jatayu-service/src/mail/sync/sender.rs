@@ -119,6 +119,26 @@ impl Sender for LazySmtpSender {
         )
         .await
     }
+
+    /// The connection `send` would open, opened now: a fresh transport when
+    /// none is cached (`connect` signs in and says `NOOP`), or a `NOOP` on the
+    /// cached one, which reopens the pooled connection lettre closes after a
+    /// minute idle. A refused sign-in drops the cache, as a refused send
+    /// does, so the send itself starts from a fresh credential.
+    async fn warm(&self) {
+        let mut guard = self.cached.lock().await;
+        // A clone shares lettre's pool: it is the same connection.
+        let warmed = match guard.clone() {
+            Some(transport) => transport.check().await,
+            None => self.connect().await.map(|transport| *guard = Some(transport)),
+        };
+        if let Err(e) = warmed {
+            if matches!(e, MailError::Auth(_)) {
+                *guard = None;
+            }
+            tracing::debug!(error = %e, "could not open the connection a send is about to need");
+        }
+    }
 }
 
 /// [`LazySmtpSender::send`]'s whole retry algorithm, generic over how a

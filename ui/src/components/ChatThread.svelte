@@ -28,6 +28,7 @@
     isPlan,
     madePictures,
     planOf,
+    waitingForAnswer,
     workSummary,
     type Turn,
   } from '../lib/agent'
@@ -51,8 +52,9 @@
   import { reader, type ReaderPlaceRequest } from '../lib/reader.svelte'
   import { onScreenNow } from '../lib/screen.svelte'
   import { app, handle } from '../lib/state.svelte'
-  import type { Attachment, FileEntry, FileId, Job } from '../lib/types'
+  import type { Attachment, ConversationId, FileEntry, FileId, Job } from '../lib/types'
   import { voice } from '../lib/voice.svelte'
+  import ChatReply from './ChatReply.svelte'
   import EmptyState from './EmptyState.svelte'
   import FileCard from './FileCard.svelte'
   import FileViewer from './FileViewer.svelte'
@@ -145,6 +147,48 @@
     const timer = setInterval(() => (now = Date.now()), 1000)
     return () => clearInterval(timer)
   })
+
+  // ── How much of the thread is drawn ────────────────────────────────
+  //
+  // The thread is one long conversation until somebody presses New, so it can
+  // run to hundreds of turns, and drawing every one of them -- each reply's
+  // Markdown, its cards, its pictures -- whenever the rail opened held the
+  // window up for a visible moment. The newest turns are drawn, and "Show
+  // earlier" brings back more at a time.
+  //
+  // Where the drawn part begins is fixed when a thread is first shown, not
+  // counted back from the end, so a new exchange adds to the foot without
+  // taking turns away from the top under somebody reading up there.
+
+  const PAGE = 40
+  let drawnFrom = $state<{ id: ConversationId | null; start: number } | null>(null)
+  $effect(() => {
+    const id = agent.conversationId
+    untrack(() => {
+      if (drawnFrom?.id !== id) {
+        drawnFrom = { id, start: Math.max(0, agent.turns.length - PAGE) }
+      }
+    })
+  })
+  /** The first turn drawn: back to a question where one is near, so the
+   *  first thing on screen is not an answer to something out of sight. */
+  const first = $derived.by(() => {
+    const turns = agent.turns
+    const start =
+      drawnFrom?.id === agent.conversationId ? drawnFrom.start : Math.max(0, turns.length - PAGE)
+    let at = Math.min(start, turns.length)
+    for (let back = 0; at > 0 && back < 4 && turns[at]?.role !== 'user'; back++) at--
+    return at
+  })
+  const visible = $derived(first === 0 ? agent.turns : agent.turns.slice(first))
+
+  /** Draw more of the thread above, keeping what is on screen where it is. */
+  async function showEarlier() {
+    const from = scroller ? scroller.scrollHeight - scroller.scrollTop : null
+    drawnFrom = { id: agent.conversationId, start: Math.max(0, first - PAGE) }
+    await tick()
+    if (scroller && from !== null) scroller.scrollTop = scroller.scrollHeight - from
+  }
 
   // ── Folding a finished turn's steps ────────────────────────────────
   //
@@ -312,8 +356,10 @@
   }
   $effect(() => {
     // Touch what should retrigger this: the turns, the text growing, a card
-    // arriving, the status line appearing.
-    agent.turns.map((t) => t.text.length + t.cards.length + t.thinking.length)
+    // arriving, the status line appearing. The text grows once a frame at
+    // most (see `DeltaBatch`), so this lays the log out no more often than it
+    // is painted. Only what is drawn can move the foot of the log.
+    visible.map((t) => t.text.length + t.cards.length + t.thinking.length)
     void agent.busy
     if (pinned && scroller) scroller.scrollTop = scroller.scrollHeight
   })
@@ -336,7 +382,7 @@
 
   /** The files turns carry, by id; `undefined` until asked for. */
   let entries = $state<Record<FileId, FileEntry | null | undefined>>({})
-  const carried = $derived(agent.turns.flatMap((t) => [...t.files, ...madePictures(t)]))
+  const carried = $derived(visible.flatMap((t) => [...t.files, ...madePictures(t)]))
   $effect(() => {
     const missing = carried.filter((id) => untrack(() => entries[id]) === undefined)
     if (missing.length === 0) return
@@ -397,7 +443,7 @@
 
   /** On a reply: a press on one of its `files:` chips opens the file. One
    *  listener on the reply rather than one on each, because the chips
-   *  arrive inside `{@html}` and are drawn again with every chunk. */
+   *  arrive inside `{@html}` and are drawn again as the reply streams. */
   function chips(node: HTMLElement) {
     const onclick = (e: MouseEvent) => {
       const chip = e.target instanceof Element ? e.target.closest<HTMLElement>('.file-chip') : null
@@ -441,12 +487,39 @@
     target?.focus()
   })
 
-  /** Grow with what is typed, up to a limit, rather than scroll a slit. */
+  /** What the box was last sized for. */
+  let sized: { box: HTMLTextAreaElement | null; draft: string; width: number; rows: number } = {
+    box: null,
+    draft: '',
+    width: 0,
+    rows: 0,
+  }
+
+  /**
+   * Grow with what is typed, up to a limit, rather than scroll a slit.
+   *
+   * Text added at the end can only add lines, so the box is let go to measure
+   * its own height only when something was taken out or changed, or the box
+   * itself is new or another width: doing it on every key laid the composer
+   * out twice per key for a height that had not changed.
+   */
   function fit() {
     if (!box) return
-    box.style.height = 'auto'
     const max = variant === 'page' ? 240 : 160
-    box.style.height = `${Math.min(box.scrollHeight, max)}px`
+    const width = box.clientWidth
+    const rows = box.rows
+    const was = sized
+    sized = { box, draft, width, rows }
+    if (
+      box !== was.box ||
+      width !== was.width ||
+      rows !== was.rows ||
+      !draft.startsWith(was.draft)
+    ) {
+      box.style.height = 'auto'
+    }
+    const height = `${Math.min(box.scrollHeight, max)}px`
+    if (box.style.height !== height) box.style.height = height
   }
   $effect(() => {
     void draft
@@ -926,7 +999,11 @@
         {/if}
       {/if}
 
-      {#each agent.turns as turn (turn.id)}
+      {#if first > 0}
+        <button class="btn btn-sm earlier" onclick={() => void showEarlier()}>Show earlier</button>
+      {/if}
+
+      {#each visible as turn (turn.id)}
         <article class="turn {turn.role}">
           {#if turn.role === 'user'}
             <!-- A dream's opening message is its digest wearing a sentence.
@@ -1121,6 +1198,11 @@
                    `lib/markdown.ts` -- in particular why the renderer is in
                    this repository and what it escapes before it does
                    anything else. -->
+              <!-- While it streams, drawn a block at a time (`ChatReply`):
+                   a paragraph already finished keeps its nodes, and any
+                   selection in it, while the last one grows. Once it is
+                   over, drawn whole, exactly as a reply opened from the
+                   history list is. -->
               <!-- The rule below is right in general and this is the case
                    it does not cover: `renderMarkdown` HTML-escapes its input
                    before a single pattern runs, so every tag in what comes
@@ -1128,8 +1210,12 @@
                    directions in `scripts/markdown.test.mjs`, including a raw
                    `<script>`, an `onerror` attribute and a `javascript:`
                    link. -->
-              <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-              <div class="reply md" use:chips>{@html renderMarkdown(turn.text)}</div>
+              {#if turn.phase === 'done'}
+                <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+                <div class="reply md" use:chips>{@html renderMarkdown(turn.text)}</div>
+              {:else}
+                <div class="reply md" use:chips><ChatReply text={turn.text} /></div>
+              {/if}
             {/if}
 
             {#if choices}
@@ -1163,7 +1249,12 @@
             {#if status}
               <!-- Always the last thing in a running turn, whatever else it
                    has drawn: this is the line that says it is still going. -->
-              <div class="status" role="status" aria-live="polite">
+              <div
+                class="status"
+                class:waiting={waitingForAnswer(turn)}
+                role="status"
+                aria-live="polite"
+              >
                 <WingPulse size={18} />
                 <span class="doing">{status}…</span>
                 {#if turn.startedAt !== null}
@@ -1463,6 +1554,11 @@
   }
 
   /* ── A turn ───────────────────────────────────────────────────────── */
+
+  /* Over the oldest turn drawn, when there are older ones. */
+  .earlier {
+    align-self: center;
+  }
 
   .turn {
     display: flex;
@@ -1785,34 +1881,31 @@
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
-    /* A sheen across the words, so the line reads as live even in the
-       stretch where nothing about it changes. */
-    background: linear-gradient(
-        90deg,
-        var(--fg-muted) 0%,
-        var(--fg-muted) 40%,
-        var(--fg) 50%,
-        var(--fg-muted) 60%,
-        var(--fg-muted) 100%
-      )
-      0 0 / 250% 100%;
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
-    animation: sheen 2.2s linear infinite;
+    /* The words breathe, so the line reads as live even in the stretch where
+       nothing about it changes. Opacity rather than the sheen it was: a
+       moving background behind clipped text is repainted every frame, and
+       opacity is the compositor's. */
+    animation: breathe 1.6s ease-in-out infinite;
   }
-  @keyframes sheen {
-    from {
-      background-position: 100% 0;
+  @keyframes breathe {
+    0%,
+    100% {
+      opacity: 1;
     }
-    to {
-      background-position: -150% 0;
+    50% {
+      opacity: 0.6;
     }
   }
   .clock {
     flex: none;
     color: var(--fg-faint);
     font-variant-numeric: tabular-nums;
+  }
+  /* Held on a question only the person can answer, which may wait for
+     hours: nothing is happening, so nothing moves. */
+  .status.waiting :global(.feather),
+  .status.waiting .doing {
+    animation: none;
   }
   @media (prefers-reduced-motion: reduce) {
     .spin {
@@ -1821,8 +1914,6 @@
     }
     .doing {
       animation: none;
-      background: none;
-      color: var(--fg-muted);
     }
   }
 

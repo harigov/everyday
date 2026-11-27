@@ -81,6 +81,37 @@ const RUN_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// that has gone wrong.
 const RUN_CEILING: Duration = Duration::from_secs(2 * 60 * 60);
 
+/// How far back an ordinary tick looks for runs still queued or running.
+///
+/// The outcome is sealed, so finding the open runs means opening rows, and a
+/// brief's row carries the whole digest it was written from. Every run this
+/// process starts is begun, carried out and closed within [`RUN_CEILING`], so
+/// a tick reads only that far back, with ten minutes to spare. Anything older
+/// is left by a process that is gone, which the whole look finds.
+const RECENT_RUNS: Duration = Duration::from_secs(2 * 60 * 60 + 10 * 60);
+
+/// How often the whole run log is looked through anyway, besides the first
+/// tick after the vault opens. A safety net, not a schedule: nothing this
+/// process does leaves a run open past [`RECENT_RUNS`].
+const WHOLE_LOOK_EVERY: Duration = Duration::from_secs(30 * 60);
+
+/// How far back a query trigger's guard reads its log, past the trigger's own
+/// window. See [`already_about`].
+const ABOUT_SPAN: jiff::SignedDuration = jiff::SignedDuration::from_hours(30 * 24);
+
+/// What [`wake`] rings. One per process, as the scheduler is. Were there
+/// ever two, a wake the other took up would cost this one nothing worse than
+/// the tick it always had, and a spare wake costs one short read.
+static WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+/// Have the scheduler take up what somebody has just queued by hand, now
+/// rather than at the next tick. Only the queued runs: the clock's passes
+/// keep their minute. A wake while a tick is going on is kept, and taken up
+/// as soon as it ends.
+pub fn wake() {
+    WAKE.notify_one();
+}
+
 /// Run the scheduler until `stop` says otherwise.
 ///
 /// Must be spawned on the runtime the rest of the process uses. Starting one
@@ -89,11 +120,15 @@ const RUN_CEILING: Duration = Duration::from_secs(2 * 60 * 60);
 /// about each other -- the rule `jatayu_server::start` already states.
 pub async fn run(service: Arc<Service>, mut stop: tokio::sync::watch::Receiver<bool>) {
     tracing::info!("the assistant's scheduler is awake");
+    // A deadline rather than a sleep per turn, so a wake does not push the
+    // next tick back.
+    let mut next_tick = tokio::time::Instant::now() + TICK;
     loop {
-        tokio::select! {
-            _ = tokio::time::sleep(TICK) => {}
+        let woken = tokio::select! {
+            _ = tokio::time::sleep_until(next_tick) => false,
+            _ = WAKE.notified() => true,
             _ = stop.changed() => break,
-        }
+        };
         if *stop.borrow() {
             break;
         }
@@ -102,7 +137,13 @@ pub async fn run(service: Arc<Service>, mut stop: tokio::sync::watch::Receiver<b
         // which is the one thing this loop must never do: the run's row would
         // be left saying `Running` with nothing to finish it. Stopping is
         // therefore checked between ticks, and whoever asked for it waits.
+        // A wake is taken up in the same loop, so runs stay one at a time.
+        if woken {
+            run_queued_now(&service).await;
+            continue;
+        }
         tick(&service).await;
+        next_tick = tokio::time::Instant::now() + TICK;
     }
     // A run waiting on somebody's answer would hold this up for half an
     // hour; told to stop waiting, it finishes with what it has, and is
@@ -127,9 +168,13 @@ pub async fn tick(service: &Arc<Service>) {
     // a vault with no window attached forget its key on schedule -- until
     // this existed, nothing polled it.
     if !vault.is_unlocked() {
+        // The first tick after it opens again looks through the whole run
+        // log, as the first tick of a process does.
+        forget_whole_look();
         return;
     }
     if vault.forget_key_if_idle() {
+        forget_whole_look();
         service.locked().await;
         return;
     }
@@ -302,20 +347,22 @@ pub async fn tick(service: &Arc<Service>) {
                 // skip and stamping the slot are the same fact about the
                 // same routine, and nothing between them needs the async
                 // runtime.
-                let _ = blocking({
+                let skipped = blocking({
                     let vault = vault.clone();
                     let routine = routine.clone();
                     move || {
-                        skip(&vault, &routine, Some(slot), reason);
+                        let id = skip(&vault, &routine, Some(slot), reason);
                         // Stamped even though nothing ran, or the same slot
                         // is reported missed on every tick for the rest of
                         // the day.
                         stamp(&vault, &routine, slot);
-                        Ok(())
+                        Ok(id)
                     }
                 })
                 .await;
-                service.events().changed(run_change());
+                if let Ok(id) = skipped {
+                    service.events().changed(run_change(id));
+                }
             }
             Due::Now { slot } => {
                 execute(service, &vault, &routine, Some(slot)).await;
@@ -340,6 +387,18 @@ pub async fn tick(service: &Arc<Service>) {
         if !routine.enabled || routine.trigger.is_clock() {
             continue;
         }
+        let subjects = blocking({
+            let vault = vault.clone();
+            let routine = routine.clone();
+            let now = now.clone();
+            move || Ok(subjects_for(&vault, &routine, &now))
+        })
+        .await
+        .unwrap_or_default();
+        // Nothing in its window, which is most minutes: no log to read.
+        if subjects.is_empty() {
+            continue;
+        }
         // Read once for the routine rather than once per subject: the guard
         // is the same set for all of them, and a routine with a hundred
         // subjects in its window would otherwise read its whole log a
@@ -347,15 +406,8 @@ pub async fn tick(service: &Arc<Service>) {
         let mut done = blocking({
             let vault = vault.clone();
             let routine = routine.clone();
-            move || Ok(already_about(&vault, &routine))
-        })
-        .await
-        .unwrap_or_default();
-        let subjects = blocking({
-            let vault = vault.clone();
-            let routine = routine.clone();
-            let now = now.clone();
-            move || Ok(subjects_for(&vault, &routine, &now))
+            let now = now.timestamp();
+            move || Ok(already_about(&vault, &routine, now))
         })
         .await
         .unwrap_or_default();
@@ -372,62 +424,97 @@ pub async fn tick(service: &Arc<Service>) {
     }
 
     // A row still `Running` that no live process claims is one a *previous*
-    // process left behind: the app was quit mid-run, the machine slept, the
-    // vault was switched. It cannot be resumed -- the turn it belonged to is
-    // gone -- and it must not sit on the app bar looking like one that is
-    // about to finish. So it is closed as failed, saying so.
-    //
-    // The claim is the whole test, and it is reliable in the direction that
-    // matters: a run this process is carrying out is inside `resume`, which
-    // has not returned, so `tick` cannot be here looking at it.
-    //
-    // The whole sweep is one trip to the blocking pool rather than one per
-    // row: nothing in it ever awaited anything even when it ran inline on
-    // this async fn, so grouping it changes when the events after it fire
-    // relative to each other and not what any of them say -- `run_change`
-    // carries no per-run identity for that to matter to.
+    // process left behind; then whatever somebody asked for by hand. Both
+    // from one read: the whole log on the first tick after the vault opens
+    // and every so often after that, and otherwise only its recent end --
+    // see `RECENT_RUNS`.
+    let whole = whole_look_due(&vault);
+    let Some(open) = open_runs(&vault, &[Outcome::Running, Outcome::Queued], whole).await else {
+        return;
+    };
+    if whole {
+        whole_look_done(&vault);
+    }
+    let (running, queued): (Vec<_>, Vec<_>) =
+        open.into_iter().partition(|run| run.outcome == Outcome::Running);
+    sweep_abandoned(service, &vault, running).await;
+    carry_out_queued(service, &vault, queued).await;
+}
+
+/// What [`wake`] has the loop do between ticks: the runs somebody has just
+/// queued by hand, behind the same checks a tick makes before its routines.
+async fn run_queued_now(service: &Arc<Service>) {
+    let Some(vault) = service.get() else { return };
+    if !vault.is_unlocked() || !vault.is_writable() || !vault.supports_routines() {
+        return;
+    }
+    if let Some(queued) = open_runs(&vault, &[Outcome::Queued], false).await {
+        carry_out_queued(service, &vault, queued).await;
+    }
+}
+
+/// The runs whose outcome is one of `outcomes` -- the open ones, `Running`
+/// and `Queued` -- across the whole log when `whole`, otherwise those
+/// started within [`RECENT_RUNS`], against the wall clock, which is what a
+/// run's start is stamped with. `None` when the log could not be read.
+async fn open_runs(
+    vault: &Arc<Vault>,
+    outcomes: &[Outcome],
+    whole: bool,
+) -> Option<Vec<RoutineRun>> {
+    let since = if whole { None } else { Timestamp::now().checked_sub(RECENT_RUNS).ok() };
+    let query = RunQuery { outcomes: outcomes.to_vec(), since, ..Default::default() };
+    let vault = vault.clone();
+    blocking(move || Ok(vault.runs(&query)?)).await.ok()
+}
+
+/// Close the runs a previous process left `Running`.
+///
+/// The app was quit mid-run, the machine slept, the vault was switched. Such
+/// a run cannot be resumed -- the turn it belonged to is gone -- and it must
+/// not sit on the app bar looking like one that is about to finish. So it is
+/// closed as failed, saying so.
+///
+/// The claim is the whole test, and it is reliable in the direction that
+/// matters: a run this process is carrying out is inside `resume`, which has
+/// not returned, so `tick` cannot be here looking at it.
+///
+/// The whole sweep is one trip to the blocking pool rather than one per row:
+/// nothing in it awaits anything, and the changes are raised after it.
+async fn sweep_abandoned(service: &Arc<Service>, vault: &Arc<Vault>, running: Vec<RoutineRun>) {
+    if running.is_empty() {
+        return;
+    }
     let abandoned = blocking({
         let vault = vault.clone();
         let service = service.clone();
         move || {
-            let mut count = 0;
-            for run in vault
-                .runs(&RunQuery { outcomes: vec![Outcome::Running], ..Default::default() })
-                .unwrap_or_default()
-            {
+            let mut ids = Vec::new();
+            for mut run in running {
                 if service.claims_run(&run.id.to_string()) {
                     continue;
                 }
-                let mut abandoned = run.clone();
-                abandoned.fail("it was still running when the application stopped");
-                let _ = vault.save_run(&abandoned);
+                run.fail("it was still running when the application stopped");
+                let _ = vault.save_run(&run);
                 if let (Some(slot), Ok(routine)) = (run.slot, vault.routine(run.routine_id)) {
                     stamp(&vault, &routine, slot);
                 }
-                count += 1;
+                ids.push(run.id);
             }
-            Ok(count)
-        }
-    })
-    .await
-    .unwrap_or(0);
-    for _ in 0..abandoned {
-        service.events().changed(run_change());
-    }
-
-    // And whatever somebody asked for by hand. Queued rather than executed in
-    // the command, so that "run now" is answered immediately and the work
-    // still happens one at a time.
-    let queued = blocking({
-        let vault = vault.clone();
-        move || {
-            Ok(vault
-                .runs(&RunQuery { outcomes: vec![Outcome::Queued], ..Default::default() })
-                .unwrap_or_default())
+            Ok(ids)
         }
     })
     .await
     .unwrap_or_default();
+    for id in abandoned {
+        service.events().changed(run_change(id));
+    }
+}
+
+/// Carry out whatever somebody asked for by hand. Queued rather than executed
+/// in the command, so that "run now" is answered immediately and the work
+/// still happens one at a time.
+async fn carry_out_queued(service: &Arc<Service>, vault: &Arc<Vault>, queued: Vec<RoutineRun>) {
     for run in queued {
         // Already being carried out beside the tick, and not started yet.
         if service.claims_run(&run.id.to_string()) {
@@ -460,18 +547,18 @@ pub async fn tick(service: &Arc<Service>) {
         // would have been handed an empty prompt and the whole catalogue
         // with nothing held back.
         if let Some(scope) = routine.kind.dream_scope() {
-            run_dream(service, &vault, &routine, None, scope, Some(run)).await;
+            run_dream(service, vault, &routine, None, scope, Some(run)).await;
             continue;
         }
         // A brief likewise: its digest, its read-only turn, and its answer
         // kept on the run.
         if let Some(spec) = routine.kind.brief().cloned() {
-            run_brief(service, &vault, &routine, None, spec, Some(run)).await;
+            run_brief(service, vault, &routine, None, spec, Some(run)).await;
             continue;
         }
         let prompt = routine.instructions.clone();
         let hold = Some(routine.id);
-        carry_out(service, &vault, &routine, run, prompt, hold, Mode::Routine).await;
+        carry_out(service, vault, &routine, run, prompt, hold, Mode::Routine).await;
     }
 }
 
@@ -719,15 +806,35 @@ fn describe_task(task: &jatayu_core::Task) -> String {
 /// Everything this routine has already been about.
 ///
 /// The run log is the record, so a meeting the laptop was awake for at nine
-/// and again at nine-oh-one is prepared for once. Read whole rather than
-/// capped: a capped read is worse than no guard at all, because once a
-/// routine has more subjects in its window than the cap, the oldest fall out
+/// and again at nine-oh-one is prepared for once. Bounded by time, never
+/// capped by count: a capped read is worse than no guard at all, because once
+/// a routine has more subjects in its window than the cap, the oldest fall out
 /// of the log's newest-first window and are run again every single minute --
-/// one paid model call each, for ever. The log is bounded by what a routine
-/// has actually done, which is what `collect_garbage` is for.
-fn already_about(vault: &Arc<Vault>, routine: &Routine) -> std::collections::HashSet<String> {
+/// one paid model call each, for ever.
+///
+/// A time bound has no such hole. A subject is only run about while it is
+/// inside the trigger's window, so a run about anything in the window now
+/// started no earlier than the window's length ago -- unless the meeting or
+/// the deadline has since moved later by more than the [`ABOUT_SPAN`] read
+/// past it, when it is a fresh subject in all but name.
+fn already_about(
+    vault: &Arc<Vault>,
+    routine: &Routine,
+    now: Timestamp,
+) -> std::collections::HashSet<String> {
+    let reach = match routine.trigger {
+        Trigger::BeforeEvent { lead_minutes, .. } => {
+            jiff::SignedDuration::from_mins(i64::from(lead_minutes))
+        }
+        // By the day, so a whole day more: the window starts at midnight.
+        Trigger::TaskDue { lead_days } => {
+            jiff::SignedDuration::from_hours(24 * (i64::from(lead_days) + 1))
+        }
+        _ => jiff::SignedDuration::ZERO,
+    };
+    let since = now.checked_sub(reach).and_then(|t| t.checked_sub(ABOUT_SPAN)).ok();
     vault
-        .runs(&RunQuery { routine_id: Some(routine.id), ..Default::default() })
+        .runs(&RunQuery { routine_id: Some(routine.id), since, ..Default::default() })
         .unwrap_or_default()
         .into_iter()
         .filter_map(|r| r.subject)
@@ -1146,7 +1253,7 @@ async fn skip_queued(
     run.finished_at = Some(service.now());
     run.seen = true;
     save_run(vault, &run).await;
-    service.events().changed(run_change());
+    service.events().changed(run_change(run.id));
 }
 
 /// Record a dream as skipped, stamp its slot so it is not reported again on
@@ -1159,19 +1266,21 @@ async fn skip_dream(
     reason: &str,
 ) {
     let reason = reason.to_string();
-    let _ = blocking({
+    let skipped = blocking({
         let vault = vault.clone();
         let routine = routine.clone();
         move || {
-            skip(&vault, &routine, slot, reason);
+            let id = skip(&vault, &routine, slot, reason);
             if let Some(slot) = slot {
                 stamp(&vault, &routine, slot);
             }
-            Ok(())
+            Ok(id)
         }
     })
     .await;
-    service.events().changed(run_change());
+    if let Ok(id) = skipped {
+        service.events().changed(run_change(id));
+    }
 }
 
 /// After a dream's turn finishes: prefix its summary with what it actually
@@ -1311,7 +1420,7 @@ async fn resume(
         if let Some(slot) = run.slot {
             stamp_async(vault, routine, slot).await;
         }
-        service.events().changed(run_change());
+        service.events().changed(run_change(run.id));
         return None;
     }
 
@@ -1442,7 +1551,7 @@ async fn resume(
             origin: Some("assistant".to_string()),
         });
     }
-    service.events().changed(run_change());
+    service.events().changed(run_change(run.id));
 
     // Said aloud next, by whoever called this: a quarter of an hour of speech
     // takes the voice minutes, and where it is done matters to what else the
@@ -1569,7 +1678,7 @@ async fn render_podcast(
     {
         announce(service, routine, run);
     }
-    service.events().changed(run_change());
+    service.events().changed(run_change(id));
 }
 
 /// The running chat link `routine` sends its result to, if it names one and
@@ -1934,9 +2043,17 @@ fn announce(service: &Arc<Service>, routine: &Routine, run: &RoutineRun) {
     }
 }
 
-fn skip(vault: &Arc<Vault>, routine: &Routine, slot: Option<jiff::Timestamp>, reason: String) {
+/// Answers the skipped run's id, for the change that says so.
+fn skip(
+    vault: &Arc<Vault>,
+    routine: &Routine,
+    slot: Option<jiff::Timestamp>,
+    reason: String,
+) -> RoutineRunId {
     tracing::info!(routine = %routine.name, %reason, "skipping a routine");
-    let _ = vault.save_run(&RoutineRun::skipped(routine, slot, reason));
+    let run = RoutineRun::skipped(routine, slot, reason);
+    let _ = vault.save_run(&run);
+    run.id
 }
 
 /// Record that this routine has now dealt with `slot`.
@@ -1985,11 +2102,13 @@ async fn save_run(vault: &Arc<Vault>, run: &RoutineRun) {
     let _ = blocking(move || Ok(vault.save_run(&run)?)).await;
 }
 
-fn run_change() -> Change {
+/// The change every run's write raises, naming the run, so a window can
+/// read that one rather than the whole log.
+fn run_change(id: RoutineRunId) -> Change {
     Change {
         kind: Kind::RoutineRun,
         op: Op::Updated,
-        id: None,
+        id: Some(id.to_string()),
         ids: Vec::new(),
         origin: Some("assistant".to_string()),
     }
@@ -2018,6 +2137,32 @@ fn pretty_minutes(seconds: i64) -> String {
 /// process, by address. Every later tick only looks back two days:
 /// nothing older can have just ended.
 static SETTLED_VAULT: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+
+/// The vault whose whole run log was last looked through for open runs, and
+/// when. Held weakly, which also keeps its address from being handed to the
+/// next vault opened, so a new vault is never taken for one already seen.
+static WHOLE_LOOK: std::sync::Mutex<Option<(std::sync::Weak<Vault>, std::time::Instant)>> =
+    std::sync::Mutex::new(None);
+
+/// Whether this tick should look through the whole run log: the first tick
+/// on this vault, the first after it was seen locked, or
+/// [`WHOLE_LOOK_EVERY`] since the last.
+fn whole_look_due(vault: &Arc<Vault>) -> bool {
+    let last = WHOLE_LOOK.lock().unwrap();
+    !matches!(
+        &*last,
+        Some((seen, at)) if std::ptr::eq(seen.as_ptr(), Arc::as_ptr(vault))
+            && at.elapsed() < WHOLE_LOOK_EVERY
+    )
+}
+
+fn whole_look_done(vault: &Arc<Vault>) {
+    *WHOLE_LOOK.lock().unwrap() = Some((Arc::downgrade(vault), std::time::Instant::now()));
+}
+
+fn forget_whole_look() {
+    *WHOLE_LOOK.lock().unwrap() = None;
+}
 
 /// Close whatever a pending proposal's own clock, or an event only mail can
 /// raise, has already decided -- called from `tick`, beside

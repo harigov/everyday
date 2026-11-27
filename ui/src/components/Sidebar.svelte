@@ -10,18 +10,8 @@
   import { colourItems } from '../lib/menus'
   import Icon from './Icon.svelte'
   import Symbol from './Symbol.svelte'
+  import { views } from '../lib/views.svelte'
   import JournalSettings from './JournalSettings.svelte'
-  import TodoNav from './TodoNav.svelte'
-  import CalendarNav from './CalendarNav.svelte'
-  import LibraryNav from './LibraryNav.svelte'
-  import MailNav from './MailNav.svelte'
-  import FeedNav from './FeedNav.svelte'
-  import MoneyNav from './MoneyNav.svelte'
-  import ScreenTimeNav from './ScreenTimeNav.svelte'
-  import FilesNav from './FilesNav.svelte'
-  import HealthNav from './HealthNav.svelte'
-  import AssistantNav from './AssistantNav.svelte'
-  import NotesNav from './NotesNav.svelte'
   import PaneResizer from './PaneResizer.svelte'
   import type { Journal } from '../lib/types'
 
@@ -38,6 +28,15 @@
   } = $props()
 
   const peeking = $derived(folded && sidebar.peeking)
+
+  // Each app's own sidebar is loaded with its view, and drawn for the app
+  // the stage is showing -- see `views.stage` -- so the two change together.
+  // The journal's is this component's own, below.
+  const section = $derived(views.stage)
+  const Nav = $derived(views.nav(section))
+
+  /** What the pane edge resizes while it is dragged: this panel alone. */
+  let aside = $state<HTMLElement | null>(null)
 
   // The menu's hold ends when the menu does -- chosen from, or dismissed.
   $effect(() => {
@@ -128,6 +127,7 @@
      arriving holds it, leaving lets it go after a moment -- see
      `sidebar.svelte.ts` for the delays. Escape puts it away at once. -->
 <aside
+  bind:this={aside}
   class="sidebar shell-card"
   class:folded
   class:frost={folded}
@@ -182,28 +182,10 @@
     if (folded && e.key === 'Escape') sidebar.hide()
   }}
 >
-  {#if app.section === 'assistant'}
-    <AssistantNav />
-  {:else if app.section === 'notes'}
-    <NotesNav />
-  {:else if app.section === 'todo'}
-    <TodoNav />
-  {:else if app.section === 'calendar'}
-    <CalendarNav />
-  {:else if app.section === 'library'}
-    <LibraryNav />
-  {:else if app.section === 'mail'}
-    <MailNav />
-  {:else if app.section === 'feed'}
-    <FeedNav />
-  {:else if app.section === 'money'}
-    <MoneyNav />
-  {:else if app.section === 'screentime'}
-    <ScreenTimeNav />
-  {:else if app.section === 'files'}
-    <FilesNav />
-  {:else if app.section === 'health'}
-    <HealthNav />
+  {#if Nav}
+    <Nav />
+  {:else if section !== 'journal'}
+    <!-- Its sidebar has not loaded yet: see `App.svelte`'s empty stage. -->
   {:else}
     <nav class="scroll side-nav">
       <button
@@ -307,6 +289,7 @@
     defaultWidth={248}
     min={180}
     max={420}
+    scope={() => aside}
   />
 </aside>
 

@@ -28,6 +28,10 @@
   /** How "new" is pressed here, for the hints: never a hard-coded Ctrl. */
   const newKeys = keysLabel('mod+n', userAgentMac)
 
+  /** The width a row's picture is asked for at: the server's smallest tier
+   *  that still fills the 42px square, cropped, on this screen. */
+  const thumbW = window.devicePixelRatio > 1 ? 200 : 96
+
   let pendingDelete = $state<{ id: EntryId; title: string } | null>(null)
 
   // ── On a phone ───────────────────────────────────────────────────────
@@ -309,8 +313,15 @@
         {/if}
       </div>
 
+      <!-- The picture scaled for a slot this size, not the original. -->
       {#if row.cover}
-        <img class="thumb" src={mediaUrl(row.cover)} alt="" loading="lazy" />
+        <img
+          class="thumb"
+          src={mediaUrl(row.cover, thumbW)}
+          alt=""
+          loading="lazy"
+          decoding="async"
+        />
       {:else if row.coverFile}
         <img class="thumb" src={fileUrl(row.coverFile)} alt="" loading="lazy" />
       {/if}
@@ -394,6 +405,8 @@
           </button>
         {/each}
       {/if}
+    {:else if !app.entriesLoaded}
+      <!-- Still being read: not yet "no entries". -->
     {:else if app.entries.length === 0}
       <EmptyState lead={app.showStarredOnly ? 'Nothing starred yet.' : 'No entries yet.'}>
         {#snippet note()}

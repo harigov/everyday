@@ -534,7 +534,9 @@
     <div class="body scroll">
       {#key f.id}
         <button class="preview" title="Open" onclick={() => files.open(f.id)}>
-          <FileThumb file={f} fit="contain" />
+          <!-- The one large preview: drawn from the file itself while its
+               thumbnail is being made, whatever its size. -->
+          <FileThumb file={f} fit="contain" original="always" />
           {#if preview}
             <span class="play"><Icon name={f.kind === 'video' ? 'play' : 'mic'} size={22} /></span>
           {/if}

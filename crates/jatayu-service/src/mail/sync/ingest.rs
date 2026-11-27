@@ -42,7 +42,8 @@
 //!   without a database query to ask.
 //! - **Everywhere else, JWZ**, done with two lookups rather than the whole
 //!   mailbox [`jatayu_mail::threading::place`] takes: forward, by asking
-//!   the vault (and this run's own memory, for a message still mid-batch)
+//!   the vault's keyed index ([`jatayu_core::Vault::mail_thread_by_header`])
+//!   and this run's own memory, for a message still mid-batch,
 //!   whether any id in this message's `References`/`In-Reply-To` chain is
 //!   already stored; backward, by remembering -- in [`ThreadIndex`], for the
 //!   life of one sync attempt -- which ids each processed message's chain
@@ -585,9 +586,11 @@ impl ThreadIndex {
             for r in &chain {
                 if let Some(&tid) = self.by_message_id.get(r) {
                     candidates.push(tid);
-                } else if let Ok(Some(existing)) = vault.message_by_message_id_header(account_id, r)
-                {
-                    candidates.push(existing.thread_id);
+                } else if let Ok(Some(tid)) = vault.mail_thread_by_header(account_id, r) {
+                    // One keyed lookup, not a decrypt of the account's every
+                    // message -- which a reference to mail never received
+                    // paid in full, every time it was named.
+                    candidates.push(tid);
                 }
             }
             if let Some(tids) = self.by_referenced_id.get(&key) {
@@ -677,5 +680,91 @@ mod tests {
             gmail_thread_id(other_account, 111),
             "two accounts must not share a thread id even for the same Gmail thread number"
         );
+    }
+
+    fn stored(account: AccountId, message_id: &str, size: u64) -> Message {
+        Message {
+            id: MailMessageId::new(),
+            account_id: account,
+            thread_id: ThreadId::new(),
+            message_id_header: message_id.to_string(),
+            date: jiff::Timestamp::now(),
+            from: MailAddress::bare("list@example.com"),
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            reply_to: Vec::new(),
+            subject: "Plans".into(),
+            snippet: String::new(),
+            flags: MessageFlags::default(),
+            labels: Vec::new(),
+            has_attachments: false,
+            size,
+            category: None,
+            category_source: CategorySource::Rules,
+            pack: pending_pack_ref(account),
+            gmail: None,
+            invite: None,
+            unsubscribe: None,
+        }
+    }
+
+    /// Two rows can share a `Message-ID` (a direct copy and a larger list
+    /// copy), and only the first gets the key. Once that first one is
+    /// deleted, a reply naming it still joins the copy that is left, as the
+    /// full scan always found it; the scan then keys the copy, and once the
+    /// copy goes too the id is simply unknown.
+    #[test]
+    fn a_reply_to_a_deleted_message_joins_the_copy_left_behind() {
+        use jatayu_core::VaultConfig;
+        use jatayu_core::mail::{Mailbox, MailboxRole};
+        use jatayu_core::store::mail::IngestMessage;
+
+        let dir = tempfile::tempdir().unwrap();
+        let vault =
+            jatayu_vault::create(dir.path(), VaultConfig { password: None, ..Default::default() })
+                .unwrap();
+        let account = AccountId::new();
+        // Nothing stored yet, so every message is keyed as it arrives.
+        assert!(vault.key_existing_mail(account).unwrap().is_empty());
+        let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+        let lists = Mailbox::new(account, "Lists", MailboxRole::Other);
+        vault.save_mailbox(&inbox).unwrap();
+        vault.save_mailbox(&lists).unwrap();
+        let direct = stored(account, "a@example.com", 1_000);
+        let copy = stored(account, "a@example.com", 1_200);
+        vault
+            .ingest_mail(
+                account,
+                vec![
+                    IngestMessage { message: direct.clone(), mailbox: inbox.id, uid: 1 },
+                    IngestMessage { message: copy.clone(), mailbox: lists.id, uid: 1 },
+                ],
+            )
+            .unwrap();
+        let by_header = |id: &str| vault.mail_thread_by_header(account, id).unwrap();
+        assert_eq!(by_header("a@example.com"), Some(direct.thread_id), "the first row is keyed");
+
+        vault.remove_mail_uids(inbox.id, &[1]).unwrap();
+        let mut threads = ThreadIndex::new();
+        let placed = threads.resolve(
+            &vault,
+            account,
+            Some("reply@example.com"),
+            Some("a@example.com"),
+            &[],
+            "uid:2",
+            None,
+        );
+        assert_eq!(placed, copy.thread_id, "the reply joins the copy left behind");
+        assert_eq!(
+            vault.mail_message_by_header(account, "a@example.com").unwrap(),
+            Some(copy.id),
+            "and the copy now holds the key"
+        );
+
+        vault.remove_mail_uids(lists.id, &[1]).unwrap();
+        assert_eq!(by_header("a@example.com"), None);
+        assert_eq!(by_header("a@example.com"), None, "the dead key, dropped, still says none");
     }
 }

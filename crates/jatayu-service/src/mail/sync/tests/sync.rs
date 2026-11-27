@@ -2066,6 +2066,45 @@ async fn a_reused_message_id_on_a_different_message_is_not_folded_by_its_key() {
     assert_eq!(messages, 2, "two messages, not one row filed twice");
 }
 
+/// Once an account is keyed, threading asks the keys about each id a new
+/// message names rather than reading the account's mail: a reply met by a
+/// fresh task still joins the stored message it answers, past an id in its
+/// chain that was never stored.
+#[tokio::test]
+async fn a_reply_finds_what_it_answers_by_its_key() {
+    let env = TestEnv::new();
+    env.vault.key_existing_mail(env.account_id).unwrap();
+    let server = plain_server();
+    let root = raw_message(
+        "root@example.com",
+        None,
+        "a@example.com",
+        "Plans",
+        "01 Jan 2024 09:00:00 +0000",
+        "start",
+    );
+    server.lock().unwrap().append("INBOX", root, flags_seen(), None);
+    let mut session = FakeMailSession::new(server.clone());
+    env.sync(&mut session).await;
+    let thread = thread_of(&env, "root@example.com");
+    let by_key = |id: &str| env.vault.mail_thread_by_header(env.account_id, id).unwrap();
+    assert_eq!(by_key("root@example.com"), Some(thread));
+    assert_eq!(by_key("never@example.com"), None);
+
+    let reply = b"Message-ID: <reply@example.com>\r\n\
+In-Reply-To: <root@example.com>\r\n\
+References: <never@example.com> <root@example.com>\r\n\
+From: b@example.com\r\n\
+To: a@example.com\r\n\
+Subject: Something else\r\n\
+Date: 01 Jan 2024 09:30:00 +0000\r\n\
+Content-Type: text/plain\r\n\r\nsounds good\r\n"
+        .to_vec();
+    server.lock().unwrap().append("INBOX", reply, flags_seen(), None);
+    env.sync(&mut session).await;
+    assert_eq!(thread_of(&env, "reply@example.com"), thread);
+}
+
 // ---------------------------------------------------------------------
 // A reply that names no other message -- see `ingest`'s module docs, "A
 // reply with no headers to follow".

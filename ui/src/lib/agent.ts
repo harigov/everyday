@@ -271,6 +271,79 @@ export function applyEvent(turn: Turn, event: AgentEvent): void {
   }
 }
 
+/** How long streamed prose waits for a frame that does not come: a hidden window has none. */
+const FRAME_FALLBACK_MS = 50
+
+/**
+ * Run `run` at the next frame, or after `FRAME_FALLBACK_MS` if that is
+ * sooner. Hands back a cancel.
+ */
+export function nextFrame(run: () => void): () => void {
+  let frame = 0
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const cancel = () => {
+    if (frame) cancelAnimationFrame(frame)
+    if (timer !== null) clearTimeout(timer)
+    frame = 0
+    timer = null
+  }
+  const fire = () => {
+    cancel()
+    run()
+  }
+  if (typeof requestAnimationFrame === 'function') frame = requestAnimationFrame(fire)
+  timer = setTimeout(fire, FRAME_FALLBACK_MS)
+  return cancel
+}
+
+/**
+ * Streamed words -- the reply's, and the reasoning's -- held for a frame and
+ * folded into their turn in one go.
+ *
+ * A provider sends a reply a few characters at a time, often faster than the
+ * screen redraws, and every fragment folded on its own re-rendered the reply
+ * and laid the thread out again for a change nobody could see. The caller
+ * must `flush` before folding anything else into the turn -- a tool card, a
+ * retry, the end -- so the words before it are never drawn after it. Within
+ * a frame the reasoning is folded first: the strings come out the same either
+ * way, and so does the phase, since any prose at all leaves it `writing`.
+ */
+export class DeltaBatch {
+  #turn: Turn | null = null
+  #text: string | null = null
+  #thinking: string | null = null
+  #cancel: (() => void) | null = null
+  readonly #schedule: (run: () => void) => () => void
+
+  constructor(schedule: (run: () => void) => () => void = nextFrame) {
+    this.#schedule = schedule
+  }
+
+  /** Hold a fragment for `turn` until the next frame. */
+  add(turn: Turn, event: { type: 'delta' | 'thinking'; text: string }): void {
+    if (this.#turn !== null && this.#turn !== turn) this.flush()
+    this.#turn = turn
+    if (event.type === 'delta') this.#text = (this.#text ?? '') + event.text
+    else this.#thinking = (this.#thinking ?? '') + event.text
+    if (this.#cancel === null) this.#cancel = this.#schedule(() => this.flush())
+  }
+
+  /** Fold in whatever is held, now. */
+  flush(): void {
+    const turn = this.#turn
+    const text = this.#text
+    const thinking = this.#thinking
+    this.#cancel?.()
+    this.#cancel = null
+    this.#turn = null
+    this.#text = null
+    this.#thinking = null
+    if (turn === null) return
+    if (thinking !== null) applyEvent(turn, { type: 'thinking', text: thinking })
+    if (text !== null) applyEvent(turn, { type: 'delta', text })
+  }
+}
+
 /**
  * Make the reply stored under `messageId` read `text`: what somebody who
  * talked over it actually heard of it. False when no reply has that id.
@@ -864,10 +937,15 @@ export function labelText(label: ToolLabel): string {
   return label.detail ? `${label.text} “${label.detail}”` : label.text
 }
 
+/** Whether a turn is held on a question only the person can answer. */
+export function waitingForAnswer(turn: Turn): boolean {
+  return turn.cards.some((c) => c.state === 'waiting')
+}
+
 /** The sentence under a turn that is still running, or `null` once it is not. */
 export function activity(turn: Turn): string | null {
   if (turn.role !== 'assistant' || turn.phase === 'done') return null
-  if (turn.cards.some((c) => c.state === 'waiting')) return 'Waiting for your answer'
+  if (waitingForAnswer(turn)) return 'Waiting for your answer'
   switch (turn.phase) {
     case 'tool': {
       const card = [...turn.cards].reverse().find((c) => c.state === 'running')

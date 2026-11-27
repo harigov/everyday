@@ -61,6 +61,26 @@ pub struct SyncedMailbox {
     /// changed while it was not in `IDLE` to hear about it -- see
     /// `crate::mail::sync::task`'s "a full pass only when one is owed".
     pub seen_exists: u32,
+    /// Whether this account task's last pass over the mailbox left the vault
+    /// holding what the server held: it listed the mailbox whole, or checked
+    /// by count that nothing had come or gone since one that did, and stored
+    /// every header it was offered. What lets the next pass ask only what
+    /// changed rather than list every uid again -- see
+    /// `passes::sync_headers`. `false` on a task's first pass, which always
+    /// lists.
+    pub listed_whole: bool,
+    /// Passes since the mailbox was last listed whole, which
+    /// `passes::sync_headers` keeps to a few however well the counts agree.
+    pub passes_since_listing: u32,
+}
+
+impl SyncedMailbox {
+    /// What this task remembers of `previous`, the same mailbox as the last
+    /// pass found it, carried onto this pass's fresh look at it.
+    pub(crate) fn remember(&mut self, previous: &SyncedMailbox) {
+        self.listed_whole = previous.listed_whole;
+        self.passes_since_listing = previous.passes_since_listing;
+    }
 }
 
 fn to_mailbox_role(role: Role) -> MailboxRole {
@@ -143,6 +163,8 @@ pub async fn discover<S: MailSession>(
             remote_name: remote_mailbox.name.clone(),
             seen_uidnext: 0,
             seen_exists: 0,
+            listed_whole: false,
+            passes_since_listing: 0,
         });
     }
 
@@ -170,6 +192,8 @@ pub struct LabelMailboxes {
     /// Never holds a row for a backslash system label other than `\Inbox`
     /// -- see [`LabelMailboxes::resolve`].
     by_label: HashMap<String, Mailbox>,
+    /// A row was minted since [`LabelMailboxes::take_minted`] last asked.
+    minted: bool,
 }
 
 impl LabelMailboxes {
@@ -184,11 +208,18 @@ impl LabelMailboxes {
         // rows (All Mail, Sent, ...) are in this same list but are never
         // looked up by label text, so they cost nothing beyond a few extra
         // map entries that are never read.
-        let by_label = repair_escaped_labels(vault, account_id)
-            .into_iter()
-            .map(|m| (m.remote_name.clone(), m))
-            .collect();
-        Self { account_id, by_label }
+        let (rows, repaired) = repair_escaped_labels(vault, account_id);
+        let by_label = rows.into_iter().map(|m| (m.remote_name.clone(), m)).collect();
+        // A repair renamed or deleted rows the mail list may already show: it
+        // hears of it the way it hears of a new label, through `take_minted`.
+        Self { account_id, by_label, minted: repaired }
+    }
+
+    /// Whether a label row has been minted since the last time this was
+    /// asked, or a repair changed the rows: mailboxes the person's mail list
+    /// has not heard of yet.
+    pub fn take_minted(&mut self) -> bool {
+        std::mem::take(&mut self.minted)
     }
 
     /// The [`Mailbox`] row for `label`, creating and saving one if this is
@@ -231,6 +262,7 @@ impl LabelMailboxes {
         let fresh = Mailbox::new(self.account_id, label, role);
         let _ = vault.save_mailbox(&fresh);
         self.by_label.insert(label.to_string(), fresh.clone());
+        self.minted = true;
         Some(fresh)
     }
 }
@@ -293,14 +325,17 @@ impl LabelMailboxes {
 /// deleted, on the same safe terms as the system-label case above, rather
 /// than merged into it -- this crate has no "move these memberships to
 /// another mailbox id" primitive to merge with.
-fn repair_escaped_labels(vault: &Vault, account_id: AccountId) -> Vec<Mailbox> {
+///
+/// The second value says whether any row was saved or deleted.
+fn repair_escaped_labels(vault: &Vault, account_id: AccountId) -> (Vec<Mailbox>, bool) {
     let existing = vault.mailboxes(account_id).unwrap_or_default();
     if !existing.iter().any(|m| m.role == MailboxRole::All) {
-        return existing;
+        return (existing, false);
     }
     let mut kept: HashMap<String, Mailbox> = HashMap::with_capacity(existing.len());
     let mut needs_repair: Vec<(Mailbox, String)> = Vec::new();
     let mut to_delete: Vec<MailboxId> = Vec::new();
+    let mut changed = false;
 
     // First pass: every row already in its final shape is authoritative,
     // regardless of what else this account's history also left behind.
@@ -332,15 +367,15 @@ fn repair_escaped_labels(vault: &Vault, account_id: AccountId) -> Vec<Mailbox> {
         if corrected == "\\Inbox" {
             row.role = MailboxRole::Inbox;
         }
-        let _ = vault.save_mailbox(&row);
+        changed |= vault.save_mailbox(&row).is_ok();
         kept.insert(corrected, row);
     }
 
     for id in to_delete {
-        let _ = vault.delete_mailbox(id);
+        changed |= vault.delete_mailbox(id).is_ok();
     }
 
-    kept.into_values().collect()
+    (kept.into_values().collect(), changed)
 }
 
 /// A batch of UIDs, chunked for `headers`/`raw`, newest first -- what every

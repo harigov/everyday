@@ -44,6 +44,7 @@ const {
   siteOf,
   sortStories,
   sourceLabel,
+  storyText,
   topStories,
   unfollowDetail,
 } = feed
@@ -271,6 +272,16 @@ assert.equal(isWebUrl(''), false)
     [],
     'a source that is not known contributes no name',
   )
+  // The store hands over each story's words lowercased once, for every key
+  // typed; the answers are the same as working them out each time.
+  const texts = new Map(list.map((s) => [s.id, storyText(s)]))
+  for (const query of ['async', 'NIKO', 'hacker', 'rust blog', 'async niko', 'zebra', '']) {
+    assert.deepEqual(
+      ids(filterStories(list, query, sources, texts)),
+      ids(filterStories(list, query, sources)),
+      `the same with the words worked out already: "${query}"`,
+    )
+  }
 }
 
 // ── the sidebar's headings ───────────────────────────────────────────────

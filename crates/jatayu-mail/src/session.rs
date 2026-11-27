@@ -610,6 +610,21 @@ pub trait MailSession: Send {
     /// implement.
     async fn changes_since(&mut self, cursor: &SyncCursor, known_uids: &UidSet) -> Result<Changes>;
 
+    /// [`Changes::flag_changes`] alone, for a caller that already knows no uid
+    /// came or went since `cursor` and so has no use for the listing
+    /// [`Self::changes_since`] takes to find out: on a big mailbox that
+    /// listing is most of what the call downloads.
+    ///
+    /// The default asks [`Self::changes_since`] and keeps only the flags, so
+    /// an adapter that has nothing cheaper still answers.
+    async fn flag_changes_since(
+        &mut self,
+        cursor: &SyncCursor,
+        known_uids: &UidSet,
+    ) -> Result<Vec<(Uid, Flags, Option<ModSeq>)>> {
+        Ok(self.changes_since(cursor, known_uids).await?.flag_changes)
+    }
+
     /// Every uid at or above `from` in the selected mailbox -- `UID SEARCH UID
     /// from:*`, with the one message `*` names when nothing is that new taken
     /// back out. What a wake reads when it only wants what just arrived:
@@ -626,6 +641,17 @@ pub trait MailSession: Send {
     /// Header-sized metadata for a set of UIDs in the selected mailbox — see
     /// [`RemoteHeader`] for exactly what "header-sized" means and why.
     async fn headers(&mut self, uids: &UidSet) -> Result<Vec<RemoteHeader>>;
+
+    /// Gmail's labels for a set of UIDs in the selected mailbox, without the
+    /// header bytes: each [`RemoteHeader`] carries its uid, date and
+    /// [`GmailMeta`], and its `header` and `flags` may be empty. What a
+    /// label re-check asks, many times a pass, where [`Self::headers`] would
+    /// download every header line only for them to be thrown away.
+    ///
+    /// The default asks [`Self::headers`], which answers the same and more.
+    async fn gmail_labels(&mut self, uids: &UidSet) -> Result<Vec<RemoteHeader>> {
+        self.headers(uids).await
+    }
 
     /// The full raw bytes of each message in `uids`, streamed rather than
     /// collected, so the engine can start writing the pack store's first

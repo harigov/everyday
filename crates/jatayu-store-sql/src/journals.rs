@@ -459,12 +459,11 @@ impl JournalStore for SqlStore {
             "SELECT id, data FROM entries ORDER BY local_date DESC, created_us DESC",
             &[],
         )?;
-        let mut out = Vec::with_capacity(rows.len());
-        for (id, sealed) in rows {
-            let id = EntryId::parse(&id).map_err(|e| Error::Invalid(e.to_string()))?;
-            out.push(self.open_entry(id, &sealed)?);
-        }
-        Ok(out)
+        let open = |(id, sealed): &(String, Vec<u8>)| -> Result<Entry> {
+            let id = EntryId::parse(id).map_err(|e| Error::Invalid(e.to_string()))?;
+            self.open_entry(id, sealed)
+        };
+        open_in_parallel(&rows, open)
     }
 
     // ---- blobs ----------------------------------------------------------
@@ -513,6 +512,14 @@ impl JournalStore for SqlStore {
     // ---- housekeeping ---------------------------------------------------
 
     fn stats(&self) -> Result<StoreStats> {
+        let counts = self.counts()?;
+        let (blobs, blob_bytes) = self.blob_stats()?;
+        Ok(StoreStats { blobs, blob_bytes, ..counts })
+    }
+
+    /// The two counts alone. `stats` adds the media figures, which for a
+    /// local vault means a look at every file in the media folder.
+    fn counts(&self) -> Result<StoreStats> {
         let (journals, entries) = {
             let mut conn = self.read();
             (
@@ -520,12 +527,11 @@ impl JournalStore for SqlStore {
                 conn.scalar_i64("SELECT COUNT(*) FROM entries", &[])?,
             )
         };
-        let (blobs, blob_bytes) = self.blob_stats()?;
         Ok(StoreStats {
             journals: journals as u64,
             entries: entries as u64,
-            blobs,
-            blob_bytes,
+            blobs: 0,
+            blob_bytes: 0,
             assistant_entries: 0,
         })
     }
@@ -551,5 +557,78 @@ impl JournalStore for SqlStore {
 
     fn backup_job(&self) -> Result<jatayu_core::backup::BackupJob> {
         self.driver.backup_job(&self.root)
+    }
+}
+
+/// Below this many rows, decrypting them one after another is quicker than
+/// starting threads to share the work.
+const PARALLEL_FROM: usize = 64;
+/// The most threads one read shares its rows between.
+const MAX_THREADS: usize = 8;
+
+/// `open` over every row, in order, the rows shared between a few threads.
+///
+/// Every entry is decrypted and parsed on each unlock, to build the search
+/// index, and that is the part of `all_entries` that takes the time. The
+/// answer is exactly the sequential one: the same order, and the first
+/// failing row's error, because each thread takes a run of consecutive rows
+/// and the runs are joined back in order.
+fn open_in_parallel<R: Sync, T: Send>(
+    rows: &[R],
+    open: impl Fn(&R) -> Result<T> + Sync,
+) -> Result<Vec<T>> {
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(MAX_THREADS);
+    if rows.len() < PARALLEL_FROM || threads < 2 {
+        return rows.iter().map(&open).collect();
+    }
+    enum Run<'s, T> {
+        Opened(Result<Vec<T>>),
+        Opening(std::thread::ScopedJoinHandle<'s, Result<Vec<T>>>),
+    }
+    let length = rows.len().div_ceil(threads);
+    let open = &open;
+    std::thread::scope(|scope| {
+        let runs: Vec<Run<'_, T>> = rows
+            .chunks(length)
+            .map(|run| {
+                let work = move || run.iter().map(open).collect::<Result<Vec<T>>>();
+                // A thread that cannot be had is a run opened here instead.
+                match std::thread::Builder::new().spawn_scoped(scope, work) {
+                    Ok(thread) => Run::Opening(thread),
+                    Err(_) => Run::Opened(work()),
+                }
+            })
+            .collect();
+        let mut out = Vec::with_capacity(rows.len());
+        for run in runs {
+            let opened = match run {
+                Run::Opened(opened) => opened,
+                Run::Opening(thread) => {
+                    thread.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+                }
+            };
+            out.extend(opened?);
+        }
+        Ok(out)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rows_opened_in_parallel_come_back_in_order_with_the_first_error() {
+        let rows: Vec<u32> = (0..1000).collect();
+        let doubled = open_in_parallel(&rows, |n| Ok(n * 2)).unwrap();
+        assert_eq!(doubled, rows.iter().map(|n| n * 2).collect::<Vec<_>>());
+
+        let failed = open_in_parallel(&rows, |n| {
+            if *n == 300 || *n == 900 { Err(Error::Invalid(format!("row {n}"))) } else { Ok(*n) }
+        });
+        assert_eq!(failed.unwrap_err().to_string(), Error::Invalid("row 300".into()).to_string());
+
+        let few: Vec<u32> = (0..3).collect();
+        assert_eq!(open_in_parallel(&few, |n| Ok(*n)).unwrap(), few);
     }
 }

@@ -458,13 +458,7 @@ impl MailSession for ImapSession {
             // nothing to report here yet -- every message is `new_uids`,
             // and its flags arrive with its header.
             if let Some(modseq) = cursor.highestmodseq {
-                let command = format!("UID FETCH 1:* (FLAGS) (CHANGEDSINCE {modseq})");
-                run_fetch_command(session, &command, |_seq, attrs| {
-                    if let Some((uid, flags, modseq)) = flags_from_attrs(attrs) {
-                        flag_changes.push((uid, flags, modseq));
-                    }
-                })
-                .await?;
+                flag_changes = flags_changed_since(session, modseq).await?;
             }
         } else if !known_uids.is_empty() {
             // No CONDSTORE: there is no cheap "what changed" question to
@@ -496,6 +490,27 @@ impl MailSession for ImapSession {
         Ok(Changes { new_uids, flag_changes, vanished, uidvalidity_reset: false })
     }
 
+    /// The `CHANGEDSINCE` half of [`Self::changes_since`] without its `UID
+    /// SEARCH ALL`. Without `CONDSTORE`, or a modseq to ask from, there is no
+    /// cheaper question, and the whole of `changes_since` answers instead.
+    async fn flag_changes_since(
+        &mut self,
+        cursor: &SyncCursor,
+        known_uids: &UidSet,
+    ) -> Result<Vec<(Uid, Flags, Option<u64>)>> {
+        let (true, Some(modseq)) = (self.capabilities.condstore, cursor.highestmodseq) else {
+            return Ok(self.changes_since(cursor, known_uids).await?.flag_changes);
+        };
+        let state = self
+            .selected
+            .ok_or_else(|| MailError::Protocol("flag_changes_since called before select".into()))?;
+        // As `changes_since` answers a reset: nothing here means anything.
+        if state.uidvalidity != cursor.uidvalidity {
+            return Ok(Vec::new());
+        }
+        flags_changed_since(self.session_mut()?, modseq).await
+    }
+
     async fn uids_from(&mut self, from: Uid) -> Result<UidSet> {
         let session = self.session_mut()?;
         let found: std::collections::HashSet<Uid> =
@@ -516,6 +531,32 @@ impl MailSession for ImapSession {
             "UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER]"
         };
         let command = format!("UID FETCH {} ({items})", uids.to_imap());
+        let mut out = Vec::new();
+        let session = self.session_mut()?;
+        run_fetch_command(session, &command, |_seq, attrs| {
+            if let Some(header) = header_from_attrs(attrs) {
+                out.push(header);
+            }
+        })
+        .await?;
+        Ok(out)
+    }
+
+    /// The labels alone, about a hundred bytes a message: `UID`,
+    /// `INTERNALDATE` (which [`header_from_attrs`] needs to accept a line)
+    /// and the three `X-GM-` items, read through the same parse as
+    /// [`Self::headers`], unescaping included, with no header section.
+    async fn gmail_labels(&mut self, uids: &UidSet) -> Result<Vec<RemoteHeader>> {
+        if !self.capabilities.gmail {
+            return self.headers(uids).await;
+        }
+        if uids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let command = format!(
+            "UID FETCH {} (UID INTERNALDATE X-GM-THRID X-GM-MSGID X-GM-LABELS)",
+            uids.to_imap()
+        );
         let mut out = Vec::new();
         let session = self.session_mut()?;
         run_fetch_command(session, &command, |_seq, attrs| {
@@ -1144,6 +1185,24 @@ async fn run_fetch_command(
             _ => {}
         }
     }
+}
+
+/// `UID FETCH 1:* (FLAGS) (CHANGEDSINCE modseq)`: every message in the
+/// selected mailbox whose flags (or, on Gmail, labels) moved past `modseq`,
+/// with its flags as they are now.
+async fn flags_changed_since(
+    session: &mut ImapLibSession<TlsStream>,
+    modseq: u64,
+) -> Result<Vec<(Uid, Flags, Option<u64>)>> {
+    let command = format!("UID FETCH 1:* (FLAGS) (CHANGEDSINCE {modseq})");
+    let mut flag_changes = Vec::new();
+    run_fetch_command(session, &command, |_seq, attrs| {
+        if let Some(change) = flags_from_attrs(attrs) {
+            flag_changes.push(change);
+        }
+    })
+    .await?;
+    Ok(flag_changes)
 }
 
 /// Undo IMAP quoted-string escaping (RFC 3501 §9's `quoted` production):
@@ -1799,6 +1858,26 @@ mod tests {
         let header = header_from_attrs(&attrs).expect("a complete header");
         let gmail = header.gmail.expect("gmail metadata");
         assert_eq!(gmail.labels, vec!["\\Inbox".to_string(), "Muy Importante".to_string()]);
+    }
+
+    /// What `gmail_labels` asks for -- no header section, no flags -- still
+    /// reads as a header with its labels, and nothing pretending to be a
+    /// header's bytes.
+    #[test]
+    fn a_labels_only_fetch_line_reads_without_a_header_section() {
+        let attrs = vec![
+            AttributeValue::Uid(5),
+            AttributeValue::InternalDate("14-Sep-2026 09:30:00 +0000".into()),
+            AttributeValue::GmailThrId(1),
+            AttributeValue::GmailMsgId(2),
+            AttributeValue::GmailLabels(vec!["\\Inbox".into(), "Work".into()]),
+        ];
+        let header = header_from_attrs(&attrs).expect("a labels-only line");
+        assert_eq!(header.uid, 5);
+        assert!(header.header.is_empty());
+        let gmail = header.gmail.expect("gmail metadata");
+        assert_eq!((gmail.thrid, gmail.msgid), (1, 2));
+        assert_eq!(gmail.labels, vec!["\\Inbox".to_string(), "Work".to_string()]);
     }
 
     #[test]

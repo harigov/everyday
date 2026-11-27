@@ -1201,6 +1201,7 @@ assert.equal(health.date, today)
   await sleep(200)
   app.section = 'overview'
   assert.equal(health.samplesArrived(), undefined, 'not while another app is open')
+  assert.equal(health.stale, true, 'but Health reads in full on its way back')
   app.section = 'health'
   health.setView('medications')
   assert.equal(

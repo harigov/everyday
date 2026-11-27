@@ -121,7 +121,7 @@ impl Vault {
     pub fn save_health_settings(&self, settings: &HealthSettings) -> Result<()> {
         self.writable()?;
         let settings = checked_settings(settings)?;
-        self.with_health(|h| h.put_health_settings(&settings))
+        self.write_in(&self.gates.health, |u| u.health()?.put_health_settings(&settings))
     }
 
     // ---- sources --------------------------------------------------------
@@ -145,7 +145,7 @@ impl Vault {
         self.writable()?;
         let name = name_text("a connection's name", &source.name)?;
         let now = Timestamp::now();
-        let saved = self.write(|u| {
+        let saved = self.write_in(&self.gates.health, |u| {
             let health = u.health()?;
             let held = health.list_sources()?.into_iter().find(|s| s.id == source.id);
             let saved = match held {
@@ -174,7 +174,7 @@ impl Vault {
     pub fn set_health_source_token(&self, id: HealthSourceId, token_id: &str) -> Result<()> {
         self.writable()?;
         let token_id = capped(token_id, MAX_NAME);
-        self.write(|u| {
+        self.write_in(&self.gates.health, |u| {
             let health = u.health()?;
             let mut held = health.get_source(id)?;
             held.token_id = token_id;
@@ -187,7 +187,7 @@ impl Vault {
     /// Delete the connection. What it brought stays.
     pub fn delete_health_source(&self, id: HealthSourceId) -> Result<()> {
         self.writable()?;
-        self.with_health(|h| h.delete_source(id))?;
+        self.write_in(&self.gates.health, |u| u.health()?.delete_source(id))?;
         self.wrote(RecordKind::HealthSource, id);
         Ok(())
     }
@@ -198,7 +198,7 @@ impl Vault {
     /// Converts units, refuses implausible values, files samples into
     /// series days (deduplicated, summaries rebuilt), upserts workouts by
     /// key, matches dose events to medications, files documents, and
-    /// updates the source's status -- one exclusive write per batch.
+    /// updates the source's status -- one gated write per batch.
     /// Refused with `Invalid("paused")` for a paused source.
     ///
     /// A sample is identified by its metric, start, duration and value, not
@@ -229,7 +229,7 @@ impl Vault {
             )));
         }
         let now = Timestamp::now();
-        let (tally, workouts) = self.write(|u| {
+        let (tally, workouts) = self.write_in(&self.gates.health, |u| {
             let key = u.subkey(HEALTH_KEY_LABEL);
             let health = u.health()?;
             let mut connection = health.get_source(source)?;
@@ -303,7 +303,7 @@ impl Vault {
     pub fn record_health_push_failure(&self, source: HealthSourceId, error: &str) -> Result<()> {
         self.writable()?;
         let error = capped(error, MAX_ERROR);
-        self.write(|u| {
+        self.write_in(&self.gates.health, |u| {
             let health = u.health()?;
             let mut held = health.get_source(source)?;
             held.status.last_error = error;
@@ -433,7 +433,7 @@ impl Vault {
                 "that reading is outside what can be measured; check its unit".into(),
             ));
         }
-        self.write(|u| {
+        self.write_in(&self.gates.health, |u| {
             let key = u.subkey(HEALTH_KEY_LABEL);
             let health = u.health()?;
             let settings = health.health_settings()?;
@@ -462,7 +462,7 @@ impl Vault {
             return Ok(0);
         }
         let source = source.map(str::trim);
-        self.write(|u| {
+        self.write_in(&self.gates.health, |u| {
             let key = u.subkey(HEALTH_KEY_LABEL);
             let health = u.health()?;
             let settings = health.health_settings()?;
@@ -706,7 +706,7 @@ impl Vault {
             return Err(Error::Invalid("a workout's numbers cannot be negative".into()));
         }
         let now = Timestamp::now();
-        let saved = self.write(|u| {
+        let saved = self.write_in(&self.gates.health, |u| {
             let key = u.subkey(HEALTH_KEY_LABEL);
             let health = u.health()?;
             let held = match health.get_workout(workout.id) {
@@ -770,7 +770,7 @@ impl Vault {
     pub fn delete_workout(&self, id: WorkoutId) -> Result<()> {
         self.writable()?;
         let now = Timestamp::now();
-        self.write(|u| {
+        self.write_in(&self.gates.health, |u| {
             let health = u.health()?;
             let held = health.get_workout(id)?;
             if held.source_id.is_none() && held.external_id.is_empty() {

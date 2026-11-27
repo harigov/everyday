@@ -218,6 +218,25 @@ pub trait AgentStore: Send + Sync {
     /// thread with no record that the model ever replied.
     fn put_message(&self, message: &Message) -> Result<()>;
 
+    /// Write `messages` as [`Self::put_message`] would, and `touched` -- the
+    /// conversation they belong to, already moved on -- as
+    /// [`Self::put_conversation`] would, all together: one commit where the
+    /// backend has transactions, rather than one per row. Where they land in
+    /// the thread is still their `created_at`, not their order here.
+    fn put_messages_touching(
+        &self,
+        messages: &[Message],
+        touched: Option<&Conversation>,
+    ) -> Result<()> {
+        for message in messages {
+            self.put_message(message)?;
+        }
+        if let Some(conversation) = touched {
+            self.put_conversation(conversation)?;
+        }
+        Ok(())
+    }
+
     fn delete_message(&self, id: MessageId) -> Result<()>;
 
     /// How many turns a thread holds. Cheaper than listing them, and the

@@ -84,6 +84,11 @@ const AT_ONCE: usize = 2;
 /// happening -- so it comes round on its own a few times a day.
 const EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 
+/// How long after an unlock the first pass and its clean-up wait, unless an
+/// episode is asked for or the Feed is opened first: see
+/// [`super::first_wait`].
+const FIRST: Duration = Duration::from_secs(30);
+
 /// The most an episode may be. A four-hour video is a few gigabytes; past
 /// this it is not an episode, and a server that keeps sending would otherwise
 /// fill the disk.
@@ -409,6 +414,10 @@ pub fn ensure_task(svc: &Arc<Service>, vault: &Arc<Vault>) {
 /// queued and one every [`EVERY`]. Returns when `stop` turns `true`.
 async fn run(svc: Arc<Service>, vault: Arc<Vault>, mut stop: watch::Receiver<bool>) -> TaskResult {
     svc.listening.downloads.requeue_interrupted();
+    // An episode somebody asks for wakes it at once.
+    if super::first_wait(&svc, &mut stop, FIRST, Some(&svc.listening.downloads.wake)).await {
+        return Ok(Outcome::Done);
+    }
     let scratch = vault.clone();
     let _ = tokio::task::spawn_blocking(move || clear_stale_scratch(&scratch)).await;
     loop {

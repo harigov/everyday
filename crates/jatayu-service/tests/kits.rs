@@ -452,6 +452,41 @@ async fn the_words_the_screen_and_the_history_each_bring_their_kit() {
     assert!(!tools.contains(&"list_items".to_string()));
 }
 
+/// A kit the screen gave one turn is still offered on the next, which has
+/// nothing on screen and says nothing about it: the tools, and so the
+/// provider's cached prefix, stay the same from one turn to the next.
+#[tokio::test]
+async fn a_kit_the_screen_gave_one_turn_stays_for_the_next() {
+    let model = fake_model(calls(&[], "Fine.")).await;
+    let (svc, _dir) = service(&model.endpoint);
+    let conversation = ConversationId::new();
+    let mut asked = turn(&svc, conversation, "What about today?");
+    asked.on_screen = Some(OnScreen {
+        app: App::Health,
+        view: None,
+        within: Vec::new(),
+        open: Vec::new(),
+        query: None,
+        reader: None,
+        playing: None,
+    });
+    run_turn_routed(asked).await.unwrap();
+    run_turn_routed(turn(&svc, conversation, "thanks")).await.unwrap();
+
+    let requests = model.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    let (first, second) = (offered(&requests[0]), offered(&requests[1]));
+    assert!(first.contains(&"health_today".to_string()), "{first:?}");
+    assert_eq!(first, second, "the same tools, in the same order");
+    assert!(!text_of(&requests[1]).contains("- health: "), "and not listed as one to load");
+    // Kept on the first reply, which is what the second turn read it from.
+    let vault = svc.get().unwrap();
+    let thread = vault.messages(conversation).unwrap();
+    let replies: Vec<&Message> = thread.iter().filter(|m| m.role == Role::Assistant).collect();
+    assert!(replies[0].kits.contains(&"health".to_string()), "{thread:?}");
+    assert!(replies[1].kits.is_empty(), "the second turn was given nothing of its own");
+}
+
 #[tokio::test]
 async fn a_brief_keeps_every_read_it_always_had_and_is_offered_no_way_to_load_more() {
     let model = fake_model(calls(&[], "Here is the day.")).await;

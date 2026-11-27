@@ -354,3 +354,29 @@ fn the_rate_limit_allows_one_attempt_an_hour() {
         now + Duration::from_secs(2 * 60 * 60)
     ));
 }
+
+/// The first compaction waits from the unlock, not from each of the task's
+/// attempts: a connection that drops more often than the wait would
+/// otherwise never compact at all, and the hourly limit would start over
+/// with every reconnect.
+#[test]
+fn the_compaction_clock_outlives_a_reconnect() {
+    use std::time::Duration;
+    let statuses = crate::mail::sync::status::StatusRegistry::new();
+    let account = jatayu_core::id::AccountId::new();
+    let first_after = Duration::from_secs(600);
+    let start = std::time::Instant::now();
+    let first = statuses.compaction(account, start, first_after);
+    assert_eq!(first.not_before, start + first_after);
+    assert_eq!(first.last_attempt, None);
+
+    // A reconnect five minutes on.
+    let again = statuses.compaction(account, start + Duration::from_secs(300), first_after);
+    assert_eq!(again.not_before, first.not_before);
+
+    let tried = start + Duration::from_secs(700);
+    statuses.note_compaction_attempt(account, tried);
+    let later = statuses.compaction(account, start + Duration::from_secs(800), first_after);
+    assert_eq!(later.last_attempt, Some(tried));
+    assert_eq!(later.not_before, first.not_before);
+}

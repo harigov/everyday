@@ -773,18 +773,22 @@ pub(super) async fn run(turn: Turn, route: bool) -> CommandResult<Turned> {
     // point at, and a decision model's pick besides, asked now so that its
     // answer is there by the time the tools are built.
     let routed = route && drafting.is_none() && !read_only;
+    // What this turn's own screen, words and decision model give it, beyond
+    // its history: kept on the reply, so the turns after it are offered them
+    // too while it is in their window, and their tools and their cached
+    // prefix stay the same -- see `kits::from_history`.
+    let mut offered = tools::KitSet::core();
     let (loads, deciding) = if routed {
         // The person's own words: the follow-up to a job is the application's,
         // and carries what a job read.
         let own = if follow_up.is_some() { "" } else { own_words(&prompt) };
         let screen = on_screen.as_ref().filter(|_| via.is_none());
-        let mut chosen = kits::from_history(&thread, asked.id, history.len())
-            .union(kits::from_screen(screen))
-            .union(kits::from_words(own));
+        offered = kits::from_screen(screen).union(kits::from_words(own));
         // A project reports to the person through `report_progress`.
         if project {
-            chosen = chosen.with(tools::Kit::Background);
+            offered = offered.with(tools::Kit::Background);
         }
+        let chosen = kits::from_history(&thread, asked.id, history.len()).union(offered);
         // A job's own turn is routed by its words alone: what it is given to
         // do was written by a model, and the decision model is for the
         // person's. So is a spoken turn: the first sentence of a reply is
@@ -795,8 +799,7 @@ pub(super) async fn run(turn: Turn, route: bool) -> CommandResult<Turned> {
             let app = screen
                 .and_then(|s| serde_json::to_value(s.app).ok())
                 .and_then(|name| name.as_str().map(str::to_string));
-            let candidates = kits::worth_asking_about(&vault, settings.web).without(chosen);
-            tokio::spawn(kits::decide(vault.clone(), own.to_string(), app, candidates))
+            tokio::spawn(kits::decide(vault.clone(), own.to_string(), app, chosen, settings.web))
         });
         (kits::Loads::routed(chosen), deciding)
     } else {
@@ -1055,7 +1058,9 @@ pub(super) async fn run(turn: Turn, route: bool) -> CommandResult<Turned> {
     {
         meta.kits.load(tools::KitSet::core().with(kit));
         meta.kits.take_fresh();
+        offered = offered.with(kit);
     }
+    let offered = if meta.kits.is_routed() { kits::names(offered) } else { Vec::new() };
     // Built again, from the same turn and the same history, whenever a step
     // loads a kit: see `stream`.
     let rebuild =
@@ -1192,6 +1197,11 @@ pub(super) async fn run(turn: Turn, route: bool) -> CommandResult<Turned> {
             }
         });
     }
+    // A run the assistant queued ("make one now") starts at once, as the
+    // interface's Run now does, rather than at the scheduler's next tick.
+    if ran.iter().any(|r| r.call.name == "run_routine" && matches!(r.outcome, Some(Ok(_)))) {
+        crate::scheduler::wake();
+    }
 
     match outcome {
         // Stopped before it had said or done anything: there is nothing to
@@ -1229,10 +1239,10 @@ pub(super) async fn run(turn: Turn, route: bool) -> CommandResult<Turned> {
             let finished = VaultMessage {
                 content: text,
                 tool_calls: ran.iter().map(|r| r.call.clone()).collect(),
+                kits: offered,
                 ..reply.clone()
             };
-            vault.save_message(&finished)?;
-            write_results(&vault, conversation, &ran);
+            save_turn(&vault, &finished, &ran).await?;
             (channel)(AgentEvent::Finished { message_id: reply.id.to_string() });
             let prose = finished.content.trim().to_string();
             // Not for a stopped turn: whatever it meant to say on the way
@@ -1271,10 +1281,10 @@ pub(super) async fn run(turn: Turn, route: bool) -> CommandResult<Turned> {
                 // actually took place is worse than an empty reply.
                 let kept = VaultMessage {
                     tool_calls: ran.iter().map(|r| r.call.clone()).collect(),
+                    kits: offered,
                     ..reply.clone()
                 };
-                let _ = vault.save_message(&kept);
-                write_results(&vault, conversation, &ran);
+                let _ = save_turn(&vault, &kept, &ran).await;
             }
             (channel)(AgentEvent::Failed { message: e.message.clone() });
             Err(e)
@@ -1282,22 +1292,64 @@ pub(super) async fn run(turn: Turn, route: bool) -> CommandResult<Turned> {
     }
 }
 
-/// Write one `Role::Tool` message per call that reported.
+/// Write a turn's reply and the results of what it ran: together, in one
+/// commit, on the blocking pool -- the reply, then a `Role::Tool` message per
+/// call that reported (see [`results_of`]).
+///
+/// Should that fail, they are written as they always were: the reply, whose
+/// failure is the turn's, then each result on its own and best effort (see
+/// [`write_results`]).
+pub(super) async fn save_turn(
+    vault: &Arc<Vault>,
+    reply: &VaultMessage,
+    ran: &[Ran],
+) -> CommandResult<()> {
+    let mut messages = vec![reply.clone()];
+    messages.extend(results_of(reply.conversation_id, ran));
+    let together = {
+        let vault = vault.clone();
+        tokio::task::spawn_blocking(move || vault.save_messages(&messages)).await
+    };
+    let failed = match together {
+        Ok(Ok(())) => return Ok(()),
+        Ok(Err(e)) => e.to_string(),
+        Err(e) => e.to_string(),
+    };
+    tracing::warn!(error = %failed, "could not write a turn down at once; trying one by one");
+    vault.save_message(reply)?;
+    write_results(vault, reply.conversation_id, ran);
+    Ok(())
+}
+
+/// One `Role::Tool` message per call that reported, in the order they ran.
 ///
 /// After the assistant turn that holds the calls, because that is the order
 /// the panel folds them in -- a result looks backwards for the turn that
 /// asked for it. A call with no outcome is one the run abandoned, and is
 /// left without a result rather than given a made-up one.
+fn results_of(conversation: ConversationId, ran: &[Ran]) -> Vec<VaultMessage> {
+    ran.iter()
+        .filter_map(|entry| {
+            let outcome = entry.outcome.clone()?;
+            let mut message = VaultMessage::tool_result(
+                conversation,
+                &entry.call,
+                outcome,
+                entry.mail_link.clone(),
+            );
+            message.files = entry.files.clone();
+            Some(message)
+        })
+        .collect()
+}
+
+/// Write [`results_of`] `ran`, each on its own.
 ///
 /// Best effort: the reply is already saved, and failing the whole turn
 /// because a history line did not land would report "nothing happened" for
 /// something that did.
 pub(super) fn write_results(vault: &Vault, conversation: ConversationId, ran: &[Ran]) {
-    for entry in ran {
-        let Some(outcome) = entry.outcome.clone() else { continue };
-        let mut message =
-            VaultMessage::tool_result(conversation, &entry.call, outcome, entry.mail_link.clone());
-        message.files = entry.files.clone();
+    for message in results_of(conversation, ran) {
         if let Err(e) = vault.save_message(&message) {
             tracing::warn!(error = %e, "could not write down a tool result");
         }

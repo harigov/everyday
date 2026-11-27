@@ -20,6 +20,8 @@ use rig_agent::core::http_client::{
 use rig_agent::core::providers::openai;
 use rig_agent::core::wasm_compat::WasmCompatSend;
 use serde_json::Value;
+use std::sync::{Mutex, PoisonError};
+use std::time::{Duration, Instant, SystemTime};
 
 /// The connection every model request in this crate goes out on.
 pub type Client = openai::CompletionsClient<CacheMarks>;
@@ -115,11 +117,18 @@ pub fn client_for(access: &ModelAccess) -> Result<Client, String> {
 /// is marked, a request goes as it came, unread.
 ///
 /// See [`mark_cache_breakpoints`] for where they go.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct CacheMarks {
-    inner: reqwest::Client,
+    /// The client its requests go out on, looked up for each one.
+    shared: &'static Shared,
     /// Whether this connection's chat requests are marked.
     on: bool,
+}
+
+impl Default for CacheMarks {
+    fn default() -> Self {
+        Self { shared: &PLAIN, on: false }
+    }
 }
 
 impl CacheMarks {
@@ -134,13 +143,13 @@ impl CacheMarks {
         let on = model.contains("claude")
             || (on_host("openrouter.ai") && !model.contains("gemini"))
             || on_host("aliyuncs.com");
-        Self { inner: http_client_for(endpoint), on }
+        Self { shared: shared_for(endpoint), on }
     }
 
     /// A connection that marks nothing, to `endpoint`: what a one-shot
     /// request goes out on.
     fn unmarked(endpoint: &str) -> Self {
-        Self { inner: http_client_for(endpoint), on: false }
+        Self { shared: shared_for(endpoint), on: false }
     }
 
     /// `req`, with its breakpoints written in if this connection marks and
@@ -178,18 +187,194 @@ fn bypasses_proxy(endpoint: &str) -> bool {
     jatayu_core::llm::is_loopback(endpoint)
 }
 
-/// The HTTP client a connection to `endpoint` sends through: the platform's
+/// The client a connection to `endpoint` sends through: the platform's
 /// ordinary one, except that a model on this machine is never reached
 /// through a proxy. See [`bypasses_proxy`].
-fn http_client_for(endpoint: &str) -> reqwest::Client {
-    if bypasses_proxy(endpoint) {
-        // If this ever fails to build, the default client would have failed
-        // the same way (the TLS backend is the one thing that can), so
-        // falling back to it does not quietly bring the proxy back.
-        reqwest::Client::builder().no_proxy().build().unwrap_or_default()
-    } else {
-        reqwest::Client::new()
+fn shared_for(endpoint: &str) -> &'static Shared {
+    if bypasses_proxy(endpoint) { &DIRECT } else { &PLAIN }
+}
+
+/// What every connection to a model elsewhere sends on.
+static PLAIN: Shared = Shared::new(plain);
+
+/// What every connection to a model on this machine sends on.
+static DIRECT: Shared = Shared::new(direct);
+
+fn plain() -> reqwest::Client {
+    pooled().build().unwrap_or_default()
+}
+
+fn direct() -> reqwest::Client {
+    // If this ever fails to build, the default client would have failed the
+    // same way (the TLS backend is the one thing that can), so falling back
+    // to it does not quietly bring the proxy back.
+    pooled().no_proxy().build().unwrap_or_default()
+}
+
+/// The settings both shared clients start from. Idle connections are kept
+/// longer than reqwest's 90 seconds, because the gap between two turns of a
+/// conversation is often longer than that. A connection that dies under a
+/// reply is noticed when its HTTP/2 pings -- HTTP/2 being what a provider
+/// speaks -- go unanswered, within 45 seconds, rather than when the system
+/// gives up on it a quarter of an hour later; reqwest's own TCP keep-alive
+/// (15 seconds) looks after one that sits idle.
+fn pooled() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .pool_idle_timeout(Shared::IDLE)
+        .http2_keep_alive_interval(Duration::from_secs(30))
+        .http2_keep_alive_timeout(Duration::from_secs(15))
+}
+
+/// One HTTP client for every connection of a kind, cloned (which shares its
+/// connection pool) rather than built per connection: a client is opened
+/// for every turn, every `load_tools` step and every quick ask, and a fresh
+/// one starts with an empty pool -- a new TLS handshake to the provider each
+/// time, and on Linux the system's root certificates read and parsed again.
+/// No overall timeout, unlike [`crate::http::client`]: a streamed reply runs
+/// for minutes.
+///
+/// Looked up again for every request, and built again when the one it has
+/// can no longer be trusted -- which a client built per turn never had to
+/// think about:
+///
+/// - **After the machine has slept.** The pool times idle connections on the
+///   monotonic clock, which stops during a sleep, so a connection the
+///   provider (or a router on the way) dropped hours ago looks a minute old,
+///   and the first request after waking would be sent down it. The wall
+///   clock runs on, so the difference between the two is the sleep.
+/// - **After [`Shared::IDLE`] unused**, when the pool has nothing left in it
+///   anyway. Building again reads the system's proxy settings again, which
+///   on macOS and Windows a client reads once, when it is built: a laptop
+///   that went from the office's proxy to none at home sends direct.
+/// - **When a request on it broke before any answer came back.** See
+///   [`sent_once_more`].
+#[derive(Debug)]
+struct Shared {
+    build: fn() -> reqwest::Client,
+    lease: Mutex<Option<Lease>>,
+}
+
+/// The client a [`Shared`] is handing out.
+#[derive(Debug)]
+struct Lease {
+    client: reqwest::Client,
+    /// Which client this is, counting from one: what a request that broke
+    /// names to have it replaced, so that ten that broke together replace it
+    /// once rather than each other's.
+    generation: u64,
+    /// When it was last handed out.
+    used: Stamp,
+}
+
+/// A moment, by both clocks.
+#[derive(Clone, Copy, Debug)]
+struct Stamp {
+    mono: Instant,
+    wall: SystemTime,
+}
+
+impl Stamp {
+    fn now() -> Self {
+        Self { mono: Instant::now(), wall: SystemTime::now() }
     }
+
+    /// Whether a client last handed out at `self` can still be trusted at
+    /// `now`: the machine has not slept since, and its pool may still have
+    /// a connection worth finding.
+    fn still_good_at(self, now: Stamp) -> bool {
+        // The wall clock was set back: start again, which costs a handshake.
+        let Ok(wall) = now.wall.duration_since(self.wall) else { return false };
+        let awake = now.mono.saturating_duration_since(self.mono);
+        wall < Shared::IDLE && wall.saturating_sub(awake) < Shared::SLEPT
+    }
+}
+
+impl Shared {
+    /// How long the pool keeps a connection nobody is using.
+    const IDLE: Duration = Duration::from_secs(300);
+
+    /// How far the wall clock may run ahead of the monotonic one before it
+    /// counts as a sleep: well past anything a time server steps it by.
+    const SLEPT: Duration = Duration::from_secs(30);
+
+    const fn new(build: fn() -> reqwest::Client) -> Self {
+        Self { build, lease: Mutex::new(None) }
+    }
+
+    /// The client to send on now, and which one it is.
+    fn get(&self) -> (reqwest::Client, u64) {
+        self.hand_out(|lease, now| lease.used.still_good_at(now))
+    }
+
+    /// The client to send again on after a request on client `broke` broke:
+    /// a new one, unless another request has replaced it already.
+    fn renew(&self, broke: u64) -> (reqwest::Client, u64) {
+        self.hand_out(|lease, _| lease.generation != broke)
+    }
+
+    fn hand_out(&self, keep: impl FnOnce(&Lease, Stamp) -> bool) -> (reqwest::Client, u64) {
+        let now = Stamp::now();
+        let mut slot = self.lease.lock().unwrap_or_else(PoisonError::into_inner);
+        let lease = match slot.take() {
+            Some(lease) if keep(&lease, now) => Lease { used: now, ..lease },
+            old => Lease {
+                client: (self.build)(),
+                generation: old.map_or(1, |old| old.generation + 1),
+                used: now,
+            },
+        };
+        let handed = (lease.client.clone(), lease.generation);
+        *slot = Some(lease);
+        handed
+    }
+}
+
+/// Send `req` on `shared`'s client, and once more on a new one if it broke
+/// before any answer came back.
+///
+/// A connection that died in the pool -- its far end gone while the machine
+/// slept, the network changed under it, a proxy that is no longer there --
+/// fails the request sent down it with nothing read back, and nothing in
+/// that client is worth keeping: a new one opens a new connection, and reads
+/// the proxy settings again. Once, and only for a request that got no
+/// answer at all: a reply that broke halfway, or an answer the provider gave
+/// -- a 429, a 500 -- is the caller's to judge.
+async fn sent_once_more<B, R, F, Fut>(
+    shared: &'static Shared,
+    req: Request<B>,
+    send: F,
+) -> http_client::Result<R>
+where
+    B: Clone,
+    F: Fn(reqwest::Client, Request<B>) -> Fut,
+    Fut: Future<Output = http_client::Result<R>>,
+{
+    let (client, generation) = shared.get();
+    match send(client, req.clone()).await {
+        Err(error) if broke_before_answering(&error) => {
+            tracing::info!("a model request got no answer ({error}); sending it once more");
+            let (client, _) = shared.renew(generation);
+            send(client, req).await
+        }
+        sent => sent,
+    }
+}
+
+/// Whether `error` is a request that provably never reached the provider: a
+/// connection that could not be opened -- a route or an address gone stale
+/// across a sleep or a network change, which a fresh client resolves again.
+///
+/// Only that. A connection that broke after the request was written (reset,
+/// or cut while the provider was still thinking) may have been received and
+/// billed, and sending it again would make the provider do the work twice.
+/// A pooled connection found dead before anything was written is already
+/// retried by the HTTP client itself.
+fn broke_before_answering(error: &http_client::Error) -> bool {
+    let http_client::Error::Instance(error) = error else { return false };
+    let Some(error) = error.downcast_ref::<reqwest::Error>() else { return false };
+    // A connection that could not be opened in time will not be opened any
+    // faster a second time.
+    error.is_connect() && !error.is_timeout()
 }
 
 impl HttpClientExt for CacheMarks {
@@ -203,7 +388,9 @@ impl HttpClientExt for CacheMarks {
         U: From<Bytes>,
         U: WasmCompatSend + 'static,
     {
-        self.inner.send::<Bytes, U>(self.marked(req))
+        sent_once_more(self.shared, self.marked(req), |client, req| async move {
+            client.send::<Bytes, U>(req).await
+        })
     }
 
     fn send_multipart<U>(
@@ -214,7 +401,9 @@ impl HttpClientExt for CacheMarks {
         U: From<Bytes>,
         U: WasmCompatSend + 'static,
     {
-        self.inner.send_multipart(req)
+        sent_once_more(self.shared, req, |client, req| async move {
+            client.send_multipart::<U>(req).await
+        })
     }
 
     fn send_streaming<T>(
@@ -224,7 +413,9 @@ impl HttpClientExt for CacheMarks {
     where
         T: Into<Bytes> + WasmCompatSend,
     {
-        self.inner.send_streaming(self.marked(req))
+        sent_once_more(self.shared, self.marked(req), |client, req| async move {
+            client.send_streaming(req).await
+        })
     }
 }
 
@@ -565,6 +756,150 @@ mod tests {
         ] {
             assert!(!bypasses_proxy(remote), "{remote}");
         }
+        assert!(std::ptr::eq(shared_for("http://localhost:11434/v1"), &DIRECT));
+        assert!(std::ptr::eq(shared_for("https://api.openai.com/v1"), &PLAIN));
+    }
+
+    /// A model server on this machine that counts the connections it took,
+    /// answers every request "ok", and -- when `dies` -- reads the second
+    /// request on its first connection and hangs up without a word, as a
+    /// provider that dropped the connection while this machine slept would.
+    async fn model_server(dies: bool) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+        let accepted = Arc::new(AtomicUsize::new(0));
+        tokio::spawn({
+            let accepted = accepted.clone();
+            async move {
+                while let Ok((mut socket, _)) = listener.accept().await {
+                    let first = accepted.fetch_add(1, Ordering::SeqCst) == 0;
+                    tokio::spawn(async move {
+                        let mut buf = Vec::new();
+                        let mut chunk = [0u8; 4096];
+                        let mut answered = 0;
+                        loop {
+                            let n = socket.read(&mut chunk).await.unwrap_or(0);
+                            if n == 0 {
+                                return;
+                            }
+                            buf.extend_from_slice(&chunk[..n]);
+                            while let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                                buf.drain(..end + 4);
+                                if dies && first && answered == 1 {
+                                    return;
+                                }
+                                let ok = b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok";
+                                if socket.write_all(ok).await.is_err() {
+                                    return;
+                                }
+                                answered += 1;
+                            }
+                        }
+                    });
+                }
+            }
+        });
+        (endpoint, accepted)
+    }
+
+    /// Every turn opens a connection of its own, and every one of them sends
+    /// on a clone of the same client: the second finds the first one's
+    /// socket still open rather than connecting (and, to a provider, shaking
+    /// hands over TLS) again.
+    #[tokio::test]
+    async fn one_turn_finds_the_last_ones_connection_still_open() {
+        use std::sync::atomic::Ordering;
+        // Its own, so that no other test's broken request renews it midway.
+        static OURS: Shared = Shared::new(direct);
+        let (endpoint, accepted) = model_server(false).await;
+
+        for _ in 0..2 {
+            let (client, _) = OURS.get();
+            let sent = client.get(format!("{endpoint}/models")).send().await.unwrap();
+            assert_eq!(sent.text().await.unwrap(), "ok");
+            // The finished connection goes back to the pool a moment after
+            // its answer has been read.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(accepted.load(Ordering::SeqCst), 1, "connected once");
+    }
+
+    /// A request whose connection breaks after it was written -- the provider
+    /// may have it, and be working on it -- is not sent a second time: the
+    /// failure is handed back rather than paid for twice. (A connection that
+    /// went stale across a sleep is never used: the client is built afresh
+    /// after one, see `a_client_is_built_again_after_a_sleep_or_a_long_wait`.)
+    /// A connection that cannot be opened at all is tried once more, on a
+    /// client built afresh.
+    #[tokio::test]
+    async fn a_request_cut_off_after_it_was_sent_is_not_sent_again() {
+        use std::sync::atomic::Ordering;
+        static OURS: Shared = Shared::new(direct);
+        let (endpoint, accepted) = model_server(true).await;
+        let marks = CacheMarks { shared: &OURS, on: false };
+        let within = |what| tokio::time::timeout(Duration::from_secs(20), what);
+        let ask = || {
+            Request::builder()
+                .method("POST")
+                .uri(format!("{endpoint}/chat/completions"))
+                .body(Bytes::from_static(b"{}"))
+                .unwrap()
+        };
+
+        let sent = within(marks.send::<Bytes, Bytes>(ask())).await.unwrap().expect("answered");
+        assert_eq!(sent.into_body().await.unwrap(), "ok");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // The server reads this one whole, then hangs up without answering.
+        assert!(within(marks.send::<Bytes, Bytes>(ask())).await.unwrap().is_err());
+        assert_eq!(accepted.load(Ordering::SeqCst), 1, "not sent again on a new connection");
+
+        // Nobody there at all: tried twice, and the failure handed back.
+        let (_, before) = OURS.get();
+        let gone = {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            listener.local_addr().unwrap()
+        };
+        let req = Request::builder().uri(format!("http://{gone}/v1/models")).body(Bytes::new());
+        assert!(within(marks.send::<Bytes, Bytes>(req.unwrap())).await.unwrap().is_err());
+        assert_eq!(OURS.get().1, before + 1, "the second try on a client built afresh");
+    }
+
+    /// A client is trusted for as long as its pool could hold a connection
+    /// worth finding, and not across a sleep, which only the wall clock sees.
+    #[test]
+    fn a_client_is_built_again_after_a_sleep_or_a_long_wait() {
+        let then = Stamp::now();
+        let later = |awake: u64, wall: u64| Stamp {
+            mono: then.mono + Duration::from_secs(awake),
+            wall: then.wall + Duration::from_secs(wall),
+        };
+        assert!(then.still_good_at(later(10, 10)), "between two turns");
+        assert!(then.still_good_at(later(299, 299)), "a long think");
+        assert!(!then.still_good_at(later(300, 300)), "the pool has let go");
+        assert!(!then.still_good_at(later(5, 3 * 3600)), "a night with the lid shut");
+        assert!(!then.still_good_at(later(5, 40)), "a short nap");
+        assert!(then.still_good_at(later(5, 20)), "a clock a time server stepped");
+        let set_back = Stamp { mono: then.mono, wall: then.wall - Duration::from_secs(60) };
+        assert!(!then.still_good_at(set_back), "a clock set back");
+    }
+
+    /// Ten requests that broke on the same client replace it once, rather
+    /// than each throwing away the new one the last of them built.
+    #[test]
+    fn requests_that_broke_together_replace_the_client_once() {
+        static OURS: Shared = Shared::new(direct);
+        let (_, first) = OURS.get();
+        assert_eq!(OURS.get().1, first, "kept while it is good");
+        let (_, second) = OURS.renew(first);
+        assert_eq!(second, first + 1);
+        for _ in 0..9 {
+            assert_eq!(OURS.renew(first).1, second, "already replaced");
+        }
+        assert_eq!(OURS.get().1, second);
     }
 
     #[test]

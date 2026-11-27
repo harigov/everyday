@@ -117,14 +117,26 @@ fn decode_cursor(raw: &str) -> Option<SearchCursor> {
 /// index kept happened to be indexed under a different one of its labels.
 /// Closing that needs the indexer itself to merge rather than replace on
 /// re-index, which is `crate::mail::sync::passes`' own file, not this one's.
-fn resolve_mailbox_names(vault: &Vault, query: MailQuery) -> MailQuery {
+///
+/// `known` is every account's mailboxes, read once by the caller; an account
+/// asked for that is not among them is read here.
+fn resolve_mailbox_names(
+    vault: &Vault,
+    known: &[(AccountId, Vec<Mailbox>)],
+    query: MailQuery,
+) -> MailQuery {
     let accounts: Vec<AccountId> = if query.accounts.is_empty() {
-        vault.accounts().map(|a| a.into_iter().map(|acc| acc.id).collect()).unwrap_or_default()
+        known.iter().map(|(id, _)| *id).collect()
     } else {
         query.accounts.iter().filter_map(|s| s.parse().ok()).collect()
     };
-    let mailboxes: Vec<Mailbox> =
-        accounts.iter().flat_map(|&id| vault.mailboxes(id).unwrap_or_default()).collect();
+    let mailboxes: Vec<Mailbox> = accounts
+        .iter()
+        .flat_map(|&id| match known.iter().find(|(known, _)| *known == id) {
+            Some((_, mailboxes)) => mailboxes.clone(),
+            None => vault.mailboxes(id).unwrap_or_default(),
+        })
+        .collect();
 
     let resolve = |name: &str| -> Vec<String> {
         let matches: Vec<String> = mailboxes
@@ -221,13 +233,17 @@ async fn search_mail(
         // this closure for the same reason `vault.thread` below already is:
         // every vault read this command makes has to run on the blocking
         // pool, not the async runtime thread `search_mail` itself runs on.
-        let query = resolve_mailbox_names(&vault, query);
-        let roles: std::collections::HashMap<jatayu_core::id::MailboxId, MailboxRole> = vault
+        // Every account's mailboxes, read once for both of what needs them.
+        let known: Vec<(AccountId, Vec<Mailbox>)> = vault
             .accounts()
             .unwrap_or_default()
             .iter()
-            .flat_map(|a| vault.mailboxes(a.id).unwrap_or_default())
-            .map(|m| (m.id, m.role))
+            .map(|a| (a.id, vault.mailboxes(a.id).unwrap_or_default()))
+            .collect();
+        let query = resolve_mailbox_names(&vault, &known, query);
+        let roles: std::collections::HashMap<jatayu_core::id::MailboxId, MailboxRole> = known
+            .iter()
+            .flat_map(|(_, mailboxes)| mailboxes.iter().map(|m| (m.id, m.role)))
             .collect();
         let mut seen = HashSet::new();
         let mut threads = Vec::with_capacity(limit);
@@ -238,15 +254,28 @@ async fn search_mail(
         let mut next = None;
         for _ in 0..SEARCH_TOP_UPS {
             let page = index.search(&query, limit, cursor.take())?;
-            let mut found = Vec::new();
+            let mut hits = Vec::new();
             for hit in &page.hits {
                 if !seen.insert(hit.thread_key.clone()) {
                     continue; // a later hit in an already-seen thread
                 }
                 let Ok(thread_id) = hit.thread_key.parse::<ThreadId>() else { continue };
-                let Ok((thread, _)) = vault.thread(thread_id) else { continue };
-                found.push((thread, hit.date));
+                hits.push((thread_id, hit.date));
             }
+            // The page's threads in one read, their messages left unread. A
+            // thread that is gone, or cannot be read, is left out as before.
+            let ids: Vec<ThreadId> = hits.iter().map(|(id, _)| *id).collect();
+            let rows: std::collections::HashMap<ThreadId, Thread> = match vault.mail_threads(&ids) {
+                Ok(rows) => rows.into_iter().map(|t| (t.id, t)).collect(),
+                Err(_) => ids
+                    .iter()
+                    .filter_map(|&id| vault.thread(id).ok().map(|(t, _)| (id, t)))
+                    .collect(),
+            };
+            let found: Vec<(Thread, _)> = hits
+                .into_iter()
+                .filter_map(|(id, date)| rows.get(&id).map(|t| (t.clone(), date)))
+                .collect();
             // Where the page's threads are filed, in one read. Unreadable,
             // a thread is shown without its place rather than failing the page.
             let ids: Vec<ThreadId> = found.iter().map(|(t, _)| t.id).collect();

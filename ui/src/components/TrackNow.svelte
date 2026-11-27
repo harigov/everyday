@@ -143,20 +143,36 @@
     min-width: 0;
   }
   .pulse {
+    position: relative;
     width: 8px;
     height: 8px;
     flex: none;
     border-radius: 50%;
     background: var(--c);
-    animation: beat 2s var(--ease) infinite;
+  }
+  /* The ring that beats out from the dot, a few times as the strip appears
+     and then still: the clock beside it says it is running. Scaled and faded
+     rather than a growing shadow, which the compositor can run without
+     repainting the window each frame -- and not forever, because a timer
+     can run all day with the calendar open. */
+  .pulse::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background: color-mix(in oklab, var(--c) 55%, transparent);
+    opacity: 0;
+    animation: beat 2s var(--ease) 3;
   }
   @keyframes beat {
     0%,
     100% {
-      box-shadow: 0 0 0 0 color-mix(in oklab, var(--c) 55%, transparent);
+      transform: scale(1);
+      opacity: 1;
     }
     60% {
-      box-shadow: 0 0 0 6px color-mix(in oklab, var(--c) 0%, transparent);
+      transform: scale(2.5);
+      opacity: 0;
     }
   }
 

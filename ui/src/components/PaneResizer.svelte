@@ -22,6 +22,12 @@
   // ahead of the browser's next paint, which is what keeps the pane from
   // flashing at its default width before snapping to whatever was dragged
   // last time.
+  //
+  // A drag is the exception. A custom property changed on the root is
+  // inherited by every element in the window, so setting it there on each
+  // pointer move restyled the whole document per move. While dragging, the
+  // width goes on `scope` instead -- the box whose own rules read it -- once
+  // a frame, and moves to the root when the pointer is let go.
 
   let {
     cssVar,
@@ -29,6 +35,7 @@
     defaultWidth,
     min,
     max,
+    scope,
   }: {
     /** The custom property this pane's own width already comes from. */
     cssVar: string
@@ -37,6 +44,12 @@
     defaultWidth: number
     min: number
     max: number
+    /**
+     * The element every reader of `cssVar` sits in, for a drag to set it on
+     * rather than the root. Without one a drag sets the root, as the
+     * keyboard does.
+     */
+    scope?: () => HTMLElement | null
   } = $props()
 
   function clamp(n: number): number {
@@ -78,24 +91,39 @@
   let dragging = $state(false)
   let startClientX = 0
   let startWidth = 0
+  /** Where the drag sets the width, and the frame that will. */
+  let held: HTMLElement | null = null
+  let frame = 0
 
   function onPointerDown(e: PointerEvent) {
     dragging = true
     startClientX = e.clientX
     startWidth = width
+    held = scope?.() ?? document.documentElement
     ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
   }
 
   function onPointerMove(e: PointerEvent) {
     if (!dragging) return
     width = clamp(startWidth + (e.clientX - startClientX))
-    apply(width)
+    if (frame) return
+    frame = requestAnimationFrame(() => {
+      frame = 0
+      held?.style.setProperty(cssVar, `${width}px`)
+    })
   }
 
   function onPointerUp(e: PointerEvent) {
     if (!dragging) return
     dragging = false
     ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
+    cancelAnimationFrame(frame)
+    frame = 0
+    // On the root, where the keyboard and the next launch set it, and off
+    // the pane, where it would shadow both.
+    apply(width)
+    if (held && held !== document.documentElement) held.style.removeProperty(cssVar)
+    held = null
     persist(width)
   }
 

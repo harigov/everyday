@@ -21,6 +21,9 @@ use crate::speech::access::HeardFrom;
 use crate::speech::detect::Tuning;
 use crate::speech::expect::Occasion;
 use crate::speech::live::{LiveEvent, LiveTranscription};
+use crate::speech::pcm;
+use crate::speech::transcribe::BoxFuture;
+use crate::speech::utterance::UtteranceTranscriber;
 use std::sync::Arc;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
@@ -199,6 +202,74 @@ fn within_one(a: &str, b: &str) -> bool {
     edits + (a.len() - i) + (b.len() - j) <= 1
 }
 
+/// Utterances up to this long, in milliseconds, are heard whole straight
+/// away: most of what calls the assistant -- "Siri, what's next?" -- is this
+/// short, and is answered without a second pass.
+const WHOLE_UP_TO_MS: u64 = 5_000;
+
+/// How much of a longer utterance is heard first, at least, in milliseconds,
+/// to find out whether it begins with a name. [`heard`] only takes a name at
+/// the start, a greeting at most before it.
+const NAME_WITHIN_MS: u64 = 3_500;
+
+/// The latest that first hearing may end. It ends at the quietest moment
+/// between [`NAME_WITHIN_MS`] and this -- a gap between words -- so a name
+/// said after "good morning" is never cut in half.
+const NAME_BY_MS: u64 = 6_500;
+
+/// Where the first hearing of a long utterance ends: the middle of its
+/// quietest 20 ms between [`NAME_WITHIN_MS`] and [`NAME_BY_MS`] (the first
+/// such, on a tie), so the cut falls between words rather than inside one.
+fn name_clip_end(samples: &[i16]) -> usize {
+    let from = pcm::sample_count(NAME_WITHIN_MS).min(samples.len());
+    let to = pcm::sample_count(NAME_BY_MS).min(samples.len());
+    let frame = pcm::sample_count(20).max(1);
+    let mut best: Option<(u64, usize)> = None;
+    let mut at = from;
+    while at + frame <= to {
+        let energy: u64 =
+            samples[at..at + frame].iter().map(|&s| (i64::from(s) * i64::from(s)) as u64).sum();
+        if best.is_none_or(|(least, _)| energy < least) {
+            best = Some((energy, at + frame / 2));
+        }
+        at += frame;
+    }
+    best.map_or(to, |(_, cut)| cut)
+}
+
+/// The recogniser the wake word listens with: one that hears a long
+/// utterance only as far as a name could be before it hears all of it.
+///
+/// What a microphone left open all day hears is mostly other people, a
+/// television, a call in the next room, and none of it begins with the name.
+/// Heard whole, every half-minute stretch of it would be transcribed in full
+/// to be thrown away; heard like this, it costs a few seconds' worth. An
+/// utterance that does begin with a name is then heard whole, as before, for
+/// what came after it.
+struct NameFirst {
+    inner: Arc<dyn UtteranceTranscriber>,
+    names: Vec<String>,
+}
+
+impl UtteranceTranscriber for NameFirst {
+    fn hear<'a>(&'a self, samples: &'a [i16]) -> BoxFuture<'a, CommandResult<String>> {
+        Box::pin(async move {
+            if samples.len() <= pcm::sample_count(WHOLE_UP_TO_MS) {
+                return self.inner.hear(samples).await;
+            }
+            let start = self.inner.hear(&samples[..name_clip_end(samples)]).await?;
+            if heard(&start, &self.names).is_none() {
+                return Ok(String::new());
+            }
+            self.inner.hear(samples).await
+        })
+    }
+
+    fn warm(&self) {
+        self.inner.warm();
+    }
+}
+
 /// Start listening over `live` for `names`, on the current Tokio runtime.
 pub fn spawn(live: LiveTranscription, names: Vec<String>) -> WakeLink {
     let (input, audio) = unbounded_channel();
@@ -274,8 +345,14 @@ impl Service {
         // Every recogniser is told to expect these names from now on. This
         // one is told only them and the person's: see `Occasion::Wake`.
         self.remember_wake_names(&names);
+        let listening_for = names.clone();
         let live = self
-            .live_transcription(Tuning::CONVERSATION, Occasion::Wake, HeardFrom::ThisComputer)
+            .live_transcription_with(
+                Tuning::CONVERSATION,
+                Occasion::Wake,
+                HeardFrom::ThisComputer,
+                move |inner| Arc::new(NameFirst { inner, names: listening_for }),
+            )
             .await?;
         Ok(spawn(live, names))
     }
@@ -287,6 +364,71 @@ mod tests {
 
     fn names(list: &[&str]) -> Vec<String> {
         list.iter().map(|n| n.to_string()).collect()
+    }
+
+    /// A recogniser that writes `said` for the whole of an utterance and
+    /// `start` for the first part of a longer one, and keeps how much of
+    /// each it was asked to hear.
+    struct Scripted {
+        start: &'static str,
+        said: &'static str,
+        asked: std::sync::Mutex<Vec<u64>>,
+    }
+
+    impl UtteranceTranscriber for Scripted {
+        fn hear<'a>(&'a self, samples: &'a [i16]) -> BoxFuture<'a, CommandResult<String>> {
+            let ms = pcm::duration_ms(samples.len());
+            self.asked.lock().unwrap().push(ms);
+            let text = if ms < WHOLE_UP_TO_MS { self.start } else { self.said };
+            Box::pin(async move { Ok(text.to_string()) })
+        }
+    }
+
+    fn listening(start: &'static str, said: &'static str) -> (NameFirst, Arc<Scripted>) {
+        let inner = Arc::new(Scripted { start, said, asked: Default::default() });
+        (NameFirst { inner: inner.clone(), names: names(&["Siri"]) }, inner)
+    }
+
+    fn of_ms(ms: u64) -> Vec<i16> {
+        vec![0; pcm::sample_count(ms)]
+    }
+
+    #[tokio::test]
+    async fn a_long_utterance_without_the_name_is_heard_only_as_far_as_a_name_could_be() {
+        let (wake, inner) = listening("so anyway I was telling", "so anyway I was telling her");
+        let long = of_ms(20_000);
+        assert_eq!(wake.hear(&long).await.unwrap(), "");
+        assert_eq!(*inner.asked.lock().unwrap(), [pcm::duration_ms(name_clip_end(&long))]);
+    }
+
+    #[tokio::test]
+    async fn a_long_utterance_with_the_name_is_heard_whole_for_what_came_after() {
+        let said = "Siri, type I won't be available tomorrow, I can attend on Friday instead";
+        let (wake, inner) = listening("Siri, type I won't", said);
+        let long = of_ms(12_000);
+        assert_eq!(wake.hear(&long).await.unwrap(), said);
+        assert_eq!(*inner.asked.lock().unwrap(), [pcm::duration_ms(name_clip_end(&long)), 12_000]);
+    }
+
+    #[test]
+    fn the_first_hearing_ends_in_the_gap_between_words() {
+        // Speech throughout, but for a pause at 5 s: the cut falls in it,
+        // past the 3.5 s floor, not in the middle of a word.
+        let mut samples = vec![3_000i16; pcm::sample_count(12_000)];
+        let (gap_from, gap_to) = (pcm::sample_count(4_950), pcm::sample_count(5_050));
+        samples[gap_from..gap_to].fill(0);
+        let cut = name_clip_end(&samples);
+        assert!((gap_from..gap_to).contains(&cut), "cut at {} ms", pcm::duration_ms(cut));
+        // Never past the latest a name could end.
+        let speech = vec![3_000i16; pcm::sample_count(12_000)];
+        assert!(name_clip_end(&speech) <= pcm::sample_count(NAME_BY_MS));
+    }
+
+    #[tokio::test]
+    async fn a_short_utterance_is_heard_whole_at_once() {
+        let (wake, inner) = listening("unused", "what's next");
+        assert_eq!(wake.hear(&of_ms(WHOLE_UP_TO_MS)).await.unwrap(), "what's next");
+        assert_eq!(*inner.asked.lock().unwrap(), [WHOLE_UP_TO_MS]);
     }
 
     #[test]

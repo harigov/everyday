@@ -28,6 +28,7 @@
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { panels } from '../lib/panels.svelte'
   import { tray, type TrayEntry } from '../lib/tray.svelte'
+  import { views, type ViewKey } from '../lib/views.svelte'
   import type { Group } from '../lib/shortcuts.svelte'
   import Symbol from './Symbol.svelte'
   import RecordingPill from './RecordingPill.svelte'
@@ -156,6 +157,12 @@
     ])
   }
 
+  /** Fetch what a button shows as the pointer or the focus reaches it, so
+   *  the press that usually follows has nothing to wait for. */
+  function warm(key: ViewKey) {
+    void views.ensure(key)
+  }
+
   // Said as the keys are spelt on this machine, not as one platform prints them.
   const settingsKeys = keysLabel('mod+,', appleKeyboard)
   const lockKeys = keysLabel('mod+l', appleKeyboard)
@@ -189,6 +196,8 @@
           style:--app="var(--app-{a.id})"
           aria-current={on ? 'page' : undefined}
           onclick={() => app.setSection(a.id)}
+          onpointerenter={() => warm(a.id)}
+          onfocus={() => warm(a.id)}
           oncontextmenu={(e) => menu.show(e, appMenu(a))}
         >
           <span class="glyph app"><Symbol name={a.symbol} size={24} /></span>
@@ -216,6 +225,8 @@
         style:--app="var(--app-{ASSISTANT.id})"
         aria-current={on ? 'page' : undefined}
         onclick={() => app.setSection(ASSISTANT.id)}
+        onpointerenter={() => warm(ASSISTANT.id)}
+        onfocus={() => warm(ASSISTANT.id)}
         oncontextmenu={(e) => menu.show(e, appMenu(ASSISTANT))}
       >
         <span class="glyph app">
@@ -234,6 +245,8 @@
       class="barbtn"
       class:on={panels.settings !== null}
       onclick={() => panels.openSettings()}
+      onpointerenter={() => warm('settings')}
+      onfocus={() => warm('settings')}
       title="Settings ({settingsKeys})"
     >
       <span><Symbol name="settings" size={21} /></span>

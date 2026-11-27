@@ -37,23 +37,31 @@
   let writing = $state<TaskId[]>([])
   let error = $state<string | null>(null)
 
+  /** The brief with one point's tick set, handed to whoever holds it. */
+  function setDone(taskId: TaskId, done: boolean) {
+    onchange?.({
+      ...brief,
+      talkingPoints: brief.talkingPoints.map((p) => (p.taskId === taskId ? { ...p, done } : p)),
+    })
+  }
+
   async function tick(point: TalkingPoint) {
     if (writing.includes(point.taskId)) return
     writing = [...writing, point.taskId]
     error = null
+    // Drawn ticked at once, and put back if the write does not go: the box
+    // should not wait on a read and a commit.
+    setDone(point.taskId, !point.done)
     try {
       // The task as it is now, not as the brief remembers it: the direction
       // of the toggle is read from it.
       const written = await todo.toggleDoneOf(await api.task(point.taskId))
       if (!written) throw new Error('That could not be saved. Try again.')
-      const done = written.status === 'done'
-      onchange?.({
-        ...brief,
-        talkingPoints: brief.talkingPoints.map((p) =>
-          p.taskId === point.taskId ? { ...p, done } : p,
-        ),
-      })
+      // What was written, which is the other way only when the task had
+      // been ticked somewhere else since the brief was made.
+      setDone(point.taskId, written.status === 'done')
     } catch (e) {
+      setDone(point.taskId, point.done)
       error = errorMessage(e)
     } finally {
       writing = writing.filter((id) => id !== point.taskId)

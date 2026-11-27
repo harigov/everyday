@@ -104,7 +104,7 @@ impl Vault {
         // 2. The records, each read again, so a change since the scan is
         //    not overwritten, and written as it was found.
         for id in &scan.entries {
-            let rewritten = self.write(|u| {
+            let rewritten = self.write_in(&self.gates.text, |u| {
                 let mut entry = match u.store.get_entry(*id) {
                     Ok(e) => e,
                     Err(Error::NotFound { .. }) => return Ok(None),
@@ -114,7 +114,7 @@ impl Vault {
                     return Ok(None);
                 }
                 u.store.put_entry(&entry)?;
-                u.index.insert(&entry);
+                u.index.put_entry(&entry);
                 Ok(Some(entry.body.file_refs()))
             });
             match rewritten {
@@ -128,7 +128,7 @@ impl Vault {
             }
         }
         for id in &scan.notes {
-            let rewritten = self.write(|u| {
+            let rewritten = self.write_in(&self.gates.text, |u| {
                 let notes = u.notes()?;
                 let mut note: Note = match notes.get_note(*id) {
                     Ok(n) => n,

@@ -201,6 +201,9 @@ async fn list_news_sources(
     _ctx: Ctx,
     _args: Nothing,
 ) -> CommandResult<Vec<SourceSummary>> {
+    // What the Feed asks for first when it opens: the background tasks still
+    // waiting out their first delay after an unlock start now.
+    svc.listening.opened.now();
     svc.on_vault(|vault| {
         let mut summaries = vault.news_source_summaries()?;
         let letters = summaries

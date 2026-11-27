@@ -7,8 +7,10 @@
 //!
 //! 1. **History.** The kits whose tools this conversation's replayed messages
 //!    called -- and the kits it asked `load_tools` for, whether or not it went
-//!    on to use them. Kits only ever join, so the provider's cache misses
-//!    once per kit and not once per turn.
+//!    on to use them, and those the screen, the words or the decision model
+//!    gave an earlier turn (kept on its reply, [`VaultMessage::kits`]). Kits
+//!    only ever join while they are in the window, so the provider's cache
+//!    misses once per kit and not once per turn.
 //! 2. **Screen** and 3. **words**: the core's, over what the interface said
 //!    was open and what the person wrote.
 //! 4. **A decision model**, when one is set up at an address: asked once, with
@@ -17,7 +19,8 @@
 //!    second to; an answer that does not come, or comes unsure, adds nothing.
 //!    Never on a spoken turn, which cannot spare the wait and has its screen,
 //!    its words, its history and `load_tools`, and never a model on this
-//!    computer, whose load is not something a turn waits for.
+//!    computer that is not already in memory, free and quick: its load, or
+//!    another caller's question, is not something a turn waits for.
 //! 5. **`load_tools`**, at runtime: the model's own call, which the stream
 //!    answers by building the agent again with the larger set and carrying on
 //!    from the step it was on (see `stream` in the parent module).
@@ -57,6 +60,13 @@ pub(super) const MIN_PROBABILITY: f64 = 0.5;
 /// The most of a request the decision model is shown. A request that is
 /// longer is a paste, and the start of it says what it is.
 const REQUEST_CHARS: usize = 1_000;
+
+/// How long a decision model on this computer may have been taking over a
+/// question lately, in milliseconds, and still be asked. One on a graphics
+/// card answers in about a tenth of a second; one reading on the processor
+/// takes seconds, which [`DECISION_TIME_BOX`] would cut off anyway after
+/// making the turn wait for it.
+const LOCAL_PACE_MS: u64 = 400;
 
 // ---- what a turn has loaded ---------------------------------------------------
 
@@ -126,7 +136,8 @@ impl Loads {
 // ---- history ------------------------------------------------------------------
 
 /// The kits a conversation has already used: those whose tools its replayed
-/// messages called, and those it asked `load_tools` for.
+/// messages called, those it asked `load_tools` for, and those an earlier
+/// turn was given by its screen, its words or the decision model.
 ///
 /// "Replayed" is [`replay`](super::replay)'s window: `replayed` is how many
 /// messages it kept, counted from the newest of the ones it counts. A kit used
@@ -156,7 +167,19 @@ pub(super) fn from_history(thread: &[VaultMessage], current: MessageId, replayed
             }
         }
     }
-    thread[first..].iter().fold(KitSet::core(), |kits, m| kits.union(called_in(&m.tool_calls)))
+    thread[first..]
+        .iter()
+        .fold(KitSet::core(), |kits, m| kits.union(called_in(&m.tool_calls)).union(offered_in(m)))
+}
+
+/// The kits a stored reply says its turn was given besides what it called.
+fn offered_in(message: &VaultMessage) -> KitSet {
+    message.kits.iter().filter_map(|name| Kit::parse(name)).collect()
+}
+
+/// `kits` as a reply keeps them: [`VaultMessage::kits`].
+pub(super) fn names(kits: KitSet) -> Vec<String> {
+    kits.iter().map(|kit| kit.name().to_string()).collect()
 }
 
 /// The kits a message's calls point at.
@@ -227,39 +250,58 @@ const NONE: &str = "none";
 /// Whether a decision model is one a turn may put a question to now: one at
 /// an address, which answers in the time it takes to ask or is not waited for
 /// beyond [`DECISION_TIME_BOX`]; or one on this computer that is already in
-/// memory ([`crate::local::decide::resident`]). Loading one takes seconds the
-/// first time and after every quarter hour of silence, and a turn waiting on
-/// that would be a turn the person waits on -- the mail passes load it, and the
-/// next turn finds it in.
+/// memory, answering nobody else ([`crate::local::decide::idle`]) and quick
+/// lately ([`LOCAL_PACE_MS`]). Loading one takes seconds the first time and
+/// after every quarter hour of silence, and a turn waiting on that would be a
+/// turn the person waits on -- the mail passes load it, and the next turn
+/// finds it in.
 pub(super) fn askable(config: &jatayu_core::llm::DecisionConfig) -> bool {
     match config.local_model() {
-        // On this computer: only while it is already in memory. A load takes
-        // seconds; a turn waiting on it would be a turn the person waits on.
-        Some(model) => crate::local::decide::resident(model),
+        // On this computer: only while it is in memory and free. A load, or
+        // somebody else's question on the processor, takes seconds; a turn
+        // waiting on it would be a turn the person waits on.
+        Some(model) => {
+            crate::local::decide::idle(model)
+                && quick_enough(crate::local::decide::ms_per_message(model))
+        }
         None => !config.is_local(),
     }
 }
 
-/// Which of `candidates` the person's request most needs, if the decision
-/// model is sure.
+/// Whether a local decision model's recent pace is quick enough to ask it
+/// for a turn. One not asked anything yet since the app started is given the
+/// benefit of the doubt.
+fn quick_enough(pace_ms: Option<u64>) -> bool {
+    pace_ms.is_none_or(|ms| ms <= LOCAL_PACE_MS)
+}
+
+/// Which kit the person's request most needs, of those with something in
+/// them here ([`worth_asking_about`]) and not already `chosen`, if the
+/// decision model is sure.
 ///
 /// Asked about only the kits not already chosen, so what the words and the
 /// screen found is not asked twice. `None` for every way of not having an
-/// answer -- no decision model, one on this computer ([`askable`]), a
-/// timeout, an error, an answer that is "none" or not sure -- because every
-/// one of them means the same: go on with what is already chosen, and
-/// `load_tools` is there for the rest.
+/// answer -- no decision model, one on this computer that cannot answer at
+/// once ([`askable`]), a timeout, an error, an answer that is "none" or not
+/// sure -- because every one of them means the same: go on with what is
+/// already chosen, and `load_tools` is there for the rest. What is worth
+/// asking about is only worked out once there is somebody to ask.
 pub(super) async fn decide(
     vault: Arc<Vault>,
     request: String,
     app: Option<String>,
-    candidates: KitSet,
+    chosen: KitSet,
+    web: bool,
 ) -> Option<Kit> {
-    if candidates.is_core() || request.trim().is_empty() {
+    if request.trim().is_empty() {
         return None;
     }
     let access = vault.decision_access().ok()?;
     if !askable(&access.config) {
+        return None;
+    }
+    let candidates = worth_asking_about(&vault, web).without(chosen);
+    if candidates.is_core() {
         return None;
     }
     let request: String = request.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -517,6 +559,32 @@ mod tests {
     }
 
     #[test]
+    fn a_kit_an_earlier_turn_was_given_stays_while_that_turn_is_in_the_window() {
+        let c = ConversationId::new();
+        let mut shown = answered(c, "Two from Anna.", &[]);
+        shown.kits = names(some(&[Kit::Mail, Kit::Money]));
+        shown.kits.push("no longer a kit".into());
+        let thread = vec![
+            said(c, "anything new?"),
+            shown,
+            said(c, "tasks?"),
+            answered(c, "Two.", &["list_tasks"]),
+            said(c, "and now?"),
+        ];
+        let current = thread.last().unwrap().id;
+        assert_eq!(
+            from_history(&thread, current, 4).iter().collect::<Vec<_>>(),
+            vec![Kit::Mail, Kit::Money]
+        );
+        // Out of the window, it is let go of with the turn that had it.
+        assert!(from_history(&thread, current, 2).is_core());
+        // A stored reply keeps the names the kits parse back from.
+        let kept = names(some(&[Kit::Health, Kit::Places]));
+        let back: KitSet = kept.iter().filter_map(|n| Kit::parse(n)).collect();
+        assert_eq!(back, some(&[Kit::Health, Kit::Places]));
+    }
+
+    #[test]
     fn a_kit_that_has_gone_out_of_the_window_is_let_go() {
         let c = ConversationId::new();
         let thread = vec![
@@ -694,6 +762,15 @@ mod tests {
     }
 
     #[test]
+    fn a_decision_model_on_this_computer_that_has_been_slow_is_not_asked() {
+        assert!(quick_enough(None), "not asked anything yet");
+        assert!(quick_enough(Some(90)), "on a graphics card");
+        assert!(quick_enough(Some(LOCAL_PACE_MS)));
+        assert!(!quick_enough(Some(LOCAL_PACE_MS + 1)));
+        assert!(!quick_enough(Some(9_000)), "on the processor");
+    }
+
+    #[test]
     fn a_decision_is_believed_only_for_a_candidate_it_is_sure_of() {
         let candidates = some(&[Kit::Mail, Kit::Money]);
         assert_eq!(kit_from_choice("mail", Some(0.9), candidates), Some(Kit::Mail));
@@ -708,12 +785,13 @@ mod tests {
     #[tokio::test]
     async fn no_decision_model_and_nothing_to_choose_between_are_no_answer() {
         let (vault, _dir) = test_vault();
-        let all = KitSet::all();
+        let core = KitSet::core();
         // No decision model in this vault.
-        assert_eq!(decide(vault.clone(), "any mail?".into(), None, all).await, None);
-        // Nothing to choose from, or nothing asked.
-        assert_eq!(decide(vault.clone(), "any mail?".into(), None, KitSet::core()).await, None);
-        assert_eq!(decide(vault, "  ".into(), None, all).await, None);
+        assert_eq!(decide(vault.clone(), "any mail?".into(), None, core, true).await, None);
+        // Nothing left to choose from, or nothing asked.
+        let all = KitSet::all();
+        assert_eq!(decide(vault.clone(), "any mail?".into(), None, all, true).await, None);
+        assert_eq!(decide(vault, "  ".into(), None, core, true).await, None);
     }
 
     // ---- the order -------------------------------------------------------------------------

@@ -37,11 +37,14 @@ stubBrowser({
 })
 
 const {
-  modules: [libraryModule, stateModule],
+  modules: [libraryModule, stateModule, apiModule],
   close,
-} = await load(['/src/lib/library.svelte.ts', '/src/lib/state.svelte.ts'], { svelte: true })
+} = await load(['/src/lib/library.svelte.ts', '/src/lib/state.svelte.ts', '/src/lib/api.ts'], {
+  svelte: true,
+})
 const { library } = libraryModule
 const { app } = stateModule
+const { api } = apiModule
 
 await app.start()
 assert.equal(app.screen, 'main', 'the mock vault should open unlocked')
@@ -65,6 +68,53 @@ if (!library.items.some((i) => i.id === target.id)) {
 }
 library.filter = 'all'
 await library.refresh()
+
+// ── coming back, and reading again ───────────────────────────────────
+
+{
+  // Counted, to tell a read from a shelf kept as it was.
+  let reads = 0
+  const items = api.items
+  api.items = (query) => {
+    reads += 1
+    return items(query)
+  }
+
+  const first = library.items[0]
+  await library.start()
+  assert.equal(reads, 0, 'coming back a moment later keeps the shelf that is drawn')
+
+  library.markStale()
+  await library.start()
+  assert.equal(reads, 1, 'a change heard of while the app was away is read on the way back')
+  assert.equal(library.stale, false, 'and is then forgotten')
+  assert.ok(library.items[0] === first, 'a read that changed nothing keeps every card as it was')
+
+  // One item changed behind the shelf's back: that one is taken as it now is,
+  // and the rest stay the objects they were.
+  const [kept, changed] = library.items
+  const revised = { ...JSON.parse(JSON.stringify(changed)), title: `${changed.title} (revised)` }
+  await api.saveItems([revised])
+  await library.refresh()
+  const now = library.items.find((i) => i.id === changed.id)
+  assert.equal(now.title, revised.title, 'the change is read')
+  assert.ok(now !== changed, 'into a new object')
+  assert.ok(library.items.find((i) => i.id === kept.id) === kept, 'and nothing else is')
+
+  // A count moving keeps the shelves as they are, with the new count in them.
+  const shelf = library.kinds[0]
+  await library.refreshCounts()
+  assert.ok(library.kinds[0] === shelf, 'the same shelves after a read of their counts')
+
+  // A lock drops the lot: the next visit reads it all again.
+  library.reset()
+  reads = 0
+  await library.start()
+  assert.equal(reads, 1, 'the first visit after a lock reads the shelf')
+  assert.ok(library.items.length > 0)
+
+  api.items = items
+}
 
 // ── patch / touch ────────────────────────────────────────────────────
 

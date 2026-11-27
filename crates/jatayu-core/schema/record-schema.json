@@ -665,6 +665,13 @@
         "format": "uuid",
         "type": "string"
       },
+      "kits": {
+        "description": "The toolkits a routed assistant turn was offered by what was on\nscreen, what was said or a decision model's pick, by name (see\n[`crate::agent::tools::Kit`]). Only ever non-empty on\n[`Role::Assistant`]. Read back by the next turns while this message\nis in their replay window, so a kit offered once stays offered and\nthe provider's cached prefix -- tools first -- stays the same; the\nkits a turn called are already in [`Message::tool_calls`]. A name no\nlonger a kit is ignored.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
       "mailLink": {
         "anyOf": [
           {

@@ -356,6 +356,24 @@ pub fn resident(model: LocalDecisionModel) -> bool {
     }
 }
 
+/// Whether `model` is in memory and answering nothing right now, so a
+/// question put to it is answered in the time the question takes -- not
+/// after a load, and not behind another caller's question, which on the
+/// processor (or while a copy is loaded there) takes seconds. What a caller
+/// that cannot wait -- choosing a turn's tools -- asks first. A guess that
+/// can be wrong by the time the question is put, in either direction.
+pub fn idle(model: LocalDecisionModel) -> bool {
+    #[cfg(feature = "decisions")]
+    {
+        run::idle(model)
+    }
+    #[cfg(not(feature = "decisions"))]
+    {
+        let _ = model;
+        false
+    }
+}
+
 /// What [`benchmark`] measured.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -475,6 +493,13 @@ mod run {
 
     pub fn resident(which: LocalDecisionModel) -> bool {
         DECIDERS.is_loaded(&which)
+    }
+
+    pub fn idle(which: LocalDecisionModel) -> bool {
+        // Peeked, not got: asking is not a use, and must never load it.
+        DECIDERS.peek(&which).is_some_and(|decider| {
+            !matches!(decider.busy.try_lock(), Err(std::sync::TryLockError::WouldBlock))
+        })
     }
 
     pub fn unload(which: LocalDecisionModel) -> bool {

@@ -649,9 +649,15 @@ pub fn export<W: Write>(vault: &Vault, opts: &Options, out: W) -> Result<(W, Man
 pub fn write_into(vault: &Vault, opts: &Options, sink: &mut dyn Sink) -> Result<Manifest> {
     let at = jiff::Zoned::now();
     let writer = sink;
-    let mut manifest = Manifest::new(&vault.status().name, at.timestamp(), opts.media);
+    let mut manifest = Manifest::new(&vault.name(), at.timestamp(), opts.media);
 
-    vault.with_store(|store| {
+    // With every domain's write gate held, not the shared lock alone: a part
+    // reads its records in several goes -- the accounts, then their
+    // transactions -- and a bank sync landing between two of them would
+    // leave transactions in the archive whose account it does not list.
+    // The gated writers wait for the export, as they did when they were
+    // exclusive; readers do not.
+    vault.with_store_quiet(|store| {
         for part in PARTS {
             let spec = part.spec();
             if !opts.wants(spec) || part.tally(store)?.is_none() {
@@ -848,7 +854,9 @@ pub fn import(
     if !vault.is_writable() {
         return Err(Error::Unsupported("importing into a read-only vault"));
     }
-    let reports = vault.with_store(|store| {
+    // Writing: gated writers (autosave, heartbeats, health and money) must
+    // not land between this import's reads and its writes.
+    let reports = vault.with_store_writing(|store| {
         let mut reports = Vec::new();
         for part in PARTS {
             let spec = part.spec();

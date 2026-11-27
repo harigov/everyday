@@ -82,6 +82,9 @@ pub(super) struct FakeServer {
     /// A message to deliver to a mailbox the moment another one is selected
     /// -- see [`FakeServer::deliver_when_selected`].
     deliver_when_selected: Option<(String, String, Vec<u8>)>,
+    /// A message to deliver once the next `CHANGEDSINCE` is answered -- see
+    /// [`FakeServer::deliver_after_changes_asked`].
+    deliver_after_changes_asked: Option<(String, Vec<u8>)>,
 }
 
 impl FakeServer {
@@ -92,7 +95,15 @@ impl FakeServer {
             next_modseq: 1,
             appended: tokio::sync::watch::channel(0).0,
             deliver_when_selected: None,
+            deliver_after_changes_asked: None,
         }
+    }
+
+    /// Deliver `raw`, unread, to `into` just after the next `CHANGEDSINCE`
+    /// is answered: mail a real server tells of only as an `EXISTS` in that
+    /// `FETCH`'s answer, which the client keeps nothing of but the `FETCH`es.
+    pub(super) fn deliver_after_changes_asked(&mut self, into: &str, raw: Vec<u8>) {
+        self.deliver_after_changes_asked = Some((into.to_string(), raw));
     }
 
     /// Deliver `raw`, unread, to `into` when `trigger` is next selected:
@@ -408,6 +419,34 @@ impl MailSession for FakeMailSession {
             }
             Changes { new_uids, flag_changes, vanished, uidvalidity_reset: false }
         }))
+    }
+
+    /// `CHANGEDSINCE` alone, logged apart from a listing: as a real server
+    /// answers it, every message whose mod-sequence moved past the cursor,
+    /// known here or not.
+    async fn flag_changes_since(
+        &mut self,
+        cursor: &SyncCursor,
+        _known_uids: &UidSet,
+    ) -> SessionResult<Vec<(Uid, jatayu_mail::session::Flags, Option<u64>)>> {
+        let asked = format!("changedsince {}", self.selected.clone().unwrap_or_default());
+        self.commands.lock().unwrap().push(asked);
+        let answer = self.with_selected(|mb| {
+            if mb.uidvalidity != cursor.uidvalidity {
+                return Vec::new();
+            }
+            let floor = cursor.highestmodseq.unwrap_or(0);
+            mb.messages
+                .iter()
+                .filter(|(_, msg)| msg.modseq > floor)
+                .map(|(&uid, msg)| (uid, msg.flags, Some(msg.modseq)))
+                .collect()
+        });
+        let mut server = self.server.lock().unwrap();
+        if let Some((into, raw)) = server.deliver_after_changes_asked.take() {
+            server.append(&into, raw, jatayu_mail::session::Flags::NONE, None);
+        }
+        Ok(answer)
     }
 
     async fn uids_from(&mut self, from: Uid) -> SessionResult<UidSet> {

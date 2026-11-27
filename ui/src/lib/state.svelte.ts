@@ -7,7 +7,7 @@
 // component may call `api` directly for what only it needs.
 
 import { tick } from 'svelte'
-import { api, hasShell, isMock, isWeb, mobileShell, newRequestId } from './api'
+import { api, callCommand, hasShell, isMock, isWeb, mobileShell, newRequestId } from './api'
 import { details, tellShellTheme } from './phone.svelte'
 import { signOut } from './web'
 import { APP_ORDER, APPS, type Section } from './apps'
@@ -29,6 +29,7 @@ import {
   type ThemeId,
 } from './themes'
 import { windowControls } from './window.svelte'
+import { views, whenIdle } from './views.svelte'
 import { debounce } from './store/debounce'
 import { DocBinding } from './store/doc-binding'
 import { mergeTags } from './tags'
@@ -44,6 +45,7 @@ import type {
   JournalId,
   Purpose,
   EntryHit,
+  StoreStats,
   VaultStatus,
 } from './types'
 
@@ -86,8 +88,15 @@ function activeElsewhere(): number {
     return 0
   }
 }
-/** Floor between list refreshes triggered by an autosave. */
+/** Floor between list refreshes asked for by a change made elsewhere. */
 const LIST_REFRESH_MS = 4_000
+/**
+ * How long the journal's list waits after an autosave before it catches up:
+ * a pause in the typing, rather than mid-sentence.
+ */
+const LIST_IDLE_MS = 1_500
+/** ...but no longer than this after the first save it is catching up with. */
+const LIST_MAX_WAIT_MS = 20_000
 
 /**
  * Longest gap between retries of an entry save that keeps failing.
@@ -191,7 +200,8 @@ class AppState {
   get ownJournals(): Journal[] {
     return this.journals.filter((j) => !j.assistant)
   }
-  entries = $state<EntrySummary[]>([])
+  /** Replaced whole by every read, never changed in place. */
+  entries = $state.raw<EntrySummary[]>([])
   /** `null` means "all journals". */
   selectedJournal = $state<JournalId | null>(null)
   selectedEntry = $state<EntryId | null>(null)
@@ -297,6 +307,35 @@ class AppState {
   #locking = false
   #lastListRefresh = 0
   #listTimer: ReturnType<typeof setTimeout> | null = null
+  /** When the first autosave the queued list refresh is catching up with landed. */
+  #listSince: number | null = null
+  /** Each list read is numbered, so one answered late cannot replace a newer one. */
+  #rowsAsked = 0
+  /**
+   * Whether the list has been read since the vault was opened. It is read
+   * when the journal is first shown, not at the unlock: see `ensureEntries`.
+   */
+  #entriesLoaded = $state(false)
+  #entriesLoading: Promise<void> | null = null
+  /**
+   * Edits to the open entry, counted, and how many of them the last write
+   * that landed carried. Equal means the vault has what is on screen, and
+   * moving to another entry, putting the editor away or locking writes
+   * nothing.
+   */
+  #edits = 0
+  #savedEdits = 0
+  /**
+   * The document the last `syncBody` pulled from the editor, kept as it came
+   * so the save sends it as it is rather than copying it back out of the
+   * reactive `entry`. Used once, by the next write of that same entry.
+   */
+  #pulled: { of: Entry; body: Entry['body'] } | null = null
+  /** Each `openEntry` is numbered, so a slower earlier one cannot land last. */
+  #opening = 0
+  /** Each choice of app is numbered too, so a `goTo` still waiting for its
+   *  view knows if another app was chosen, or the vault locked, meanwhile. */
+  #choosing = 0
   /**
    * Set once a failing save has been told to the user, cleared when one
    * lands.
@@ -442,6 +481,24 @@ class AppState {
     } catch {
       // A status that could not be read changes nothing on screen. Whatever
       // made it fail will be reported by the next call that matters.
+    }
+  }
+
+  /**
+   * How much room the vault's pictures and other attachments take.
+   *
+   * Not in `status`, which is read at every unlock and every settings change
+   * and so no longer counts it: the count walks every file in the media
+   * folder. Asked for by the two pages that show it, when they are shown.
+   * `null` when it cannot be told.
+   */
+  async mediaBytes(): Promise<number | null> {
+    try {
+      return (await callCommand<StoreStats>('vault_stats')).blobBytes
+    } catch {
+      // A backend too old to answer, or the review build's stand-in: what
+      // the status still says, if it says anything.
+      return this.status?.stats?.blobBytes || null
     }
   }
 
@@ -681,6 +738,7 @@ class AppState {
 
   setSection(section: Section) {
     if (!this.canShow(section)) return
+    this.#choosing++
     // A window of one app shows no other: the main window comes forward to
     // show it instead. Nor does it remember its own app as the last one
     // open -- that is the main window's to come back to.
@@ -717,7 +775,17 @@ class AppState {
       this.setSection(section)
       return false
     }
+    // An app's view is loaded the first time it is shown (`views.svelte.ts`):
+    // it has to have arrived for the tick below to put it on screen. Which
+    // takes a moment, and whatever happened in it wins over this older ask:
+    // another app chosen, or the vault locked.
+    const asked = ++this.#choosing
+    await views.ensure(section)
+    if (asked !== this.#choosing || this.screen !== 'main') return false
     this.setSection(section)
+    // A view that could not be loaded: the stage says so, and the caller
+    // has nothing there to act on.
+    if (!views.view(section)) return false
     await tick()
     return true
   }
@@ -901,10 +969,19 @@ class AppState {
     this.#baseVersion = null
     this.#untouched = null
     this.#unstored = null
+    this.#savedEdits = this.#edits
+    this.#pulled = null
+    // A list or an entry still being read lands on nothing: its answer is
+    // vault contents, and the screen is about to be the lock screen.
+    this.#opening++
+    this.#choosing++
+    this.#rowsAsked++
+    this.#entriesLoading = null
     this.conflict = false
     for (const reset of this.#resetHooks) reset()
     this.entry = null
     this.entries = []
+    this.#entriesLoaded = false
     this.journals = []
     this.results = []
     this.query = ''
@@ -925,8 +1002,17 @@ class AppState {
       this.section = 'journal'
     }
     await this.refreshJournals()
-    await this.refreshEntries()
     this.startLockTimers()
+    // The journal's list and its newest page: read now if the journal is
+    // what is showing, and otherwise once the window is idle, so it is
+    // still instant when somebody switches to it. A window of another app
+    // alone never shows the journal, and never reads them.
+    if (pinned && pinned !== 'journal') return
+    if (this.section === 'journal') await this.ensureEntries()
+    else
+      whenIdle(() => {
+        if (this.screen === 'main') void this.ensureEntries()
+      }, 2_000)
   }
 
   /**
@@ -977,8 +1063,7 @@ class AppState {
     this.#lockTimer = null
     if (this.#screenTimer) clearInterval(this.#screenTimer)
     this.#screenTimer = null
-    if (this.#listTimer) clearTimeout(this.#listTimer)
-    this.#listTimer = null
+    this.#cancelList()
   }
 
   /**
@@ -1040,7 +1125,9 @@ class AppState {
   /** Pull the editor's current document into state. Cheap enough per save. */
   syncBody() {
     const body = this.#body.read()
-    if (this.entry && body !== undefined) this.entry.body = body
+    if (!this.entry || body === undefined) return
+    this.entry.body = body
+    this.#pulled = { of: this.entry, body }
   }
 
   // ── journals ─────────────────────────────────────────────────────────
@@ -1108,32 +1195,60 @@ class AppState {
   // ── entries ──────────────────────────────────────────────────────────
 
   /**
-   * Ask for a list refresh. Coalescing: repeated calls inside the window
-   * collapse into the single trailing refresh, so a burst of autosaves costs
-   * one re-render rather than one each.
+   * Ask for a list refresh, for a change made somewhere else. Coalescing:
+   * repeated calls inside the window collapse into the single trailing
+   * refresh, so a burst of changes costs one re-render rather than one each.
+   * Nothing at all while the list has not been read, or begun to be: the
+   * first read will have it. (One under way may have been answered before
+   * the change.)
    */
   queueListRefresh() {
-    if (this.#listTimer) return
-    const wait = Math.max(0, LIST_REFRESH_MS - (Date.now() - this.#lastListRefresh))
+    if ((!this.#entriesLoaded && !this.#entriesLoading) || this.#listTimer) return
+    this.#armList(Math.max(0, LIST_REFRESH_MS - (Date.now() - this.#lastListRefresh)))
+  }
+
+  /**
+   * The same after an autosave: once the typing pauses for `LIST_IDLE_MS`,
+   * or `LIST_MAX_WAIT_MS` after the first save it covers if it never does.
+   * Each save moves it on, so a paragraph typed in one go is one refresh
+   * when it is finished rather than one every few seconds while it is being
+   * written.
+   */
+  #listAfterSave() {
+    const now = Date.now()
+    this.#listSince ??= now
+    this.#armList(Math.min(LIST_IDLE_MS, Math.max(0, this.#listSince + LIST_MAX_WAIT_MS - now)))
+  }
+
+  #armList(wait: number) {
+    if (this.#listTimer) clearTimeout(this.#listTimer)
     this.#listTimer = setTimeout(() => {
       this.#listTimer = null
+      this.#listSince = null
       this.#lastListRefresh = Date.now()
       void this.refreshRows().catch(() => {})
     }, wait)
   }
 
+  /** Drop a queued list refresh; the caller reads the list itself. */
+  #cancelList() {
+    if (this.#listTimer) clearTimeout(this.#listTimer)
+    this.#listTimer = null
+    this.#listSince = null
+  }
+
   /** Run any queued list refresh now. */
   private async settleList() {
     if (!this.#listTimer) return
-    clearTimeout(this.#listTimer)
-    this.#listTimer = null
+    this.#cancelList()
     this.#lastListRefresh = Date.now()
     await this.refreshRows()
   }
 
   /** Re-read the list rows for the current filter. */
   private async refreshRows() {
-    this.entries = await api.entries({
+    const asked = ++this.#rowsAsked
+    const rows = await api.entries({
       journalId: this.selectedJournal,
       // "All entries" is theirs: the assistant's notes are in its journal.
       notJournal: this.selectedJournal ? null : this.assistantJournalId,
@@ -1141,14 +1256,56 @@ class AppState {
       sort: 'dateDesc',
       limit: 500,
     })
+    // A read asked for after this one -- another journal chosen meanwhile --
+    // is the one to show.
+    if (asked !== this.#rowsAsked) return
+    this.entries = rows
+    this.#entriesLoaded = true
+  }
+
+  /** The list has been read since the vault was opened. Before it has, an
+   *  empty list is not yet "no entries". */
+  get entriesLoaded(): boolean {
+    return this.#entriesLoaded
+  }
+
+  /**
+   * Read the list, and open its newest entry, if that has not happened since
+   * the vault was opened. What showing the journal calls (`JournalView`),
+   * rather than the unlock: most windows open on another app. Shares a read
+   * already under way.
+   */
+  ensureEntries(): Promise<void> {
+    if (this.#entriesLoaded) return Promise.resolve()
+    if (this.#entriesLoading) return this.#entriesLoading
+    const loading: Promise<void> = this.#readEntries().finally(() => {
+      // A lock meanwhile let go of this one already, and the next unlock's
+      // may be under way.
+      if (this.#entriesLoading === loading) this.#entriesLoading = null
+    })
+    this.#entriesLoading = loading
+    return loading
+  }
+
+  async #readEntries() {
+    try {
+      this.#cancelList()
+      this.#lastListRefresh = Date.now()
+      await this.refreshRows()
+      // The newest -- unless something was opened while the list was being
+      // read, a link from another app to one entry, say.
+      const first = this.entries[0]
+      if (first && this.selectedEntry === null && this.entry === null) {
+        await this.openEntry(first.id)
+      }
+    } catch (e) {
+      await handle(e)
+    }
   }
 
   async refreshEntries() {
     try {
-      if (this.#listTimer) {
-        clearTimeout(this.#listTimer)
-        this.#listTimer = null
-      }
+      this.#cancelList()
       this.#lastListRefresh = Date.now()
       await this.refreshRows()
       // Keep a selection if it is still in view; otherwise open the newest.
@@ -1187,11 +1344,23 @@ class AppState {
   }
 
   async openEntry(id: EntryId) {
-    // Never let a pending autosave land after we have switched documents,
-    // and do not leave the row we are switching away from showing the title
-    // it had a few seconds ago.
+    const ticket = ++this.#opening
+    // Chosen at once: the row shows it, and a held j or k steps on from
+    // here rather than asking for the same entry again.
+    this.selectedEntry = id
+    // Read while the page being left is written: they are different
+    // entries. The same entry is read after its write, or the read could
+    // miss it -- and so is any entry after a page the vault does not have
+    // yet, whose first write can add it to another (`#mergeInto`).
+    const left = this.entry
+    const reading = left && (left.id === id || this.#unstored === left.id) ? null : api.entry(id)
+    void reading?.catch(() => {})
+    // Never let a pending autosave land after we have switched documents.
     await this.flush()
-    await this.settleList()
+    // The row being left catches up with its title, without holding up the
+    // page.
+    void this.settleList().catch(() => {})
+    if (ticket !== this.#opening) return
     // Leaving a page started from a template that nothing was typed into
     // drops it; it was never written. (One that was typed into was written
     // by the flush above.) See `#untouched`.
@@ -1199,12 +1368,17 @@ class AppState {
     if (this.#unstored !== id) this.#unstored = null
     this.selectedEntry = id
     try {
-      this.entry = await api.entry(id)
-      this.#baseVersion = this.entry.updatedAt
+      const entry = await (reading ?? api.entry(id))
+      // Another entry was asked for meanwhile, and is the one to show.
+      if (ticket !== this.#opening) return
+      this.entry = entry
+      this.#baseVersion = entry.updatedAt
+      this.#savedEdits = this.#edits
+      this.#pulled = null
       // A conflict belongs to the document that had one, not to the window.
       this.conflict = false
     } catch (e) {
-      await handle(e)
+      if (ticket === this.#opening) await handle(e)
     }
   }
 
@@ -1279,7 +1453,11 @@ class AppState {
     // Nothing stored yet means the first write is a create.
     this.#baseVersion = templated ? null : entry.updatedAt
     this.conflict = false
+    // Over any entry still being opened, which would otherwise land after it.
+    this.#opening++
     this.entry = entry
+    this.#savedEdits = this.#edits
+    this.#pulled = null
     this.selectedEntry = entry.id
     await this.showTheList()
   }
@@ -1311,11 +1489,13 @@ class AppState {
    * The journal keeps its own timer rather than an `Autosave` like the other
    * two stores, and the difference is real: there is one open document, and
    * the editor -- not this store -- holds the truth about it while it is
-   * open. `flush` therefore pulls the body and writes unconditionally
-   * instead of consulting a set of dirty ids that could never see a
-   * keystroke. Only the delay is shared, so all three agree on it.
+   * open. So it counts edits rather than keeping a set of dirty ids: every
+   * change to the open entry -- the editor's, the title's, a tag -- comes
+   * through here, and `flush` pulls the body and writes only when something
+   * has. Only the delay is shared, so all three agree on it.
    */
   scheduleSave() {
+    this.#edits++
     // Something was typed, so a page started from a template is somebody's
     // writing now and is saved like any other.
     if (this.#untouched === this.entry?.id) this.#untouched = null
@@ -1361,6 +1541,7 @@ class AppState {
       this.entry = day
       this.selectedEntry = day.id
       this.#baseVersion = day.updatedAt
+      this.#pulled = null
     }
     notify.info("Today's entry had already been started", {
       body: 'What you wrote here was added to the end of it.',
@@ -1395,6 +1576,12 @@ class AppState {
     // Nothing is written while a conflict is unresolved. Retrying would
     // only be refused again, and the author has a choice in front of them.
     if (this.conflict) return
+    // Nothing typed since the last write that landed: the vault already has
+    // it. Moving through the list used to write every entry it left. A page
+    // the vault does not have yet is the exception, once it has been typed
+    // into (`#untouched`, below).
+    if (this.#edits === this.#savedEdits && this.#unstored !== entry.id) return
+    const edits = this.#edits
     this.syncBody()
     // A page that still holds only its template is not written -- see
     // `#untouched`.
@@ -1430,13 +1617,22 @@ class AppState {
         if (twin && twin.id !== entry.id) {
           this.#writeStamp = null
           await this.#mergeInto(twin.id, entry)
+          this.#savedEdits = edits
           return
         }
       }
       entry.updatedAt = stamp.updatedAt
-      await api.saveEntry($state.snapshot(entry), this.#baseVersion, stamp.requestId)
+      // The document as the editor handed it over, when that is what is in
+      // `entry` -- copying it back out of reactive state walks every node of
+      // it. The rest of the entry is small.
+      const pulled = this.#pulled?.of === entry ? this.#pulled.body : null
+      this.#pulled = null
+      const { body, ...rest } = entry
+      const payload: Entry = { ...$state.snapshot(rest), body: pulled ?? $state.snapshot(body) }
+      await api.saveEntry(payload, this.#baseVersion, stamp.requestId)
       if (this.#unstored === entry.id) this.#unstored = null
       this.#writeStamp = null
+      this.#savedEdits = edits
       this.#baseVersion = entry.updatedAt
       this.lastSaved = entry.updatedAt
       // Pick up the new title and excerpt in the list, but not right now.
@@ -1469,11 +1665,10 @@ class AppState {
         return
       }
       await handle(e)
-      // The entry is still only in the editor. Unlike the other two stores
-      // there is no dirty set to put anything back into -- `flush` always
-      // writes whatever the editor currently holds -- so retrying is a
-      // matter of putting the timer back, with a widening gap so a vault on
-      // a full disk is not written to forty times a minute.
+      // The entry is still only in the editor, and still counted as edited
+      // -- nothing above marked it written -- so retrying is a matter of
+      // putting the timer back, with a widening gap so a vault on a full
+      // disk is not written to forty times a minute.
       //
       // Not after a lock: the entry has been dropped from memory and the
       // vault is not open, so there is nothing to write and nowhere to
@@ -1501,9 +1696,9 @@ class AppState {
       }
     } finally {
       this.saving = false
-      // Not after a save that ended in a lock: the refresh would fire four
-      // seconds later against a vault that is no longer open.
-      if (this.screen === 'main') this.queueListRefresh()
+      // Not after a save that ended in a lock: the refresh would fire a
+      // moment later against a vault that is no longer open.
+      if (this.screen === 'main') this.#listAfterSave()
     }
   }
 
@@ -1550,11 +1745,14 @@ class AppState {
   async #forceWrite() {
     const entry = this.entry
     if (!entry || !this.conflict) return
+    const edits = this.#edits
     this.syncBody()
+    this.#pulled = null
     this.saving = true
     try {
       entry.updatedAt = new Date().toISOString()
       await api.saveEntryForce($state.snapshot(entry))
+      this.#savedEdits = edits
       this.#baseVersion = entry.updatedAt
       this.lastSaved = entry.updatedAt
       this.conflict = false
@@ -1563,7 +1761,7 @@ class AppState {
       await handle(e)
     } finally {
       this.saving = false
-      if (this.screen === 'main') this.queueListRefresh()
+      if (this.screen === 'main') this.#listAfterSave()
     }
   }
 

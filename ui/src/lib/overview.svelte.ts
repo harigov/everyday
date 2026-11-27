@@ -36,6 +36,7 @@ import {
   importantThreads,
   introduce,
   LAYOUT_KEY,
+  MAIL_NEEDS,
   moveWidget,
   needsOf,
   parseLayout,
@@ -46,6 +47,7 @@ import {
   setSubject,
   soonestBack,
   specOf,
+  staleAfter,
   trackerWindow,
   type Need,
   type Widget,
@@ -55,6 +57,7 @@ import {
 import { periodStart, streakTarget, summarise, type HabitSummary } from './habits'
 import { promoteGmailInbox } from './mail'
 import type { Showing } from './onscreen'
+import { inShell } from './platform'
 import { purpose } from './purpose.svelte'
 import { pref } from './prefs'
 import { proposals } from './proposals.svelte'
@@ -67,6 +70,7 @@ import { thisMonth } from './money'
 import { localZone } from './screentime'
 import { isOpen, TASK_STATUSES, VaultError } from './types'
 import type {
+  ChangeKind,
   BalanceReport,
   CalendarEvent,
   CalendarInfo,
@@ -88,7 +92,9 @@ import type {
   SourceSummary,
   Story,
   Task,
+  TaskId,
   TaskStats,
+  TaskStatus,
   Thread,
   ThreadPage,
   ThreadFilter,
@@ -122,6 +128,41 @@ interface WeatherOutcome {
 /** The blank answer `ask` falls back to when nothing on the page needs the
  *  weather, or when `refresh`'s own generation has already moved on. */
 const NO_WEATHER: WeatherOutcome = { report: null, noLocation: false, error: null }
+
+/**
+ * How long a read is trusted on a later visit when no change has said
+ * otherwise. The backstop for what moves with the clock rather than with a
+ * write: a snoozed thread coming back, a follow-up falling due, a window
+ * that never heard a change because it was not running when it was made.
+ */
+const FRESH_MS = 5 * 60_000
+
+/**
+ * The same, for a window that is never told of its own writes -- a phone or
+ * a browser, whose server leaves them out of its stream, and the preview,
+ * which is told of almost nothing. Those read the page again on each visit,
+ * as they always did, unless the last read went out moments ago.
+ */
+const REVISIT_MS = 10_000
+
+/**
+ * How stale the mail cards may be before a change elsewhere on the page,
+ * landing while it is on screen, reads them again too. A minute: those are
+ * the reads that walk every Inbox, and a task ticked in another window is
+ * no reason to walk them on each tick.
+ */
+const MAIL_LIVE_MS = 60_000
+
+/** The reads that depend on which week is on screen. */
+const WEEK_NEEDS: ReadonlySet<Need> = new Set<Need>(['balance', 'weekTasks'])
+
+/**
+ * Reads a visit makes again on every client, as it always did, past
+ * `REVISIT_MS`. The forecast's place is the profile's, which changes with no
+ * change event, and the service keeps each place's forecast for a few
+ * minutes, so asking again costs a lookup rather than a trip to the network.
+ */
+const EVERY_VISIT: ReadonlySet<Need> = new Set<Need>(['weather'])
 
 const layoutPref = pref<Widget[]>(
   'jatayu.overview.layout',
@@ -257,6 +298,7 @@ class OverviewState {
   }
 
   set page(page: OverviewPage) {
+    const was = this.#page
     this.#page = page
     // Leaving Home ends arranging it: the handles belong to cards that are
     // no longer on screen.
@@ -266,6 +308,9 @@ class OverviewState {
     } catch {
       // Not kept; this session still has it.
     }
+    // The Brief page draws none of the cards, so a visit to it read none of
+    // them (see `start`); coming back to Home is when they are wanted.
+    if (page === 'home' && was !== 'home' && app.section === 'overview') void this.#visit()
   }
   /** Any day in the week being shown. The widgets resolve it to a Monday. */
   anchor = $state(todayIso())
@@ -364,7 +409,19 @@ class OverviewState {
    *  worth interrupting the rest of the page for. */
   weatherError = $state<string | null>(null)
 
-  #generation = latest()
+  /**
+   * Which refresh each need is being read by, until its answer lands. Each
+   * refresh takes the next number from `#reads`. A newer read of a need
+   * retires an older one's answer for that need alone, so a visit reading
+   * two stale cards and a tick re-reading one card do not throw each other's
+   * work away; and a lock clears the lot, so nothing on its way lands.
+   */
+  #reading = new Map<Need, number>()
+  #reads = 0
+  /** When each need was last read (the request, not the answer), and on which day. */
+  #fetched = new Map<Need, { at: number; day: string }>()
+  /** Needs a change has made stale since they were last read -- see `noteChange`. */
+  #dirty = new Set<Need>()
   /**
    * The needs a read has already answered, so `loading` is true only for what
    * has never been fetched. The page refreshes itself on every live change,
@@ -445,7 +502,9 @@ class OverviewState {
   /** Move the week being shown. `0` returns to the one holding today. */
   async goWeek(by: number) {
     this.anchor = by === 0 ? todayIso() : addDays(this.weekStart, by * 7)
-    await this.refresh()
+    // Only what is read by the week: paging through weeks of balance is no
+    // reason to walk every Inbox again on each step.
+    await this.refresh(WEEK_NEEDS)
   }
 
   // ── derived, for the widgets ─────────────────────────────────────────
@@ -595,17 +654,96 @@ class OverviewState {
    * Load whatever the page asks for. Called by the view on mount.
    *
    * Idempotent: mounting again -- which happens on every switch back to this
-   * app -- refreshes rather than blanking, so the charts do not flash empty
-   * on the way in.
+   * app -- reads again only what has gone stale since (see `#stale`), and
+   * never blanks, so the charts do not flash empty on the way in.
    */
   async start() {
     if (!this.enabled) return
     this.editing = false
-    await this.refresh()
+    await this.#visit()
+  }
+
+  /**
+   * What a visit reads: the stale part of Home, or nothing at all while the
+   * Brief page is up -- it draws none of the cards, and the briefs keep
+   * themselves current. The setter for `page` reads Home on the way back.
+   */
+  async #visit() {
+    if (!this.enabled) return
+    const stale = this.page === 'home' ? this.#stale() : new Set<Need>()
+    if (stale.size > 0) await this.refresh(stale)
+    else await this.#keepUp(this.needs)
+  }
+
+  /**
+   * What the live router runs while the page is on screen and a change that
+   * can move its figures came in: what changes made stale, rather than every
+   * read on the page. The mail cards wait for the next visit unless their
+   * own reads are a minute old -- see `MAIL_LIVE_MS`.
+   */
+  async liveRefresh() {
+    if (!this.enabled || this.page !== 'home') return
+    const now = Date.now()
+    const want = new Set<Need>()
+    for (const need of this.#stale()) {
+      const read = this.#fetched.get(need)
+      if (MAIL_NEEDS.has(need) && read && now - read.at < MAIL_LIVE_MS) continue
+      want.add(need)
+    }
+    if (want.size > 0) await this.refresh(want)
+  }
+
+  /**
+   * Told of every change event (this window's own included) by the live
+   * router, before it decides whether to reload anything: what the next
+   * visit has to fetch again. Marking only, never a read -- it is called for
+   * every heartbeat a screen-time collector sends.
+   */
+  noteChange(kind: ChangeKind): void {
+    const trackers = tracking.trackers
+    // No trackers known is "cannot tell": they may not have been read yet.
+    const screenTrackers =
+      trackers.length === 0 || trackers.some((t) => t.source?.type === 'screenTime')
+    for (const need of staleAfter(kind, screenTrackers)) this.#dirty.add(need)
+  }
+
+  /**
+   * Whether every write reaches `noteChange`, this window's own included: a
+   * desktop window over a vault in this process. Anywhere else a visit reads
+   * the page again, at most once in `REVISIT_MS`.
+   */
+  #hearsOwnWrites(): boolean {
+    return inShell && !app.remote
+  }
+
+  /**
+   * The needs on the page that have to be read again before they can be
+   * trusted: what a change made stale, what was never read, what was read on
+   * another day (every card here is about today or a window ending today),
+   * and what was read longer ago than this window trusts a read for. Not
+   * what is being read already, unless a change came in after that read
+   * went out: its answer may not hold the change, so a newer read takes over.
+   */
+  #stale(): Set<Need> {
+    const now = Date.now()
+    const today = todayIso()
+    const hears = this.#hearsOwnWrites()
+    const out = new Set<Need>()
+    for (const need of this.needs) {
+      if (this.#reading.has(need) && !this.#dirty.has(need)) continue
+      const trusted = hears && !EVERY_VISIT.has(need) ? FRESH_MS : REVISIT_MS
+      const read = this.#fetched.get(need)
+      if (this.#dirty.has(need) || !read || read.day !== today || now - read.at >= trusted) {
+        out.add(need)
+      }
+    }
+    return out
   }
 
   reset() {
-    this.#generation.next()
+    this.#reading.clear()
+    this.#fetched.clear()
+    this.#dirty.clear()
     this.#weatherGeneration.next()
     this.#stopWeatherPoll()
     this.report = null
@@ -646,7 +784,43 @@ class OverviewState {
   }
 
   /**
-   * Re-read everything the page needs, and nothing it does not.
+   * What the cards on the page need running beside their reads, whether or
+   * not anything is read this time.
+   */
+  async #keepUp(needs: Set<Need>) {
+    // A card drawing the running timer needs the wall clock ticking, and this
+    // app can be the first one on screen after a launch -- before the calendar
+    // view has mounted and started it for itself. Here rather than in `start`
+    // because `start` runs once per mount and a widget can be *added* to the
+    // page at any point after it; the elapsed figure on a freshly added "On
+    // now" card would otherwise sit frozen, which is the exact failure
+    // `watchClock` exists to prevent.
+    if (needs.has('today')) calendar.watchClock()
+    // "Today's events" dims what is over and picks out what is on, against
+    // the same wall clock -- so it needs it ticking for the same reason.
+    if (needs.has('todayEvents') && app.supportsCalendar) calendar.watchClock()
+    // The Weather widget redraws itself every fifteen minutes on its own,
+    // independent of whatever else makes this page refresh -- see
+    // `pollWeather`. Started or stopped here so adding or removing the
+    // widget takes effect on the very next refresh rather than the next
+    // mount.
+    if (needs.has('weather')) this.#startWeatherPoll()
+    else this.#stopWeatherPoll()
+    // The briefs store keeps itself current (a routine or run change reloads
+    // it) and the Brief page and Settings read it too, so a visit asks it
+    // only for what `visit` says is wanted. Not awaited -- its own `loading`
+    // is what the card reads, and nothing else on the page waits on it.
+    if (needs.has('brief')) void briefs.visit()
+    // The proposals store loads and reloads itself -- see `todo.start` for
+    // why this is idempotent -- so "Plan for tomorrow" only has to ask once,
+    // the same as every other app view does on its own way in.
+    // Not awaited: the card reads `proposals.pending` reactively.
+    if (needs.has('proposals') && !proposals.loaded) void proposals.refresh()
+  }
+
+  /**
+   * Re-read what the page needs, and nothing it does not: everything on it,
+   * or those of `want` that are on it.
    *
    * One `Promise.all` over the needs rather than a chain, because these are
    * independent reads of one open vault and running them in series would
@@ -659,83 +833,63 @@ class OverviewState {
    * so a lock still locks -- and the `reset` that follows from it clears the
    * partial results this call just wrote, which is the order that has to hold.
    */
-  async refresh() {
+  async refresh(want?: ReadonlySet<Need>) {
     if (!this.enabled) return
-    const mine = this.#generation.next()
+    const mine = ++this.#reads
     const needs = this.needs
-    this.loading = [...needs].some((need) => !this.#loadedNeeds.has(need))
+    /** What this call reads. */
+    const fetch = new Set([...needs].filter((need) => !want || want.has(need)))
+    const started = Date.now()
+    const today = todayIso()
+    for (const need of fetch) {
+      this.#reading.set(need, mine)
+      // Taken off now rather than when the answer lands: a change made while
+      // the read is on its way may not be in it, and marks the need again.
+      this.#dirty.delete(need)
+    }
+    this.#settleLoading()
     /** The first read that failed, if any. Reported once, at the end. */
     let failure: unknown = null
+    /** The needs whose read failed: read again on the next visit. */
+    const failed = new Set<Need>()
 
     /**
      * One read, or its empty answer.
      *
-     * `want` decides whether the round trip happens at all -- a page with no
-     * shelf card never asks for shelf counts -- and the `catch` is what keeps
-     * one failed read from being eight.
+     * Whether the round trip happens at all is this call's to decide -- a
+     * page with no shelf card never asks for shelf counts, and a visit that
+     * found only the tasks stale reads only the tasks -- and the `catch` is
+     * what keeps one failed read from being eight.
      */
-    const ask = <T>(want: boolean, read: () => Promise<T>, blank: T): Promise<T> =>
-      want
-        ? read().catch((e: unknown) => {
-            if (failure === null) failure = e
-            return blank
-          })
-        : Promise.resolve(blank)
-
-    // A card drawing the running timer needs the wall clock ticking, and this
-    // app can be the first one on screen after a launch -- before the calendar
-    // view has mounted and started it for itself. Here rather than in `start`
-    // because `start` runs once per mount and a widget can be *added* to the
-    // page at any point after it; the elapsed figure on a freshly added "On
-    // now" card would otherwise sit frozen, which is the exact failure
-    // `watchClock` exists to prevent.
-    if (needs.has('today')) calendar.watchClock()
-    // The proposals store loads and reloads itself -- see `todo.start` for
-    // why this is idempotent -- so "Plan for tomorrow" only has to ask once,
-    // the same as every other app view does on its own way in.
-    if (needs.has('proposals') && !proposals.loaded) await proposals.refresh()
-    // The briefs store is the same kind of thing: it keeps itself current
-    // (a routine or run change reloads it) and the Brief page and Settings
-    // read it too. Not awaited -- its own `loading` is what the card reads,
-    // and nothing else on the page waits on it.
-    if (needs.has('brief')) void briefs.start()
-    // The Weather widget redraws itself every fifteen minutes on its own,
-    // independent of whatever else makes this page refresh -- see
-    // `pollWeather`. Started or stopped here so adding or removing the
-    // widget takes effect on the very next refresh rather than the next
-    // mount.
-    if (needs.has('weather')) this.#startWeatherPoll()
-    else this.#stopWeatherPoll()
-    // "Today's events" dims what is over and picks out what is on, against
-    // the same wall clock -- so it needs it ticking for the same reason.
-    if (needs.has('todayEvents') && app.supportsCalendar) calendar.watchClock()
-
-    // The Inbox cards draw "Me" the way the mail list does, from each
-    // account's own addresses, and the Inbox reads below are over the
-    // accounts that keep mail. The account list loads once and keeps itself
-    // current from then on, so this is a round trip on the first refresh and
-    // nothing after it -- awaited here rather than raced, because two loads
-    // of it at once land only the later one, and a read that waited on the
-    // earlier would find the list still empty.
-    const inbox = app.supportsMail && (needs.has('importantMail') || needs.has('snoozedMail'))
-    if (app.supportsMail && (inbox || needs.has('mailFollowUps'))) await accounts.load()
-    const inboxes = inbox ? this.#inboxes() : Promise.resolve([] as MailboxId[])
+    const ask = <T>(
+      need: Need | readonly Need[],
+      read: () => Promise<T>,
+      blank: T,
+      supported = true,
+    ): Promise<T> => {
+      const asked = typeof need === 'string' ? [need] : need
+      if (!supported || !asked.some((n) => fetch.has(n))) return Promise.resolve(blank)
+      return read().catch((e: unknown) => {
+        if (failure === null) failure = e
+        for (const n of asked) failed.add(n)
+        return blank
+      })
+    }
 
     // One read per distinct window, each ending today. Asked only where the
     // backend carries the domain: a vault without mail has nothing to count,
     // and asking anyway would put an "unsupported" banner over the page.
-    const today = todayIso()
     const counted = <T>(
       need: 'mail' | 'meetings',
       supported: boolean,
       read: (from: string, to: string) => Promise<T>,
     ): Promise<Record<number, T>> =>
       Promise.all(
-        (needs.has(need) && supported ? activityWindows(this.widgets, need) : []).map(
+        (fetch.has(need) && supported ? activityWindows(this.widgets, need) : []).map(
           async (days) =>
             [
               days,
-              await ask<T | null>(true, () => read(addDays(today, -(days - 1)), today), null),
+              await ask<T | null>(need, () => read(addDays(today, -(days - 1)), today), null),
             ] as const,
         ),
       ).then((rows) => {
@@ -745,6 +899,20 @@ class OverviewState {
       })
 
     try {
+      await this.#keepUp(needs)
+      if (fetch.size === 0) return
+
+      // The Inbox cards draw "Me" the way the mail list does, from each
+      // account's own addresses, and the Inbox reads below are over the
+      // accounts that keep mail. The account list loads once and keeps itself
+      // current from then on, so this is a round trip on the first refresh
+      // and nothing after it -- awaited here rather than raced, because two
+      // loads of it at once land only the later one, and a read that waited
+      // on the earlier would find the list still empty.
+      const inbox = app.supportsMail && (fetch.has('importantMail') || fetch.has('snoozedMail'))
+      if (app.supportsMail && (inbox || fetch.has('mailFollowUps'))) await accounts.load()
+      const inboxes = inbox ? this.#inboxes() : Promise.resolve([] as MailboxId[])
+
       const [
         [
           report,
@@ -779,21 +947,17 @@ class OverviewState {
         karma,
       ] = await Promise.all([
         Promise.all([
-          ask(needs.has('balance'), () => api.balance(this.weekStart, this.weekEnd), null),
+          ask('balance', () => api.balance(this.weekStart, this.weekEnd), null),
+          ask('trackerDays', () => api.trackerDays({ from: this.dataFrom, to: today }), []),
+          ask('taskStats', () => api.taskStats(), null),
           ask(
-            needs.has('trackerDays'),
-            () => api.trackerDays({ from: this.dataFrom, to: today }),
-            [],
-          ),
-          ask(needs.has('taskStats'), () => api.taskStats(), null),
-          ask(
-            needs.has('weekTasks'),
+            'weekTasks',
             () => api.tasks({ dueFrom: this.weekStart, dueTo: this.weekEnd, limit: 500 }),
             [],
           ),
-          ask(needs.has('library'), () => api.libraryStats(), null),
+          ask('library', () => api.libraryStats(), null),
           ask(
-            needs.has('entries'),
+            'entries',
             // Their writing: not the notes the assistant leaves itself.
             () =>
               api.entries({
@@ -804,53 +968,53 @@ class OverviewState {
               }),
             [],
           ),
-          ask(needs.has('notes'), () => api.notes({ limit: 6 }), []),
-          ask(needs.has('today'), () => api.blocks({ from: today, to: today }), []),
-          ask(needs.has('weather'), () => this.fetchWeather(), NO_WEATHER),
+          ask('notes', () => api.notes({ limit: 6 }), []),
+          ask('today', () => api.blocks({ from: today, to: today }), []),
+          ask('weather', () => this.fetchWeather(), NO_WEATHER),
           // Asked only where the backend carries the Feed, as mail is: a vault
           // without it has nothing to count, and asking anyway would put an
           // "unsupported" banner over the page.
-          ask(needs.has('news') && app.supportsNews, () => api.newsSources(), []),
+          ask('news', () => api.newsSources(), [], app.supportsNews),
           ask(
-            needs.has('news') && app.supportsNews,
+            'news',
             () => api.stories({ unreadOnly: true, limit: 20 }).then((page) => page.stories),
             [],
+            app.supportsNews,
           ),
           ask(
-            needs.has('going') && app.supportsTasks,
+            'going',
             () => api.projects().then((all) => all.filter((p) => p.status === 'active')),
             [],
+            app.supportsTasks,
           ),
           ask(
-            needs.has('going') && app.supportsLibrary,
+            'going',
             () => api.items({ statuses: ['active'], sort: 'updatedDesc', limit: 60 }),
             [],
+            app.supportsLibrary,
           ),
-          ask(needs.has('going') && app.supportsLibrary, () => api.kinds(), []),
-          ask(needs.has('people') && app.supportsLibrary, () => api.peopleDue(), []),
+          ask('going', () => api.kinds(), [], app.supportsLibrary),
+          ask('people', () => api.peopleDue(), [], app.supportsLibrary),
         ]),
         counted('mail', app.supportsMail, api.mailActivity),
         counted('meetings', app.supportsCalendar, api.meetingActivity),
         // The calendars give a meeting row its colour, and an event on "Today's
         // events" too.
-        ask(
-          (needs.has('meetings') || needs.has('todayEvents')) && app.supportsCalendar,
-          () => api.calendars(),
-          [],
-        ),
+        ask(['meetings', 'todayEvents'], () => api.calendars(), [], app.supportsCalendar),
         // The home cards: today's tasks and events, and the three Inbox
         // cards. Each through `ask`, so an account whose server is down
         // leaves its card empty rather than the page.
         Promise.all([
           ask(
-            needs.has('todayTasks') && app.supportsTasks,
+            'todayTasks',
             // Everything due up to today that is still open: the todo app's
             // own Today list, which counts what slipped as today's problem.
             () => api.tasks({ dueTo: today, statuses: OPEN_STATUSES, sort: 'dueAsc', limit: 200 }),
             [],
+            app.supportsTasks,
           ),
           ask(
-            needs.has('importantMail') && app.supportsMail,
+            'importantMail',
             async () => {
               const ids = await inboxes
               if (ids.length === 0) return []
@@ -864,22 +1028,25 @@ class OverviewState {
               return importantThreads(lists)
             },
             [],
+            app.supportsMail,
           ),
           ask(
-            needs.has('snoozedMail') && app.supportsMail,
+            'snoozedMail',
             async () => {
               const ids = await inboxes
               return ids.length === 0 ? [] : soonestBack(await allSnoozed(ids))
             },
             [],
+            app.supportsMail,
           ),
           ask(
-            needs.has('mailFollowUps') && app.supportsMail,
+            'mailFollowUps',
             () => api.mailFollowUps(null).then((list) => list.threads),
             [],
+            app.supportsMail,
           ),
           ask(
-            needs.has('todayEvents') && app.supportsCalendar,
+            'todayEvents',
             // Visible calendars only, as the Calendar draws them: one somebody
             // hid is one they asked not to be shown.
             () =>
@@ -887,75 +1054,92 @@ class OverviewState {
                 .events({ from: today, to: today, visibleOnly: true })
                 .then((events) => dayAgenda(events)),
             [],
+            app.supportsCalendar,
           ),
+          ask('moneyMonth', () => api.moneyMonth(thisMonth()), null, app.supportsMoney),
+          ask('healthToday', () => api.healthToday(today, localZone()), null, app.supportsHealth),
           ask(
-            needs.has('moneyMonth') && app.supportsMoney,
-            () => api.moneyMonth(thisMonth()),
-            null,
-          ),
-          ask(
-            needs.has('healthToday') && app.supportsHealth,
-            () => api.healthToday(today, localZone()),
-            null,
-          ),
-          ask(
-            needs.has('screenToday') && app.supportsScreenTime,
+            'screenToday',
             () => api.screenTimeReport({ from: today, to: today, tz: localZone(), devices: [] }),
             null,
+            app.supportsScreenTime,
           ),
         ]),
         // A year of Karma, whatever the card's size: the narrower heatmap
         // draws fewer of the same weeks.
-        ask(needs.has('karma'), () => api.karma(addDays(today, -KARMA_DAYS), today), null),
+        ask('karma', () => api.karma(addDays(today, -KARMA_DAYS), today), null),
       ])
-      if (!this.#generation.isCurrent(mine)) return
 
-      this.report = report
-      this.habitDays = days
-      this.taskStats = taskStats
-      this.weekTasks = weekTasks
-      this.libraryStats = libraryStats
-      this.entries = entries
-      this.notes = notes
-      this.mail = mail
-      this.meetings = meetings
-      this.calendars = calendars
-      this.newsSources = newsSources
-      this.newsStories = newsStories
-      this.goingProjects = goingProjects
-      this.goingItems = goingItems
-      this.goingShelves = goingShelves
-      this.peopleDue = peopleDue
-      this.todayTasks = todayTasks
-      this.importantMail = importantMail
-      this.snoozedMail = snoozedMail
-      this.followUps = followUps
-      this.todayEvents = todayEvents
-      this.moneyMonth = moneyMonth
-      this.healthDay = healthDay
-      this.screenToday = screenToday
-      this.karma = karma
-      this.bookedToday = blocks.reduce(
-        (sum, b) => {
-          if (b.localDate !== today) return sum
-          const minutes = minutesBetween(b.start, b.end)
-          if (b.kind === 'actual') sum.logged += minutes
-          else sum.planned += minutes
-          return sum
-        },
-        { logged: 0, planned: 0 },
-      )
-      this.weather = weather.report
-      this.weatherNoLocation = weather.noLocation
-      this.weatherError = weather.error
-      for (const need of needs) this.#loadedNeeds.add(need)
+      // What lands is what this call read and nothing newer is reading:
+      // fields of needs it did not read keep what they hold.
+      const landed = new Set<Need>()
+      for (const need of fetch) {
+        if (this.#reading.get(need) !== mine) continue
+        this.#reading.delete(need)
+        landed.add(need)
+      }
+      if (landed.size === 0) return
+
+      if (landed.has('balance')) this.report = report
+      if (landed.has('trackerDays')) this.habitDays = days
+      if (landed.has('taskStats')) this.taskStats = taskStats
+      if (landed.has('weekTasks')) this.weekTasks = weekTasks
+      if (landed.has('library')) this.libraryStats = libraryStats
+      if (landed.has('entries')) this.entries = entries
+      if (landed.has('notes')) this.notes = notes
+      if (landed.has('mail')) this.mail = mail
+      if (landed.has('meetings')) this.meetings = meetings
+      if (landed.has('meetings') || landed.has('todayEvents')) this.calendars = calendars
+      if (landed.has('news')) {
+        this.newsSources = newsSources
+        this.newsStories = newsStories
+      }
+      if (landed.has('going')) {
+        this.goingProjects = goingProjects
+        this.goingItems = goingItems
+        this.goingShelves = goingShelves
+      }
+      if (landed.has('people')) this.peopleDue = peopleDue
+      if (landed.has('todayTasks')) this.todayTasks = todayTasks
+      if (landed.has('importantMail')) this.importantMail = importantMail
+      if (landed.has('snoozedMail')) this.snoozedMail = snoozedMail
+      if (landed.has('mailFollowUps')) this.followUps = followUps
+      if (landed.has('todayEvents')) this.todayEvents = todayEvents
+      if (landed.has('moneyMonth')) this.moneyMonth = moneyMonth
+      if (landed.has('healthToday')) this.healthDay = healthDay
+      if (landed.has('screenToday')) this.screenToday = screenToday
+      if (landed.has('karma')) this.karma = karma
+      if (landed.has('today')) {
+        this.bookedToday = blocks.reduce(
+          (sum, b) => {
+            if (b.localDate !== today) return sum
+            const minutes = minutesBetween(b.start, b.end)
+            if (b.kind === 'actual') sum.logged += minutes
+            else sum.planned += minutes
+            return sum
+          },
+          { logged: 0, planned: 0 },
+        )
+      }
+      if (landed.has('weather')) {
+        this.weather = weather.report
+        this.weatherNoLocation = weather.noLocation
+        this.weatherError = weather.error
+        // A forecast that could not be read is asked again on the next visit.
+        if (weather.error !== null) failed.add('weather')
+      }
+      for (const need of landed) {
+        this.#loadedNeeds.add(need)
+        if (failed.has(need)) this.#dirty.add(need)
+        else this.#fetched.set(need, { at: started, day: today })
+      }
 
       // Areas, goals and what has happened against them belong to `purpose`,
       // which the todo app and the pickers also read. Asked for here rather
       // than duplicated, and only when something on the page draws it.
-      if (needs.has('purpose')) await purpose.load(true)
-      if (needs.has('trackerDays')) await tracking.load()
-      if (needs.has('goalActivity')) await purpose.refreshActivity()
+      if (landed.has('purpose')) await purpose.load(true)
+      if (landed.has('trackerDays')) await tracking.load()
+      if (landed.has('goalActivity')) await purpose.refreshActivity()
 
       // Last, and after everything above has landed. `handle` locks the
       // window when the failure was a locked vault, and the `reset` that
@@ -964,8 +1148,26 @@ class OverviewState {
     } catch (e) {
       await handle(e)
     } finally {
-      if (this.#generation.isCurrent(mine)) this.loading = false
+      // Anything still marked as this call's never landed: read it again.
+      for (const need of fetch) {
+        if (this.#reading.get(need) !== mine) continue
+        this.#reading.delete(need)
+        this.#dirty.add(need)
+      }
+      this.#settleLoading()
     }
+  }
+
+  /**
+   * "Loading…" while a need that has never been answered is being read, and
+   * not for a read of something already on screen: the page re-reads itself
+   * as changes come in, and the word in the header on each of those would be
+   * a flash over figures that did not go anywhere.
+   */
+  #settleLoading() {
+    this.loading = [...this.needs].some(
+      (need) => !this.#loadedNeeds.has(need) && this.#reading.has(need),
+    )
   }
 
   /**
@@ -998,11 +1200,30 @@ class OverviewState {
    * today" and "Tasks, counted" move with it, when either is on the page:
    * a list that lost a task under a tile still claiming it would be the
    * page disagreeing with itself.
+   *
+   * Drawn ticked at once, as the todo app's own tick is, and put back if the
+   * write does not go: the box should not wait on a commit. A second press
+   * on the same row while its write is on its way is let go, so two writes
+   * of the one task cannot race each other to the vault.
    */
   async tickTask(task: Task) {
-    const saved = await todo.toggleDoneOf(task)
+    if (this.#ticking.has(task.id)) return
+    this.#ticking.add(task.id)
+    // The card's copy, as it was: the direction is read from it, as before.
+    const before = $state.snapshot(task)
+    const status: TaskStatus = before.status === 'done' ? 'todo' : 'done'
+    const completedAt = status === 'done' ? (before.completedAt ?? new Date().toISOString()) : null
+    this.#replaceToday({ ...before, status, completedAt })
+    let saved: Task | null = null
+    try {
+      saved = await todo.toggleDoneOf(before)
+    } finally {
+      this.#ticking.delete(task.id)
+      // What was written, or the row as it was. `toggleDoneOf` has already
+      // said why, when it could not write.
+      this.#replaceToday(saved ?? before)
+    }
     if (!saved) return
-    this.todayTasks = this.todayTasks.map((t) => (t.id === saved.id ? saved : t))
     if (this.needs.has('taskStats')) {
       try {
         this.taskStats = await api.taskStats()
@@ -1010,6 +1231,14 @@ class OverviewState {
         /* a stale count is not worth a banner over a tick that landed */
       }
     }
+  }
+
+  /** Rows of "Tasks for today" being ticked, by task. See `tickTask`. */
+  #ticking = new Set<TaskId>()
+
+  /** Put `task` in place of the row with its id on "Tasks for today". */
+  #replaceToday(task: Task) {
+    this.todayTasks = this.todayTasks.map((t) => (t.id === task.id ? task : t))
   }
 
   /**

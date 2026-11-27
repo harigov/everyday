@@ -68,7 +68,7 @@
 //! frames end, never mind writing to it -- must never truncate on the way
 //! there. [`scan_frames`] is the read-only form: it walks the identical
 //! length prefixes and reports where the walk stopped, but never opens the
-//! file for writing and never shortens it. [`pack_dead_stats`],
+//! file for writing and never shortens it. [`FilePackStore::pack_dead_stats`],
 //! [`FilePackStore::compaction_worthwhile`] and [`compact_one_pack`] all go
 //! through it rather than the write path's `recover_valid_len`, and for a
 //! reason sharper than "reads should not write": a frame's length prefix is
@@ -131,8 +131,8 @@
 //!    length whenever a frame's declared size points past the end of the
 //!    file by more than any real write could produce -- the one case this
 //!    module cannot tell apart from a genuine torn tail using length
-//!    prefixes alone. [`pack_dead_stats`] turns that into an `Err`, which
-//!    [`FilePackStore::compaction_worthwhile`] logs and skips past (that one
+//!    prefixes alone. [`FilePackStore::pack_dead_stats`] turns that into an
+//!    `Err`, which [`FilePackStore::compaction_worthwhile`] logs and skips past (that one
 //!    pack contributes nothing to the answer, but every other pack in the
 //!    account still does) and which [`compact_one_pack`] surfaces the same
 //!    way a corrupt frame already made it fail -- caught by
@@ -146,8 +146,8 @@
 //! exactly one place: `jatayu_service::mail::sync::task`, between an
 //! account's sync passes, only once that pass's own `append_batch` calls
 //! have all returned and the outbox has drained -- see that module's own
-//! docs for the sequencing. [`FilePackStore`] backs this with its own
-//! coarse lock (below) as a safety net against two tasks in the *same*
+//! docs for the sequencing. [`FilePackStore`] backs this with a lock of its
+//! own per account (below) as a safety net against two tasks in the *same*
 //! process racing each other, not as the throughput design; nothing in this
 //! module can enforce the invariant against a second *process* holding the
 //! vault's write claim, which is why rule 3 above exists as well, not only
@@ -158,7 +158,7 @@ use crate::error::{Error, Result};
 use crate::fsutil;
 use crate::id::PackId;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -504,13 +504,21 @@ pub fn pack_aad(pack: PackId, offset: u64) -> Vec<u8> {
 pub struct FilePackStore {
     root: PathBuf,
     cipher: Arc<dyn Cipher>,
-    /// Serialises every method against every other, on this store. A single
-    /// coarse lock rather than one per account: the vault this exists for
-    /// already promises exactly one writer at a time -- see "the existing
-    /// write claim" in `docs/plans/mail.md`'s risk table -- so this is a
-    /// safety net against two tasks in the *same* process racing each
-    /// other, not a throughput design.
-    lock: Mutex<()>,
+    /// One lock per account directory, serialising every method against every
+    /// other for that account. The vault this exists for already promises
+    /// exactly one writer at a time -- see "the existing write claim" in
+    /// `docs/plans/mail.md`'s risk table -- so this is a safety net against
+    /// two tasks in the *same* process racing each other, not a throughput
+    /// design. Per account rather than one for the store because nothing here
+    /// spans two accounts, and a single lock had one account's compaction
+    /// check -- a walk of every frame it has -- hold up another's new mail.
+    locks: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
+    /// Every frame offset of a pack that is no longer being written to, keyed
+    /// by the pack's path and good while the file's length is what it was
+    /// when walked -- see [`FilePackStore::frame_offsets`]. What lets the
+    /// hourly compaction check read only the `.dead` files of packs it has
+    /// walked once already.
+    frames: Mutex<HashMap<PathBuf, WalkedFrames>>,
     /// [`PACK_ROTATE_BYTES`] everywhere but this crate's own tests, which
     /// shrink it so that exercising rotation and compaction writes kilobytes
     /// rather than several 64 MB packs at once into a shared temp directory.
@@ -532,7 +540,97 @@ impl FilePackStore {
     pub fn open(root: impl Into<PathBuf>, cipher: Arc<dyn Cipher>) -> Result<Self> {
         let root = root.into();
         std::fs::create_dir_all(&root).map_err(|e| Error::io(&root, e))?;
-        Ok(Self { root, cipher, lock: Mutex::new(()), rotate_bytes: PACK_ROTATE_BYTES })
+        Ok(Self {
+            root,
+            cipher,
+            locks: Mutex::new(HashMap::new()),
+            frames: Mutex::new(HashMap::new()),
+            rotate_bytes: PACK_ROTATE_BYTES,
+        })
+    }
+
+    /// The lock serialising everything done to the account kept in `dir`.
+    fn account_lock(&self, dir: &Path) -> Arc<Mutex<()>> {
+        let mut locks = self.locks.lock().unwrap_or_else(|e| e.into_inner());
+        locks.entry(dir.to_path_buf()).or_default().clone()
+    }
+
+    /// Every frame offset in `pack`, from a length-prefix walk -- or, for a
+    /// pack `settled` (not the account's newest, so nothing appends to it),
+    /// from the last walk of it while its length on disk is unchanged. Only a
+    /// walk that reached a clean end is kept: a pack with a torn tail may yet
+    /// be cut back and written again to the very same length. A desynced walk
+    /// is an `Err`, as in [`FilePackStore::pack_dead_stats`].
+    fn frame_offsets(&self, dir: &Path, pack: PackId, settled: bool) -> Result<Arc<Vec<u64>>> {
+        let path = dir.join(format!("{pack}.pack"));
+        if settled {
+            let len = match std::fs::metadata(&path) {
+                Ok(meta) => meta.len(),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(Arc::new(Vec::new()));
+                }
+                Err(e) => return Err(Error::io(&path, e)),
+            };
+            let frames = self.frames.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(walked) = frames.get(&path).filter(|w| w.len == len) {
+                return Ok(walked.offsets.clone());
+            }
+        }
+        let mut found = Vec::new();
+        let scan = walk_frames(&path, Some(&mut found))?;
+        if scan.desynced {
+            return Err(desynced_stats(pack));
+        }
+        let offsets: Arc<Vec<u64>> =
+            Arc::new(found.into_iter().map(|(offset, _)| offset).collect());
+        if settled && scan.clean() {
+            let mut frames = self.frames.lock().unwrap_or_else(|e| e.into_inner());
+            frames.insert(path, WalkedFrames { len: scan.total_len, offsets: offsets.clone() });
+        }
+        Ok(offsets)
+    }
+
+    /// `pack`'s total frame count and how many of them `.dead` names -- a
+    /// decrypt-nothing summary shared by
+    /// [`FilePackStore::compaction_worthwhile`] and
+    /// [`FilePackStore::pack_is_fully_dead`]. A pack that does not exist
+    /// (already reclaimed, or never had a frame written) reads as `(0, 0)`.
+    ///
+    /// Reads the pack read-only -- this must never truncate, since it runs on
+    /// every `compaction_worthwhile` check -- and returns `Err` when the frame
+    /// walk desynchronises (see [`FrameScan::desynced`]) rather than
+    /// reporting statistics computed from a walk that may have lost track of
+    /// live frames: every caller here treats that as "leave this pack alone,"
+    /// never as license to keep walking on bad information.
+    fn pack_dead_stats(&self, dir: &Path, pack: PackId, settled: bool) -> Result<(u64, u64)> {
+        let offsets = self.frame_offsets(dir, pack, settled)?;
+        let dead = read_dead_offsets(&dir.join(format!("{pack}.dead")))?;
+        let total = offsets.len() as u64;
+        let dead_count = offsets.iter().filter(|offset| dead.contains(offset)).count() as u64;
+        Ok((total, dead_count))
+    }
+
+    /// Does `pack` hold not one live frame, proved from its own `.dead`
+    /// bookkeeping alone? What [`FilePackStore::compact`]'s guard on an empty
+    /// `referenced` list asks of every sweep-eligible candidate before ever
+    /// trusting the list. A pack with zero frames at all answers `true`
+    /// trivially -- there is nothing live in it to miss.
+    fn pack_is_fully_dead(&self, dir: &Path, pack: PackId, settled: bool) -> Result<bool> {
+        let (total, dead_count) = self.pack_dead_stats(dir, pack, settled)?;
+        Ok(total == dead_count)
+    }
+
+    /// Forget the walked frames of every pack in `dir`, or of `packs` alone.
+    fn forget_frames(&self, dir: &Path, packs: Option<&[PackId]>) {
+        let mut frames = self.frames.lock().unwrap_or_else(|e| e.into_inner());
+        match packs {
+            Some(packs) => {
+                for pack in packs {
+                    frames.remove(&dir.join(format!("{pack}.pack")));
+                }
+            }
+            None => frames.retain(|path, _| !path.starts_with(dir)),
+        }
     }
 
     /// The same store with a smaller rotation threshold, for tests.
@@ -595,8 +693,9 @@ impl PackStore for FilePackStore {
         if messages.is_empty() {
             return Ok(Vec::new());
         }
-        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let dir = self.account_dir(account);
+        let lock = self.account_lock(&dir);
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let (pack, path, mut offset) = self.current_pack(&dir)?;
         let mut file =
             OpenOptions::new().append(true).open(&path).map_err(|e| Error::io(&path, e))?;
@@ -635,51 +734,46 @@ impl PackStore for FilePackStore {
         if refs.is_empty() {
             return Ok(());
         }
-        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        let mut by_pack: BTreeMap<(String, PackId), Vec<u64>> = BTreeMap::new();
+        let mut by_account: BTreeMap<&str, BTreeMap<PackId, Vec<u64>>> = BTreeMap::new();
         for r in refs {
-            by_pack.entry((r.account.clone(), r.pack)).or_default().push(r.offset);
+            by_account.entry(&r.account).or_default().entry(r.pack).or_default().push(r.offset);
         }
-        for ((account, pack), offsets) in by_pack {
-            let dir = self.account_dir(&account);
-            let path = dir.join(format!("{pack}.dead"));
-            let mut text = String::new();
-            for offset in offsets {
-                text.push_str(&offset.to_string());
-                text.push('\n');
+        for (account, by_pack) in by_account {
+            let dir = self.account_dir(account);
+            let lock = self.account_lock(&dir);
+            let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+            for (pack, offsets) in by_pack {
+                mark_dead_in(&dir, pack, &offsets)?;
             }
-            let mut file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-                .map_err(|e| Error::io(&path, e))?;
-            file.write_all(text.as_bytes()).map_err(|e| Error::io(&path, e))?;
-            file.sync_all().map_err(|e| Error::io(&path, e))?;
         }
         Ok(())
     }
 
     fn delete_account(&self, account: &str) -> Result<()> {
-        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let dir = self.account_dir(account);
+        let lock = self.account_lock(&dir);
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         match std::fs::remove_dir_all(&dir) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(Error::io(&dir, e)),
         }
         fsutil::sync_dir(&self.root);
+        self.forget_frames(&dir, None);
         Ok(())
     }
 
     fn high_water_mark(&self, account: &str) -> Result<Option<PackId>> {
-        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let dir = self.account_dir(account);
+        let lock = self.account_lock(&dir);
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         Ok(Self::list_packs(&dir)?.into_iter().next_back())
     }
 
     fn compaction_worthwhile(&self, account: &str, snapshot: &ReferencedSnapshot) -> Result<bool> {
-        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let dir = self.account_dir(account);
+        let lock = self.account_lock(&dir);
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let packs = Self::list_packs(&dir)?;
         let newest = packs.last().copied();
 
@@ -697,7 +791,7 @@ impl PackStore for FilePackStore {
                 }
                 continue;
             }
-            match pack_dead_stats(&dir, *pack) {
+            match self.pack_dead_stats(&dir, *pack, Some(*pack) != newest) {
                 Ok((total, dead_count)) => {
                     if total > 0 && dead_count * 3 >= total {
                         return Ok(true);
@@ -730,8 +824,9 @@ impl PackStore for FilePackStore {
         snapshot: &ReferencedSnapshot,
         should_continue: &dyn Fn() -> bool,
     ) -> Result<CompactionResult> {
-        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let dir = self.account_dir(account);
+        let lock = self.account_lock(&dir);
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let packs = Self::list_packs(&dir)?;
         let newest = packs.last().copied();
         let mut result = CompactionResult::default();
@@ -746,7 +841,7 @@ impl PackStore for FilePackStore {
                 if !sweep_eligible(pack, snapshot.high_water()) {
                     continue;
                 }
-                if !pack_is_fully_dead(&dir, pack)? {
+                if !self.pack_is_fully_dead(&dir, pack, Some(pack) != newest)? {
                     tracing::warn!(
                         account,
                         pack = %pack,
@@ -822,8 +917,10 @@ impl PackStore for FilePackStore {
         if packs.is_empty() {
             return Ok(());
         }
-        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let dir = self.account_dir(account);
+        let lock = self.account_lock(&dir);
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        self.forget_frames(&dir, Some(packs));
         for pack in packs {
             let path = dir.join(format!("{pack}.pack"));
             match std::fs::remove_file(&path) {
@@ -908,7 +1005,8 @@ fn compact_one_pack(
     // `Err` here is caught by `FilePackStore::compact`'s own per-pack
     // handling, the same as any other corrupt frame, and the pack is left
     // exactly where it is.
-    let scan = scan_frames(&path)?;
+    let mut offsets = Vec::new();
+    let scan = walk_frames(&path, Some(&mut offsets))?;
     if scan.desynced {
         return Err(Error::Invalid(format!(
             "pack {pack} has a frame length prefix that does not look like a torn \
@@ -918,7 +1016,6 @@ fn compact_one_pack(
     }
     let valid_len = scan.valid_len;
     let dead = read_dead_offsets(&dead_path)?;
-    let offsets = frame_offsets(&path, valid_len)?;
     let total = offsets.len() as u64;
     let live: Vec<(u64, u32)> =
         offsets.into_iter().filter(|(offset, _)| !dead.contains(offset)).collect();
@@ -966,67 +1063,39 @@ fn compact_one_pack(
     Ok(Some((new_pack, pack_remap, bytes_reclaimed)))
 }
 
-/// Every frame offset and length currently in `path`, up to `valid_len`,
-/// from a length-prefix-only walk -- no sealed bytes are ever read or
-/// decrypted. Shared by [`compact_one_pack`]'s own rewrite and by
-/// [`pack_dead_stats`], which every live/dead reasoning about a pack that
-/// must not pay for a decrypt goes through.
-fn frame_offsets(path: &Path, valid_len: u64) -> Result<Vec<(u64, u32)>> {
-    let mut file = File::open(path).map_err(|e| Error::io(path, e))?;
-    let mut offsets = Vec::new();
-    let mut pos = 0u64;
-    while pos + FRAME_PREFIX_LEN <= valid_len {
-        file.seek(SeekFrom::Start(pos)).map_err(|e| Error::io(path, e))?;
-        let mut len_buf = [0u8; FRAME_PREFIX_LEN as usize];
-        file.read_exact(&mut len_buf).map_err(|e| Error::io(path, e))?;
-        let len = u32::from_le_bytes(len_buf);
-        let frame_offset = pos + FRAME_PREFIX_LEN;
-        offsets.push((frame_offset, len));
-        pos = frame_offset + len as u64;
-    }
-    Ok(offsets)
+/// What one [`FilePackStore::frame_offsets`] walk of a settled pack found,
+/// good while the file is still `len` bytes long.
+struct WalkedFrames {
+    len: u64,
+    offsets: Arc<Vec<u64>>,
 }
 
-/// `pack`'s total frame count and how many of them `.dead` names -- a
-/// decrypt-nothing summary shared by
-/// [`FilePackStore::compaction_worthwhile`] and [`pack_is_fully_dead`]. A
-/// pack that does not exist (already reclaimed, or never had a frame
-/// written) reads as `(0, 0)`.
-///
-/// Reads the pack read-only, through [`scan_frames`] -- this must never
-/// truncate, since it runs on every `compaction_worthwhile` check, which is
-/// documented to cost nothing and touch nothing on every sync-pass wake.
-/// Returns `Err` when the frame walk desynchronises (see
-/// [`FrameScan::desynced`]) rather than reporting statistics computed from a
-/// walk that may have lost track of live frames -- every caller here treats
-/// that as "leave this pack alone," never as license to keep walking on bad
-/// information.
-fn pack_dead_stats(dir: &Path, pack: PackId) -> Result<(u64, u64)> {
-    let path = dir.join(format!("{pack}.pack"));
-    let dead_path = dir.join(format!("{pack}.dead"));
-    let scan = scan_frames(&path)?;
-    if scan.desynced {
-        return Err(Error::Invalid(format!(
-            "pack {pack} has a frame length prefix that does not look like a torn \
-             tail from a crash; refusing to report dead-frame statistics computed \
-             from a walk that may have lost track of live frames past that point"
-        )));
-    }
-    let dead = read_dead_offsets(&dead_path)?;
-    let offsets = frame_offsets(&path, scan.valid_len)?;
-    let total = offsets.len() as u64;
-    let dead_count = offsets.iter().filter(|(offset, _)| dead.contains(offset)).count() as u64;
-    Ok((total, dead_count))
+/// The error a desynced frame walk is reported as wherever dead-frame
+/// statistics were asked for.
+fn desynced_stats(pack: PackId) -> Error {
+    Error::Invalid(format!(
+        "pack {pack} has a frame length prefix that does not look like a torn \
+         tail from a crash; refusing to report dead-frame statistics computed \
+         from a walk that may have lost track of live frames past that point"
+    ))
 }
 
-/// Does `pack` hold not one live frame, proved from its own `.dead`
-/// bookkeeping alone? What [`FilePackStore::compact`]'s guard on an empty
-/// `referenced` list asks of every sweep-eligible candidate before ever
-/// trusting the list. A pack with zero frames at all answers `true`
-/// trivially -- there is nothing live in it to miss.
-fn pack_is_fully_dead(dir: &Path, pack: PackId) -> Result<bool> {
-    let (total, dead_count) = pack_dead_stats(dir, pack)?;
-    Ok(total == dead_count)
+/// Append `offsets` to `pack`'s `.dead` file in `dir`, durably.
+fn mark_dead_in(dir: &Path, pack: PackId, offsets: &[u64]) -> Result<()> {
+    let path = dir.join(format!("{pack}.dead"));
+    let mut text = String::new();
+    for offset in offsets {
+        text.push_str(&offset.to_string());
+        text.push('\n');
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| Error::io(&path, e))?;
+    file.write_all(text.as_bytes()).map_err(|e| Error::io(&path, e))?;
+    file.sync_all().map_err(|e| Error::io(&path, e))?;
+    Ok(())
 }
 
 /// A sanity ceiling on one sealed frame's declared length, used only to tell
@@ -1105,6 +1174,14 @@ impl FrameScan {
 /// silently discarding, or silently compacting away, frames a bit flip only
 /// pretended did not exist.
 fn scan_frames(path: &Path) -> Result<FrameScan> {
+    walk_frames(path, None)
+}
+
+/// [`scan_frames`], also handing every complete frame's offset (past its
+/// length prefix) and sealed length to `frames`, in order -- the one walk a
+/// caller needing both the boundary and the frames makes, rather than a scan
+/// for the one and a second pass over the same prefixes for the other.
+fn walk_frames(path: &Path, mut frames: Option<&mut Vec<(u64, u32)>>) -> Result<FrameScan> {
     let mut file = match File::open(path) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -1135,6 +1212,9 @@ fn scan_frames(path: &Path) -> Result<FrameScan> {
                 desynced = true;
             }
             break;
+        }
+        if let Some(frames) = frames.as_deref_mut() {
+            frames.push((pos + FRAME_PREFIX_LEN, len as u32));
         }
         pos = frame_end;
     }
@@ -1758,6 +1838,57 @@ mod tests {
             !on_disk.windows(25).any(|w| w == b"only some of the next fra"),
             "the torn tail must be truncated away, not merely skipped over"
         );
+    }
+
+    /// A pack nothing appends to any more is walked once: later checks read
+    /// its `.dead` file and the length it had, and walk it again only when
+    /// that length moves. One with a torn tail is never kept, nor is the
+    /// newest pack, which is still taking appends.
+    #[test]
+    fn a_settled_packs_frames_are_walked_once_until_its_length_moves() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path(), true);
+        let body = vec![7u8; 1200];
+        let four: Vec<&[u8]> = vec![body.as_slice(); 4];
+        let first = s.append_batch("acc-1", &four).unwrap();
+        let newest = s.append_batch("acc-1", &[b"tiny".as_slice()]).unwrap();
+        assert_ne!(first[0].pack, newest[0].pack, "the first pack is full and settled");
+        let account_dir = s.account_dir("acc-1");
+        let first_path = account_dir.join(format!("{}.pack", first[0].pack));
+        let newest_path = account_dir.join(format!("{}.pack", newest[0].pack));
+        let walked = |path: &Path| s.frames.lock().unwrap().get(path).map(|w| w.len);
+        let snap = snapshot(&s, "acc-1", vec![first[0].pack, newest[0].pack]);
+
+        s.mark_dead(&first[..1]).unwrap();
+        assert!(!s.compaction_worthwhile("acc-1", &snap).unwrap(), "one of four dead");
+        let len = std::fs::metadata(&first_path).unwrap().len();
+        assert_eq!(walked(&first_path), Some(len));
+        assert_eq!(walked(&newest_path), None, "the newest pack is walked every time");
+
+        // Read from the kept walk, with the `.dead` file read fresh.
+        s.mark_dead(&first[1..2]).unwrap();
+        assert!(s.compaction_worthwhile("acc-1", &snap).unwrap(), "two of four dead");
+
+        // A pack whose length moved is walked again: three frames, two dead.
+        let cut = first[3].offset - FRAME_PREFIX_LEN;
+        std::fs::OpenOptions::new().write(true).open(&first_path).unwrap().set_len(cut).unwrap();
+        assert!(s.compaction_worthwhile("acc-1", &snap).unwrap());
+        assert_eq!(walked(&first_path), Some(cut));
+
+        // A torn tail is not kept: it may be cut back and written over.
+        let mut file = std::fs::OpenOptions::new().append(true).open(&first_path).unwrap();
+        file.write_all(&[1, 2]).unwrap();
+        drop(file);
+        assert!(s.compaction_worthwhile("acc-1", &snap).unwrap());
+        assert_eq!(
+            walked(&first_path),
+            Some(cut),
+            "the clean walk stays, the torn one is not kept"
+        );
+
+        // Dropped, and forgotten with it.
+        s.drop_packs("acc-1", &[first[0].pack]).unwrap();
+        assert_eq!(walked(&first_path), None);
     }
 
     #[test]

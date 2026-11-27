@@ -224,6 +224,13 @@ class TodoState {
   #saves = new Autosave<TaskId>((ids) => this.#writeTasks(ids))
   /** `patch`'s assign-stamp-queue, once. See `store/optimistic-patch.ts`. */
   #patcher = optimisticPatch<TaskId, Task>((id) => this.tasks.find((t) => t.id === id), this.#saves)
+  /**
+   * Tasks on screen whose first save has not landed, each with that save,
+   * answering whether it went. `add` draws the row as soon as it has an id,
+   * and anything else that writes about the task waits on this, so an edit
+   * or a delete can never reach the vault ahead of the write that creates it.
+   */
+  #creating = new Map<TaskId, Promise<boolean>>()
   #started = false
   /** Which load is the current one. See `refresh`. */
   #generation = latest()
@@ -277,6 +284,7 @@ class TodoState {
     this.#collapsed = new Set()
     this.stats = null
     this.tags = []
+    this.#creating.clear()
     this.#started = false
   }
 
@@ -293,8 +301,9 @@ class TodoState {
     // The proposals store is loaded once, after unlock, by whichever app
     // opens first -- WP5's wiring does this too, but idempotently, so it is
     // safe to ask again here rather than hope the todo app is never first.
-    if (!proposals.loaded) await proposals.refresh()
-    await this.refresh()
+    // Beside the list rather than ahead of it: the ghost rows read it as it
+    // lands, and the list has no reason to wait for them.
+    await Promise.all([proposals.loaded ? null : proposals.refresh(), this.refresh()])
   }
 
   /**
@@ -319,11 +328,15 @@ class TodoState {
         ])
         if (!isCurrent()) return
         this.projects = projects
-        this.tasks = tasks
+        // A task still being created is not in the answer yet: it stays until
+        // its save lands, or fails and takes it off.
+        const unsaved = this.#unsavedBesides(tasks)
+        const all = unsaved.length > 0 ? [...tasks, ...unsaved] : tasks
+        this.tasks = all
         this.stats = stats
         this.tags = tags
         // A selection that has scrolled out of scope is not a selection.
-        if (this.selectedTask && !tasks.some((t) => t.id === this.selectedTask)) {
+        if (this.selectedTask && !all.some((t) => t.id === this.selectedTask)) {
           this.selectedTask = null
           this.detailBlocks = []
         }
@@ -665,8 +678,26 @@ class TodoState {
     return this.#saves.flush()
   }
 
+  /** Rows drawn ahead of their save that `tasks`, a fresh answer, does not have yet. */
+  #unsavedBesides(tasks: Task[]): Task[] {
+    if (this.#creating.size === 0) return []
+    const answered = new Set(tasks.map((t) => t.id))
+    return this.tasks.filter((t) => this.#creating.has(t.id) && !answered.has(t.id))
+  }
+
+  /** The save that creates `id`, if it has not landed yet; else nothing to wait for. */
+  #created(id: TaskId | null | undefined): Promise<boolean> | undefined {
+    return id ? this.#creating.get(id) : undefined
+  }
+
   /** One write for however many tasks were edited. */
   async #writeTasks(ids: ReadonlySet<TaskId>) {
+    // After any create still in the air: an edit to a row drawn before its
+    // save landed must not arrive first. One that failed has left the list.
+    if (this.#creating.size > 0) {
+      const inFlight = [...ids].flatMap((id) => this.#created(id) ?? [])
+      await Promise.all(inFlight)
+    }
     const pending = this.tasks.filter((t) => ids.has(t.id))
     if (pending.length === 0) return
     this.saving = true
@@ -805,6 +836,8 @@ class TodoState {
     const parent = opts.parentId ? this.tasks.find((t) => t.id === opts.parentId) : null
     const projectId = parent?.projectId ?? (this.scope.kind === 'project' ? this.scope.id : null)
 
+    /** The row put on screen ahead of its save, once there is one. */
+    let drawn: TaskId | null = null
     try {
       const task = await api.newTask({
         projectId,
@@ -822,19 +855,53 @@ class TodoState {
       // into.
       task.sortOrder = this.#nextSortOrder(opts.parentId ?? null)
 
-      await api.saveTask($state.snapshot(task))
-      // Show it immediately rather than waiting for a round trip, and leave
-      // it there until the next refresh even if it does not match the
+      // A step under a task whose own save is still in the air goes after it,
+      // and nowhere if that was refused, which has been said already.
+      if ((await this.#created(opts.parentId)) === false) return null
+      let refused: unknown = null
+      const created = api.saveTask($state.snapshot(task)).then(
+        () => true,
+        (e: unknown) => {
+          // Off the screen before anything waiting on the create runs, so an
+          // edit's write cannot bring it back.
+          this.#dropUnsaved(task.id)
+          refused = e
+          return false
+        },
+      )
+      this.#creating.set(task.id, created)
+      drawn = task.id
+      // Show it immediately rather than after the save's round trip, and
+      // leave it there until the next refresh even if it does not match the
       // current filter -- adding a task in "Upcoming" and watching it
       // disappear because it has no date reads as a failure, where a list
-      // that is briefly broader than its query does not.
+      // that is briefly broader than its query does not. Answered only once
+      // the save has landed, so what the caller does next is about a task
+      // that exists.
       this.tasks = [...this.tasks, task]
+      if (!(await created)) {
+        await handle(refused)
+        return null
+      }
       void this.refreshStats()
       void this.refreshTags()
       return task
     } catch (e) {
       await handle(e)
       return null
+    } finally {
+      if (drawn) this.#creating.delete(drawn)
+    }
+  }
+
+  /** Take back a row whose create failed, and anything that was hanging off it. */
+  #dropUnsaved(id: TaskId) {
+    const doomed = this.#subtree(id)
+    this.tasks = this.tasks.filter((t) => !doomed.has(t.id))
+    for (const gone of doomed) this.#saves.forget(gone)
+    if (doomed.has(this.selectedTask ?? '')) {
+      this.selectedTask = null
+      this.detailBlocks = []
     }
   }
 
@@ -872,7 +939,13 @@ class TodoState {
         }
         for (const gone of doomed) this.#saves.forget(gone)
       },
-      call: () => api.deleteTask(id),
+      // After its create, if that is still in the air: a delete arriving first
+      // would find nothing, and the save behind it would bring the task back.
+      // A create that was refused left nothing to delete.
+      call: async () => {
+        if ((await this.#created(id)) === false) return
+        return api.deleteTask(id)
+      },
       onSuccess: () => {
         void this.refreshStats()
         void this.refreshTags()
@@ -1233,6 +1306,9 @@ class TodoState {
         minutes,
         kind: blockKindFor(new Date(start).toISOString(), minutes),
       })
+      // After the task's own create, if that is still in the air; nothing to
+      // book against if it was refused, which has been said already.
+      if ((await this.#created(id)) === false) return
       await api.saveBlock(block)
       this.detailBlocks = [...this.detailBlocks, block].sort((a, b) =>
         a.start.localeCompare(b.start),

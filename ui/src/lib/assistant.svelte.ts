@@ -16,10 +16,12 @@
 
 import { api } from './api'
 import { jobs } from './jobs.svelte'
+import { fewIds, registerApply, type ChangeWithIds } from './live-apply'
 import { panels } from './panels.svelte'
 import { proposals } from './proposals.svelte'
 import { app, handle, isLocked } from './state.svelte'
 import { optimisticRemove } from './store/optimistic-remove'
+import { VaultError } from './types'
 import type {
   Account,
   ChatLinkView,
@@ -73,11 +75,30 @@ class AssistantState {
   chatLinks = $state<ChatLinkView[]>([])
   mailAccounts = $state<Account[]>([])
 
+  /** Whether the tabs' lists have been read since the vault opened. */
+  #loaded = false
+  /** The newest whole reload of them while it is in the air, for a one-run
+   *  patch to wait on. */
+  #standing: Promise<void> | null = null
+  /** Bumped by `reset`, so a patch read before a lock does not land after it. */
+  #epoch = 0
+  /** The newest read asked for of each run being patched: a run moves more
+   *  than once while it goes, and an older answer must not land last. */
+  #runReads = new Map<RoutineRunId, number>()
+  #runReadCount = 0
+
   constructor() {
     app.onLock(() => this.reset())
+    // `live.svelte.ts`'s opt-in for `routine` and `routineRun` changes. See
+    // `#applyChanges`.
+    registerApply('assistant', (changes) => this.#applyChanges(changes))
   }
 
   reset() {
+    this.#loaded = false
+    this.#standing = null
+    this.#epoch++
+    this.#runReads.clear()
     this.routines = []
     this.runs = []
     this.memories = []
@@ -115,8 +136,9 @@ class AssistantState {
       // Jobs are their own store, loaded alongside rather than through
       // `refresh`, so that `jobs.start` is the load a caller asking twice
       // waits for and `jobs.loading` is true while it runs.
-      await Promise.all([this.#refreshStanding(), jobs.start()])
-      await proposals.refresh()
+      // The proposals beside the rest rather than after them: the "Waiting
+      // for you" tab draws them, and nothing here needs them first.
+      await Promise.all([this.#refreshStanding(), jobs.start(), proposals.refresh()])
       this.templates = app.supportsRoutines ? await api.routineTemplates() : []
     } finally {
       this.loading = false
@@ -148,18 +170,146 @@ class AssistantState {
   }
 
   /** Everything `refresh` reloads but the jobs, which report their own errors. */
-  async #refreshStanding() {
+  #refreshStanding(): Promise<void> {
+    // Asked after any one-run read still in the air, so its answer is newer.
+    this.#runReads.clear()
+    const run = this.#loadStanding()
+    this.#standing = run
+    void run.finally(() => {
+      if (this.#standing === run) this.#standing = null
+    })
+    return run
+  }
+
+  async #loadStanding() {
     if (!this.enabled) return
     try {
       this.memories = await api.memories()
       if (app.supportsRoutines) {
         this.routines = await api.routines()
-        this.runs = await api.runs({ limit: PAGE })
+        // Without the briefs: no row here draws one, and they are most of
+        // what a fortnight of runs weighs. The Brief page reads its own.
+        this.runs = await api.runs({ limit: PAGE }, true)
         this.unseen = await api.unseenRuns()
       }
+      if (app.screen === 'main') this.#loaded = true
     } catch (e) {
       if (isLocked(e)) return
       await handle(e)
+    }
+  }
+
+  /**
+   * Whether anything drawing these lists is on screen: one of the tabs, in
+   * Settings or beside the conversations, or the Assistant app, which names a
+   * routine's transcript from the runs.
+   */
+  #onScreen(): boolean {
+    return (
+      (PANES as readonly string[]).includes(panels.settings ?? '') || app.section === 'assistant'
+    )
+  }
+
+  /**
+   * What a batch of `routine` and `routineRun` changes does here.
+   *
+   * Off screen only the count on the bar is drawn, so that is all that is
+   * read -- and what it remembers, on the Overview, where "Needs attention"
+   * draws what a dream noticed. A tab reads everything again when it opens
+   * (`start`). On screen, before the lists have been read, they are read
+   * whole. After, the small lists are read again -- a run moves its
+   * routine's next time, and a dream's adds to what it remembers -- and of
+   * the runs, only the few the batch names; a wider batch, or one that names
+   * none, asks for the whole log.
+   */
+  #applyChanges(changes: ChangeWithIds[]): boolean {
+    if (!this.enabled) return true
+    if (!this.#onScreen()) {
+      void this.refreshCount()
+      if (app.section === 'overview') void this.refreshMemories()
+      return true
+    }
+    if (!this.#loaded) return false
+    const runChanges = changes.filter((c) => c.kind === 'routineRun')
+    const named =
+      runChanges.length > 0 ? fewIds(runChanges) : new Map<string, ChangeWithIds['op']>()
+    if (!named) return false
+    void this.#refreshNamed(named)
+    return true
+  }
+
+  /** The memories, the routines and the count again, and the runs `named` one by one. */
+  async #refreshNamed(named: Map<RoutineRunId, ChangeWithIds['op']>) {
+    // After any whole reload in the air, whose older copy would land on top.
+    await this.#standing
+    const epoch = this.#epoch
+    // Nothing read before a lock may land after it.
+    const current = () => epoch === this.#epoch
+    try {
+      // Each lands as it arrives: none of them needs another.
+      const reads: Promise<unknown>[] = [
+        api.memories().then((m) => {
+          if (current()) this.memories = m
+        }),
+      ]
+      if (app.supportsRoutines) {
+        reads.push(
+          api.routines().then((r) => {
+            if (current()) this.routines = r
+          }),
+        )
+        reads.push(
+          api.unseenRuns().then((n) => {
+            if (current()) this.unseen = n
+          }),
+        )
+        for (const [id, op] of named) {
+          if (op !== 'deleted') {
+            reads.push(this.#patchRun(id))
+            continue
+          }
+          // A read of it still in the air must not put it back.
+          this.#runReads.delete(id)
+          this.runs = this.runs.filter((r) => r.id !== id)
+        }
+      }
+      await Promise.all(reads)
+    } catch (e) {
+      if (isLocked(e)) return
+      await handle(e)
+    }
+  }
+
+  /** One run read again and put where its start puts it, newest first. */
+  async #patchRun(id: RoutineRunId) {
+    const read = ++this.#runReadCount
+    this.#runReads.set(id, read)
+    try {
+      const run = await api.run(id)
+      // A newer read of it has been asked for since, or it was deleted, or
+      // the vault locked: this answer is not the one to draw.
+      if (this.#runReads.get(id) !== read) return
+      // The same shape as the slim log's rows: nothing here draws a brief.
+      const row: RoutineRun = { ...run, brief: null }
+      const at = this.runs.findIndex((r) => r.id === id)
+      if (at >= 0) {
+        this.runs[at] = row
+        return
+      }
+      const next = this.runs.findIndex((r) => r.startedAt < row.startedAt)
+      if (next < 0) this.runs.push(row)
+      else this.runs.splice(next, 0, row)
+      // Still the newest `PAGE`, as the log read whole would be.
+      if (this.runs.length > PAGE) this.runs.pop()
+    } catch (e) {
+      // Deleted from another window before it could be read.
+      if (e instanceof VaultError && e.code === 'not_found') {
+        if (this.#runReads.get(id) === read) this.runs = this.runs.filter((r) => r.id !== id)
+        return
+      }
+      throw e
+    } finally {
+      if (this.#runReads.get(id) === read) this.#runReads.delete(id)
     }
   }
 

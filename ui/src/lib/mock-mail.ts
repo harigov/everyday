@@ -20,6 +20,8 @@ import type {
   ThreadDraft,
   AccountId,
   CategoryCount,
+  UnreadBadge,
+  UnreadTarget,
   Draft,
   DraftId,
   FollowUpKind,
@@ -1020,6 +1022,24 @@ export function mockCategoryCounts(mailbox: MailboxId): CategoryCount[] {
     counts.set(key, row)
   }
   return [...counts.values()]
+}
+
+/** `mail_unread_badges`: per target, the newest 200 threads each member
+ *  lists (filtered by `snoozed`), a thread in two members counted once,
+ *  their `unreadCount`s added up -- what the sidebar always counted. */
+export function mockUnreadBadges(targets: UnreadTarget[]): UnreadBadge[] {
+  return targets.map((target) => {
+    const seen = new Set<ThreadId>()
+    let unread = 0
+    for (const id of target.mailboxes) {
+      for (const t of mockListThreads(id, { snoozed: target.snoozed }, null, 200).threads) {
+        if (seen.has(t.id)) continue
+        seen.add(t.id)
+        unread += t.unreadCount
+      }
+    }
+    return { key: target.key, unread }
+  })
 }
 
 /**

@@ -537,7 +537,12 @@
     border: 1.5px solid color-mix(in oklab, var(--accent) 25%, transparent);
     border-top-color: var(--accent);
     border-radius: 50%;
-    animation: ky-spin 0.8s linear infinite;
+    /* Smooth for the first ten seconds, then a slower stepped turn for as
+       long as the job runs -- still moving, so still telling "going" from
+       "stuck", without being redrawn every frame for an hour to say it. */
+    animation:
+      ky-spin 0.8s linear 12,
+      ky-spin 1.2s steps(8) 9.6s infinite;
   }
   .dot {
     width: 6px;

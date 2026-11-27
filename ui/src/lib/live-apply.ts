@@ -77,3 +77,22 @@ export function singleId(change: ChangeWithIds): string | null {
   if (ids && ids.length === 1) return ids[0]!
   return change.id ?? null
 }
+
+/**
+ * The records a batch names, each with what last happened to it, for a store
+ * that re-reads a few rows rather than one: a running job announces itself
+ * more than once inside one coalescing window, and two jobs can move in the
+ * same one.
+ *
+ * `null` when any change is wider than one record (or names none), or when
+ * more than `max` are named -- a whole reload is the cheaper answer then.
+ */
+export function fewIds(changes: ChangeWithIds[], max = 3): Map<string, ChangeWithIds['op']> | null {
+  const named = new Map<string, ChangeWithIds['op']>()
+  for (const change of changes) {
+    const id = singleId(change)
+    if (id === null) return null
+    named.set(id, change.op)
+  }
+  return named.size > 0 && named.size <= max ? named : null
+}

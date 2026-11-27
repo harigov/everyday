@@ -546,13 +546,41 @@ impl FileBlobStore {
     }
 
     /// `(count, total sealed bytes on disk)`.
+    ///
+    /// The files [`FileBlobStore::list`] would name, each sized where the
+    /// walk finds it: one pass, nothing sorted, and no path built and walked
+    /// again per blob, which for a media folder of a hundred thousand files
+    /// is most of the time this takes. A file that is a link, or that sits
+    /// in another shard than its name says, is sized at
+    /// [`FileBlobStore::path_for`] as before.
     pub fn stats(&self) -> Result<(u64, u64)> {
         let mut count = 0;
         let mut bytes = 0;
-        for id in self.list()? {
-            count += 1;
-            if let Ok(m) = std::fs::metadata(self.path_for(id)) {
-                bytes += m.len();
+        let dirs = match std::fs::read_dir(&self.root) {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((0, 0)),
+            Err(e) => return Err(Error::io(&self.root, e)),
+        };
+        for shard in dirs.flatten() {
+            if !shard.path().is_dir() {
+                continue;
+            }
+            let shard_name = shard.file_name();
+            let Ok(files) = std::fs::read_dir(shard.path()) else { continue };
+            for f in files.flatten() {
+                let name = f.file_name();
+                let name = name.to_string_lossy();
+                let Some(hex) = name.strip_suffix(".blob") else { continue };
+                let Ok(id) = BlobId::parse(hex) else { continue };
+                count += 1;
+                let in_place = hex.get(..2).is_some_and(|prefix| shard_name == prefix)
+                    && f.file_type().is_ok_and(|t| t.is_file());
+                let len = if in_place {
+                    f.metadata().map(|m| m.len()).ok()
+                } else {
+                    std::fs::metadata(self.path_for(id)).map(|m| m.len()).ok()
+                };
+                bytes += len.unwrap_or(0);
             }
         }
         Ok((count, bytes))
@@ -888,6 +916,18 @@ mod tests {
         let (count, bytes) = s.stats().unwrap();
         assert_eq!(count, 2);
         assert!(bytes > 5000, "sealed size should exceed plaintext size");
+    }
+
+    #[test]
+    fn stats_size_each_listed_file_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path(), true);
+        let ids = [s.put(b"one").unwrap(), s.put(&pseudorandom(5000)).unwrap()];
+        std::fs::write(dir.path().join("README.txt"), b"hello").unwrap();
+        std::fs::write(s.path_for(ids[0]).with_extension("tmp"), b"leftover").unwrap();
+        let sized: u64 =
+            ids.iter().map(|id| std::fs::metadata(s.path_for(*id)).unwrap().len()).sum();
+        assert_eq!(s.stats().unwrap(), (s.list().unwrap().len() as u64, sized));
     }
 
     #[test]

@@ -9,6 +9,7 @@ use super::header::{
     cipher_for, from_hex, key_check_passes, open_settings, seal_key_check, seal_settings,
     write_header, write_rekeyed_header,
 };
+use super::index::IndexSlot;
 use super::session::Unlocked;
 use super::{STORE_DIRNAME, Vault};
 use crate::crypto::{
@@ -16,7 +17,6 @@ use crate::crypto::{
     unwrap_key, wrap_key,
 };
 use crate::error::{Error, Result};
-use crate::search::SearchIndex;
 use crate::store::{BackendSettings, StoreContext};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -154,6 +154,10 @@ impl Vault {
         let store_root = self.root.join(STORE_DIRNAME);
         std::fs::create_dir_all(&store_root).map_err(|e| Error::io(&store_root, e))?;
         let settings = open_settings(cipher.as_ref(), header.backend_settings.as_deref())?;
+        // Before the store opens: from here until it closes again, a process
+        // that dies leaves the next opening something to check. Dropped --
+        // the stamp put back -- if anything below fails.
+        let (vouched, stamp) = self.hold_integrity_stamp();
         let store = self.registry.open(
             &header.backend,
             StoreContext {
@@ -166,20 +170,24 @@ impl Vault {
 
         // Checked beside the unlock rather than in it: the check reads every
         // page, which for a vault holding mail is gigabytes.
-        self.start_integrity_check(store.as_ref());
+        self.start_integrity_check(store.as_ref(), vouched);
 
+        // Read here, so a store that cannot be read still fails the unlock;
+        // filed into the index on a thread of its own -- see `super::index`.
         let notes = match store.notes() {
             Some(n) => n.all_notes()?,
             None => Vec::new(),
         };
-        let mut index = SearchIndex::build(&store.all_entries()?, &notes);
+        let entries = store.all_entries()?;
         // A transcript lives in its own table, reached through a
-        // recording's `note_id` rather than off the note itself, so the
-        // build above -- which only knows entries and notes -- cannot see
-        // one. See `super::meetings::rebuild_meeting_index`.
-        super::meetings::rebuild_meeting_index(store.as_ref(), &mut index)?;
+        // recording's `note_id` rather than off the note itself; its words
+        // are filed with the note they belong to. See
+        // `super::meetings::transcript_texts`.
+        let extras = super::meetings::transcript_texts(store.as_ref(), &notes)?;
+        let index = IndexSlot::build(entries, notes, extras);
 
-        *self.state_write() = Some(Unlocked { store, index, cipher, templates_moved: false });
+        *self.state_write() =
+            Some(Unlocked { store, index, cipher, templates_moved: false, _stamp: stamp });
         self.touch();
 
         // A vault from before the models were application settings has them

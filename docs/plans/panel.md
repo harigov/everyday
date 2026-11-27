@@ -341,7 +341,7 @@ Used in the app process and, unchanged, in the child process.
   Pressed, Hold}` (non-JSON lines ignored -- GLib and WebKit write there);
   `Ready` within **10 s** or FAILED → the in-process window draws until the
   stack empties; a broken pipe restarts once. The child is **kept alive,
-  hidden, for 10 minutes** after the stack empties (a webview takes a moment
+  hidden, for 8 hours** after the stack empties (a webview takes a moment
   to start), then its stdin is closed.
 * Child side (`run_child`, before logging): `tauri::Builder::default()` with
   only `Panels` managed and the panel commands registered (the same functions

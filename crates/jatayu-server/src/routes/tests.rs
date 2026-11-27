@@ -413,6 +413,48 @@ mod news_route_tests {
         }
     }
 
+    /// A rendered story is text, and over the network it goes compressed to a
+    /// client that reads gzip; over the socket, to this machine, it does not.
+    #[tokio::test]
+    async fn the_body_is_compressed_over_the_network_and_not_over_the_socket() {
+        let (_dir, service, story) = seeded(true);
+        let config_dir = tempfile::tempdir().unwrap();
+        let registry = Arc::new(Registry::open(config_dir.path().join("devices.json")).unwrap());
+        let (token, _) = registry.issue("Laptop", vec![Scope::All], false).unwrap();
+        let server = Server::new(
+            service,
+            registry,
+            Arc::new(Broadcaster::new()),
+            "Test".into(),
+            String::new(),
+            false,
+        );
+        let ask = |transport: Transport| {
+            let app = router(server.clone(), transport);
+            let request = Request::builder()
+                .uri(format!("/v1/news/body/{story}"))
+                .header("x-jatayu-protocol", PROTOCOL.to_string())
+                .header("authorization", format!("Bearer {token}"))
+                .header("accept-encoding", "gzip")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            async move { app.oneshot(request).await.unwrap() }
+        };
+
+        let network = ask(Transport::Network).await;
+        assert_eq!(network.status(), StatusCode::OK);
+        assert_eq!(header_of(&network, "content-encoding"), Some("gzip"));
+        assert_eq!(header_of(&network, "x-news-images-hidden"), Some("0"), "headers kept");
+        let packed = axum::body::to_bytes(network.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&packed[..2], &[0x1f, 0x8b], "a gzip stream");
+
+        let socket = ask(Transport::Socket).await;
+        assert_eq!(header_of(&socket, "content-encoding"), None);
+        let plain = axum::body::to_bytes(socket.into_body(), usize::MAX).await.unwrap();
+        assert!(String::from_utf8(plain.to_vec()).unwrap().contains("<p>Hello</p>"));
+        assert!(packed.len() < plain.len(), "{} from {}", packed.len(), plain.len());
+    }
+
     #[tokio::test]
     async fn a_part_asks_for_one_of_a_stories_documents_and_anything_else_is_the_whole() {
         let (_dir, service, story) = seeded(true);
@@ -889,5 +931,235 @@ mod cache_route_tests {
         let socket = ask(Transport::Socket, None).await;
         assert_eq!(socket.status(), StatusCode::OK);
         assert_eq!(socket.headers()[header::CACHE_CONTROL], "private, max-age=31536000, immutable");
+    }
+}
+
+/// What a client on another machine is sent compressed, and what it is not,
+/// through [`compress`] on a route of its own.
+mod compression_tests {
+    use crate::routes::*;
+    use tower::ServiceExt;
+
+    async fn ask(
+        kind: &'static str,
+        len: usize,
+        status: StatusCode,
+        accept: Option<&str>,
+    ) -> Response {
+        let app: Router = Router::new().route(
+            "/x",
+            get(move || async move {
+                Response::builder()
+                    .status(status)
+                    .header(header::CONTENT_TYPE, kind)
+                    .header(header::CONTENT_LENGTH, len.to_string())
+                    .body(axum::body::Body::from(vec![b'a'; len]))
+                    .unwrap()
+            })
+            .layer(axum::middleware::from_fn_with_state(
+                Packing { level: 1, keep: None },
+                compress,
+            )),
+        );
+        let mut request = Request::builder().uri("/x");
+        if let Some(accept) = accept {
+            request = request.header(header::ACCEPT_ENCODING, accept);
+        }
+        app.oneshot(request.body(axum::body::Body::empty()).unwrap()).await.unwrap()
+    }
+
+    fn encoding(response: &Response) -> Option<&str> {
+        response.headers().get(header::CONTENT_ENCODING).and_then(|v| v.to_str().ok())
+    }
+
+    #[tokio::test]
+    async fn text_past_a_kilobyte_is_gzipped_for_a_client_that_reads_it() {
+        // Small enough to pack in place, and large enough for the blocking pool.
+        for (kind, len, accept) in [
+            ("application/json", 16 * 1024, "gzip"),
+            ("text/javascript; charset=utf-8", 512 * 1024, "gzip, deflate, br, zstd"),
+            ("text/html; charset=utf-8", 4 * 1024, "*"),
+        ] {
+            let response = ask(kind, len, StatusCode::OK, Some(accept)).await;
+            assert_eq!(encoding(&response), Some("gzip"), "{kind}");
+            let vary = response.headers().get(header::VARY).and_then(|v| v.to_str().ok());
+            assert_eq!(vary, Some("accept-encoding"));
+            // The handler's own length was the text's; the router may say the
+            // packed length again, and nothing else.
+            let length = response.headers().get(header::CONTENT_LENGTH).cloned();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            if let Some(length) = length {
+                assert_eq!(length.to_str().unwrap(), bytes.len().to_string(), "no stale length");
+            }
+            assert_eq!(&bytes[..2], &[0x1f, 0x8b], "a gzip stream");
+            assert!(bytes.len() * 10 < len, "{kind}: {} from {len}", bytes.len());
+        }
+    }
+
+    #[tokio::test]
+    async fn what_is_small_streamed_media_partial_or_not_asked_for_goes_as_it_is() {
+        let big = 64 * 1024;
+        for (kind, len, status, accept) in [
+            ("application/json", 512, StatusCode::OK, Some("gzip")),
+            ("application/x-ndjson", big, StatusCode::OK, Some("gzip")),
+            ("text/event-stream", big, StatusCode::OK, Some("gzip")),
+            ("image/jpeg", big, StatusCode::OK, Some("gzip")),
+            ("application/octet-stream", big, StatusCode::OK, Some("gzip")),
+            ("application/json", big, StatusCode::PARTIAL_CONTENT, Some("gzip")),
+            ("application/json", big, StatusCode::OK, None),
+            ("application/json", big, StatusCode::OK, Some("gzip;q=0")),
+            ("application/json", big, StatusCode::OK, Some("br, identity")),
+        ] {
+            let response = ask(kind, len, status, accept).await;
+            assert_eq!(encoding(&response), None, "{kind} {status} {accept:?}");
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            assert_eq!(bytes.len(), len, "{kind} {status} {accept:?}");
+        }
+    }
+
+    /// An answer named for good by its address -- a built file of the
+    /// interface -- is packed once, and what was packed is sent again after.
+    #[tokio::test]
+    async fn what_lasts_is_packed_once_and_kept() {
+        use std::sync::atomic::{AtomicU8, Ordering};
+        let made = Arc::new(AtomicU8::new(b'a'));
+        let packing = Packing { level: 1, keep: Some(Arc::default()) };
+        let app = |made: Arc<AtomicU8>, packing: Packing| -> Router {
+            Router::new()
+                .route(
+                    "/assets/{name}",
+                    get(move |Path(name): Path<String>| async move {
+                        // A different answer each time, which only a kept
+                        // packing hides.
+                        let fill = made.fetch_add(1, Ordering::SeqCst);
+                        let lasting = if name == "app.js" {
+                            "public, max-age=31536000, immutable"
+                        } else {
+                            "no-cache"
+                        };
+                        Response::builder()
+                            .header(header::CONTENT_TYPE, "text/javascript")
+                            .header(header::CACHE_CONTROL, lasting)
+                            .body(axum::body::Body::from(vec![fill; 8 * 1024]))
+                            .unwrap()
+                    }),
+                )
+                .layer(axum::middleware::from_fn_with_state(packing, compress))
+        };
+        let fetch = |uri: &'static str| {
+            let app = app(made.clone(), packing.clone());
+            async move {
+                let request = Request::builder()
+                    .uri(uri)
+                    .header(header::ACCEPT_ENCODING, "gzip")
+                    .body(axum::body::Body::empty())
+                    .unwrap();
+                let response = app.oneshot(request).await.unwrap();
+                assert_eq!(encoding(&response), Some("gzip"), "{uri}");
+                axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap()
+            }
+        };
+        let first = fetch("/assets/app.js").await;
+        assert_eq!(fetch("/assets/app.js").await, first, "packed once, sent again");
+        // Asked for fresh: packed afresh each time.
+        let page = fetch("/assets/index.html").await;
+        assert_ne!(fetch("/assets/index.html").await, page);
+    }
+
+    #[test]
+    fn accept_encoding_is_read_the_way_clients_write_it() {
+        let accepts = |value: &str| {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::ACCEPT_ENCODING, value.parse().unwrap());
+            accepts_gzip(&headers)
+        };
+        assert!(accepts("gzip"));
+        assert!(accepts("deflate, GZIP;q=0.5"));
+        assert!(accepts("br;q=1.0, gzip;q=0.8, *;q=0.1"));
+        assert!(accepts("*"));
+        assert!(!accepts("gzip;q=0"));
+        assert!(!accepts("gzip; q=0.0, br"));
+        assert!(!accepts("br, zstd"));
+        assert!(!accepts("identity"));
+        assert!(!accepts_gzip(&HeaderMap::new()));
+    }
+}
+
+/// A blob asked for at a width (`?w=`): a picture made that wide, anything
+/// else the original, as it always was.
+mod scaled_blob_tests {
+    use crate::routes::*;
+    use jatayu_core::VaultConfig;
+    use tower::ServiceExt;
+
+    /// A see-through PNG, 256 pixels across: wider than two of the widths on
+    /// offer.
+    const ICON: &[u8] = include_bytes!("../../../jatayu-app/icons/128x128@2x.png");
+
+    async fn ask(app: Router, uri: String, token: Option<&str>, range: Option<&str>) -> Response {
+        let mut request =
+            Request::builder().uri(uri).header("x-jatayu-protocol", PROTOCOL.to_string());
+        if let Some(token) = token {
+            request = request.header("authorization", format!("Bearer {token}"));
+        }
+        if let Some(range) = range {
+            request = request.header(header::RANGE, range);
+        }
+        app.oneshot(request.body(axum::body::Body::empty()).unwrap()).await.unwrap()
+    }
+
+    async fn body(response: Response) -> Vec<u8> {
+        axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap().to_vec()
+    }
+
+    #[tokio::test]
+    async fn a_picture_is_made_as_wide_as_asked_and_anything_else_is_the_original() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = jatayu_vault::create(dir.path(), VaultConfig::default()).unwrap();
+        let service = Arc::new(Service::new());
+        service.set(vault);
+        let icon = service.put_blob(&Ctx::local(), ICON.to_vec()).await.unwrap();
+        let note =
+            service.put_blob(&Ctx::local(), b"a note, not a picture".to_vec()).await.unwrap();
+
+        let config_dir = tempfile::tempdir().unwrap();
+        let registry = Arc::new(Registry::open(config_dir.path().join("devices.json")).unwrap());
+        let (token, _) = registry.issue("Laptop", vec![Scope::All], false).unwrap();
+        let server = Server::new(
+            service,
+            registry,
+            Arc::new(Broadcaster::new()),
+            "Test".into(),
+            String::new(),
+            false,
+        );
+        let socket = || router(server.clone(), Transport::Socket);
+
+        let small = ask(socket(), format!("/v1/blob/{icon}?w=96"), None, None).await;
+        assert_eq!(small.status(), StatusCode::OK);
+        let kind = small.headers()[header::CONTENT_TYPE].to_str().unwrap().to_string();
+        assert!(kind == "image/png" || kind == "image/jpeg", "{kind}");
+        assert_eq!(small.headers()[header::CACHE_CONTROL], "private, max-age=31536000, immutable");
+        let small = body(small).await;
+        assert!(small.len() < ICON.len(), "{} from {}", small.len(), ICON.len());
+
+        // A range of a smaller copy is not a range of the blob: it comes whole.
+        let ranged = ask(socket(), format!("/v1/blob/{icon}?w=96"), None, Some("bytes=0-9")).await;
+        assert_eq!(ranged.status(), StatusCode::OK);
+        assert_eq!(body(ranged).await, small);
+
+        // A width not on offer, and a blob that is no picture, are the original.
+        let original = ask(socket(), format!("/v1/blob/{icon}?w=800"), None, None).await;
+        assert_eq!(body(original).await, ICON);
+        let note_back = ask(socket(), format!("/v1/blob/{note}?w=96"), None, None).await;
+        assert_eq!(note_back.status(), StatusCode::OK);
+        assert_eq!(body(note_back).await, b"a note, not a picture");
+
+        // Over the network a smaller copy is no more kept than the blob is.
+        let network = router(server.clone(), Transport::Network);
+        let remote = ask(network, format!("/v1/blob/{icon}?w=200"), Some(&token), None).await;
+        assert_eq!(remote.status(), StatusCode::OK);
+        assert_eq!(remote.headers()[header::CACHE_CONTROL], "no-store");
+        assert!(body(remote).await.len() < ICON.len());
     }
 }

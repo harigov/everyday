@@ -1695,7 +1695,13 @@
         <li>
           <button class="shelf-row" onclick={() => void openItem(item.id)}>
             <span class="shelf-cover">
-              <Cover blob={item.cover} title={item.title} icon={shelf?.icon ?? ''} color={tint} />
+              <Cover
+                blob={item.cover}
+                title={item.title}
+                icon={shelf?.icon ?? ''}
+                color={tint}
+                drawn={52}
+              />
             </span>
             <span class="shelf-text">
               <span class="nname">{item.title}</span>

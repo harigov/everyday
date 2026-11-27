@@ -31,7 +31,16 @@ stubBrowser({
 })
 
 const {
-  modules: [mailModule, stateModule, liveApplyModule, mailApi, { api }, mockMail, { VaultError }],
+  modules: [
+    mailModule,
+    stateModule,
+    liveApplyModule,
+    mailApi,
+    { api },
+    mockMail,
+    { VaultError },
+    { listTarget },
+  ],
   close,
 } = await load(
   [
@@ -42,9 +51,31 @@ const {
     '/src/lib/api.ts',
     '/src/lib/mock-mail.ts',
     '/src/lib/types.ts',
+    '/src/lib/mail.ts',
   ],
   { svelte: true },
 )
+
+/** Counts the calls made to `api[name]` while `run` runs, by their first
+ *  argument, and puts the real one back. */
+async function counting(names, run) {
+  const real = Object.fromEntries(names.map((name) => [name, api[name]]))
+  const calls = Object.fromEntries(names.map((name) => [name, []]))
+  for (const name of names) {
+    api[name] = (...args) => {
+      calls[name].push(args[0])
+      return real[name](...args)
+    }
+  }
+  try {
+    await run(calls)
+  } finally {
+    Object.assign(api, real)
+  }
+  return calls
+}
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const { mail } = mailModule
 const { app } = stateModule
 const { applierFor } = liveApplyModule
@@ -58,6 +89,52 @@ await mail.start()
 assert.ok(mail.mailboxes.length > 0, 'the mock vault ships with mailboxes')
 assert.ok(mail.selectedMailbox, 'the inbox is selected by default')
 assert.equal(mail.loading, false, 'loading settles back to false once the load lands')
+
+// Asked for from three places at once, as Mail's first visit does: one read,
+// and one more after it for whatever changed meanwhile -- not three.
+{
+  const calls = await counting(['mailboxes'], () =>
+    Promise.all([mail.refreshMailboxes(), mail.refreshMailboxes(), mail.refreshMailboxes()]),
+  )
+  const accounts = new Set(mail.mailboxes.map((m) => m.accountId)).size
+  assert.equal(calls.mailboxes.length, 2 * accounts, 'one read, and one after it for the rest')
+}
+
+// `MailNav`'s two-second poll arms its next read only when `syncStatus` is
+// assigned. A pass whose phase holds still -- `connecting` through a slow
+// sign-in -- reads the same twice, and must still be assigned, or the poll
+// stops with the pass still going and the Sync button turning. A matching
+// read with nothing syncing is left alone: nothing polls then.
+{
+  const real = api.syncStatus
+  const busy = [{ accountId: 'acct-google', phase: 'connecting', done: 0, total: 0 }]
+  api.syncStatus = async () => structuredClone(busy)
+  try {
+    await mail.refreshSyncStatus()
+    const first = mail.syncStatus
+    await mail.refreshSyncStatus()
+    assert.notEqual(mail.syncStatus, first, 'a pass reading the same is assigned again')
+  } finally {
+    api.syncStatus = real
+  }
+  await mail.refreshSyncStatus()
+  const idle = mail.syncStatus
+  await mail.refreshSyncStatus()
+  assert.equal(mail.syncStatus, idle, 'an idle read that matches is not')
+}
+
+// An assistant's reply waiting under a thread opens with it, found in what
+// opening it read rather than in every draft of the account.
+{
+  const before = (await mailApi.getThread('th-6')).thread
+  const calls = await counting(['drafts'], () => mail.openThreadById('th-6'))
+  assert.equal(mail.composing?.origin.type, 'assistant', "the assistant's reply opens under it")
+  assert.equal(mail.composeInline, true)
+  assert.equal(calls.drafts.length, 0, 'without reading every draft')
+  mail.closeCompose()
+  mail.closeThread()
+  if (before.unreadCount > 0) await mailApi.markUnreadMany([before.id])
+}
 
 // ── All accounts at once ─────────────────────────────────────────────
 //
@@ -101,6 +178,31 @@ assert.equal(mail.loading, false, 'loading settles back to false once the load l
     (mail.unreadCounts.get(google.id) ?? 0) + (mail.unreadCounts.get(fastmail.id) ?? 0),
     "the unified Inbox's unread count is both inboxes' together",
   )
+
+  // Every badge in one call, where each mailbox used to be read for its own,
+  // and the numbers those reads made: the newest 200 threads of each of a
+  // row's mailboxes, snoozed or not as the row lists them, a thread filed in
+  // two of them counted once.
+  const calls = await counting(['mailUnreadBadges', 'threads', 'threadsAcross'], () =>
+    mail.refreshUnreadCounts(),
+  )
+  assert.equal(calls.mailUnreadBadges.length, 1, 'one call for every badge')
+  assert.equal(calls.threads.length + calls.threadsAcross.length, 0, 'and no mailbox read')
+  for (const row of [...mail.mailboxes, ...mail.unifiedMailboxes]) {
+    const target = listTarget(row, mail.mailboxes)
+    if (!target) continue
+    const counted = new Set()
+    let unread = 0
+    for (const id of target.mailboxIds) {
+      const page = await mailApi.listThreads(id, { snoozed: target.snoozed }, null, 200)
+      for (const thread of page.threads) {
+        if (counted.has(thread.id)) continue
+        counted.add(thread.id)
+        unread += thread.unreadCount
+      }
+    }
+    assert.equal(mail.unreadCounts.get(row.id) ?? 0, unread, `${row.id}: the same badge as before`)
+  }
 
   // A batch change from a background sync names no thread at all -- it is
   // taken, not declined to `RELOAD.mail`'s list-only refresh.
@@ -222,6 +324,20 @@ assert.equal(mail.loading, false, 'loading settles back to false once the load l
   )
   mail.setCategory(null)
   await mail.refresh()
+
+  // A tab or a toggle draws another part of the follow-ups already here, and
+  // asks for none: they are the Inbox's whichever is on.
+  const asked = await counting(['mailFollowUps'], async () => {
+    mail.setCategory('priority')
+    mail.setCategory(null)
+    mail.toggleOnly('starred')
+    mail.toggleOnly('starred')
+    await wait(20)
+  })
+  assert.equal(asked.mailFollowUps.length, 0, 'Tab and the toggles ask for no follow-ups')
+  assert.equal(mail.followUps.length, 3, 'and draw the ones already here')
+  const opened = await counting(['mailFollowUps'], () => mail.selectMailbox('unified:inbox'))
+  assert.equal(opened.mailFollowUps.length, 1, 'opening the Inbox asks')
 
   // Nothing over a search, or for a list that is no Inbox.
   mail.setSearchQuery('nothing at all like this')
@@ -441,6 +557,95 @@ if (mail.nextCursor) {
 const applier = applierFor('mail')
 assert.ok(applier, 'the mail store registers an applier on import')
 
+// Out of sight -- Mail not drawn, or its window hidden -- a change is noted
+// rather than acted on: nothing outside Mail draws the list, its badges or
+// its follow-ups. Coming back asks for all of it, once.
+{
+  const lists = (calls) => calls.threads.length + calls.threadsAcross.length
+  const names = ['threads', 'threadsAcross', 'mailUnreadBadges', 'mailFollowUps']
+  mail.setOnScreen(false)
+  const [one, two] = mail.threads
+  const away = await counting(names, async () => {
+    assert.equal(applier([{ kind: 'thread', op: 'updated', origin: 'sync' }]), true)
+    const single = [{ kind: 'thread', op: 'updated', id: one.id, origin: 'remote' }]
+    assert.equal(applier(single), true)
+    const batch = [
+      { kind: 'thread', op: 'updated', id: one.id, origin: 'remote' },
+      { kind: 'thread', op: 'updated', id: two.id, origin: 'remote' },
+    ]
+    assert.equal(applier(batch), true, 'a batch is taken too, for later')
+    await wait(700)
+  })
+  assert.equal(lists(away), 0, 'no list read while nobody can see it')
+  assert.equal(away.mailUnreadBadges.length, 0, 'nor the badges')
+  assert.equal(away.mailFollowUps.length, 0, 'nor the follow-ups')
+  const back = await counting(names, async () => {
+    mail.setOnScreen(true)
+    await wait(50)
+  })
+  assert.equal(lists(back), 1, 'back on screen: the list once')
+  assert.equal(back.mailUnreadBadges.length, 1, 'the badges once')
+  assert.equal(back.mailFollowUps.length, 1, 'and the follow-ups once')
+
+  // On screen, new mail is asked for the moment its change arrives, and a
+  // burst after it costs one more read rather than one each.
+  await wait(700)
+  const burst = await counting(names, async (calls) => {
+    applier([{ kind: 'thread', op: 'updated', origin: 'sync' }])
+    await wait(20)
+    assert.equal(lists(calls), 1, 'at once')
+    for (let i = 0; i < 3; i++) applier([{ kind: 'thread', op: 'updated', origin: 'sync' }])
+    await wait(700)
+  })
+  assert.equal(lists(burst), 2, 'and once more for the three after it')
+  assert.equal(burst.mailUnreadBadges.length, 2, 'the badges with each')
+
+  // A wall clock set back after a round -- corrected after a resume -- does
+  // not hold the next round, and every change after it, for as long as the
+  // clock moved.
+  await wait(700)
+  const pass = { kind: 'thread', op: 'updated', origin: 'sync' }
+  const stepped = await counting(names, async () => {
+    applier([pass])
+    await wait(20)
+    const realNow = Date.now
+    Date.now = () => realNow() - 60 * 60_000
+    try {
+      applier([pass])
+    } finally {
+      Date.now = realNow
+    }
+    await wait(700)
+  })
+  assert.equal(lists(stepped), 2, 'the round after it still comes within the debounce')
+}
+
+// A folder or label a sync pass met for the first time: the service's
+// `mailbox` change, which `live` routes here. The mailboxes are read again
+// at once while Mail can be seen, and once it can otherwise -- not before.
+{
+  const accounts = new Set(mail.mailboxes.map((m) => m.accountId)).size
+  await wait(700)
+  const seen = await counting(['mailboxes'], async () => {
+    mail.mailboxesChanged()
+    await wait(50)
+  })
+  assert.equal(seen.mailboxes.length, accounts, 'on screen: the mailboxes read again')
+  await wait(700)
+  mail.setOnScreen(false)
+  const away = await counting(['mailboxes'], async () => {
+    mail.mailboxesChanged()
+    await wait(700)
+  })
+  assert.equal(away.mailboxes.length, 0, 'not while nobody can see Mail')
+  const back = await counting(['mailboxes'], async () => {
+    mail.setOnScreen(true)
+    await wait(50)
+  })
+  assert.equal(back.mailboxes.length, accounts, 'and once, coming back to it')
+  await wait(700)
+}
+
 // A draft change is a no-op today -- nothing in the thread list reads a
 // draft directly, per the store's own comment.
 assert.equal(
@@ -477,6 +682,72 @@ assert.equal(
   const now = mail.threads.find((t) => t.id === id)
   assert.ok(now, 'the row is still in the list after being patched')
   assert.equal(typeof now.unreadCount, typeof before, 'the row was replaced with a fresh fetch')
+}
+
+// One that is not drawn here -- a thread in another mailbox -- is not read on
+// its own: the list read the change asks for is what would place it.
+{
+  const sent = mail.mailboxes.find((m) => m.role === 'sent')
+  const { threads: inSent } = await mailApi.listThreads(sent.id, { snoozed: false }, null, 50)
+  const elsewhere = inSent.find((t) => !mail.shownThreads.some((row) => row.id === t.id))
+  const calls = await counting(['thread', 'threads', 'threadsAcross'], async () => {
+    applier([{ kind: 'thread', op: 'updated', id: elsewhere.id, origin: 'remote' }])
+    await wait(700)
+  })
+  assert.ok(!calls.thread.includes(elsewhere.id), 'no read of a thread drawn nowhere here')
+  assert.equal(calls.threads.length + calls.threadsAcross.length, 1, 'one read of the list')
+}
+
+// `j` onto the row beside the open thread draws the copy read ahead at once,
+// and reads it again only behind it -- unless a change came between.
+{
+  const [a, b, c] = mail.shownThreads
+  // Opening reads them; the toggles' checks further down need them unread.
+  const unread = [a, b, c].filter((t) => t.unreadCount > 0).map((t) => t.id)
+  await mail.openThreadById(a.id)
+  await wait(50)
+  const calls = await counting(['thread'], async () => {
+    const moving = mail.moveSelection(1)
+    assert.equal(mail.openThread?.thread.id, b.id, 'drawn before anything is asked')
+    await moving
+    await wait(50)
+  })
+  assert.deepEqual(
+    calls.thread.filter((id) => id === b.id),
+    [b.id],
+    'and read once, behind it',
+  )
+  await wait(50)
+  applier([{ kind: 'thread', op: 'updated', origin: 'sync' }])
+  const moving = mail.moveSelection(1)
+  assert.notEqual(mail.openThread?.thread.id, c.id, 'a pass between: read afresh first')
+  await moving
+  assert.equal(mail.openThread?.thread.id, c.id)
+  mail.closeThread()
+  if (unread.length > 0) await mailApi.markUnreadMany(unread)
+  await mail.refresh()
+}
+
+// Archiving the open thread leaves the cursor on the next row with the pane
+// closed, and a sync change after it opens nothing by itself.
+{
+  await wait(700)
+  const [a, b] = mail.threads
+  const home = mail.mailboxes.find((m) => m.accountId === a.accountId && m.role === 'inbox')
+  await mail.openThreadById(a.id)
+  await mail.archive(a.id)
+  assert.equal(mail.selectedThread, b.id, 'the cursor on the next row')
+  assert.equal(mail.openThread, null, 'the pane closed')
+  applier([{ kind: 'thread', op: 'updated', origin: 'sync' }])
+  await wait(50)
+  applier([{ kind: 'thread', op: 'updated', id: b.id, origin: 'remote' }])
+  await wait(700)
+  assert.equal(mail.openThread, null, 'nothing opened by a change after it')
+  assert.equal(mail.selectedThread, b.id)
+  await mailApi.moveManyToMailbox([a.id], home.id)
+  if (a.unreadCount > 0) await mailApi.markUnreadMany([a.id])
+  mail.closeThread()
+  await mail.refresh()
 }
 
 // ── The open thread follows a sync pass ──────────────────────────────
@@ -842,6 +1113,9 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 900))
   assert.ok(ids.length >= 4, 'the mock inbox has enough threads to pick from')
 
   await mail.openThreadById(ids[0])
+  // The assistant's reply waiting under the seed's first thread opens with
+  // it; picking is what this is about.
+  if (mail.composing) mail.closeCompose()
   mail.clickThread(ids[2], { toggle: true })
   assert.deepEqual(
     [...mail.checked].sort(),
@@ -1262,6 +1536,23 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 900))
   assert.equal(mail.wantsForever, null, 'nothing to ask outside Trash')
   await new Promise((resolve) => setTimeout(resolve, 0))
   assert.ok(!mail.threads.some((t) => t.id === doomed), 'trashed')
+}
+
+{
+  // Paired with a server from before `mail_unread_badges`: the same badges,
+  // worked out from the lists as they used to be, rather than none at all.
+  await mail.refreshUnreadCounts()
+  const before = new Map(mail.unreadCounts)
+  const answered = api.mailUnreadBadges
+  api.mailUnreadBadges = () =>
+    Promise.reject(new VaultError('unknown_command', 'no command named mail_unread_badges'))
+  try {
+    mail.unreadCounts = new Map()
+    await mail.refreshUnreadCounts()
+    assert.deepEqual([...mail.unreadCounts], [...before], 'an older server still gets badges')
+  } finally {
+    api.mailUnreadBadges = answered
+  }
 }
 
 await close()

@@ -37,7 +37,8 @@ use crate::error::{CommandError, CommandResult, codes};
 // rules -- public addresses only, raster only, capped -- whichever app's
 // body named it.
 use crate::mail::view::{
-    self as mailview, BodyDocument, CSP, PartResponse, fetch_remote_image, placeholder_pixel,
+    self as mailview, BodyDocument, CSP, Fetched, Fetches, Keeping, PartResponse, SharedFetch,
+    fetch_remote_image, let_go, placeholder_pixel, shared_fetch,
 };
 use crate::service::blocking;
 use jatayu_core::Vault;
@@ -47,7 +48,7 @@ use jatayu_core::media;
 use jatayu_core::news::transcript::{TimedText, format_clock, parse_markdown};
 use jatayu_core::news::{BodyOrigin, Story, StoryBody};
 use pulldown_cmark::{Options, Parser};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 
 /// What a story starts from. Plain CSS in the document, not a `<link>`:
 /// there is nowhere for a stylesheet to load from inside the policy above.
@@ -598,36 +599,87 @@ async fn image_inner(
         Plan::Pixel => return Ok(placeholder_pixel()),
         Plan::Cached(bytes) => bytes,
         Plan::Fetch { url } => {
-            let fetched = fetch_remote_image(client, &url, allow_loopback).await?;
-            keep(vault, story, token, &fetched).await;
-            fetched
+            shared_fetch(&FETCHING, (story, token.to_string()), |shared| {
+                fetch_once(vault, client, story, token, url, allow_loopback, shared)
+            })
+            .await?
         }
     };
     let content_type = media::sniff_mime(&bytes).to_string();
     Ok(PartResponse { content_type, bytes, attachment: false, filename: None })
 }
 
+/// Fetches out, shared with whoever else asks while they are, as mail's are:
+/// a story's frame and the pane measuring it ask for its pictures together.
+static FETCHING: LazyLock<Fetches<(StoryId, String)>> = LazyLock::new(Mutex::default);
+
+/// Pictures waiting to be written into their story's body, a body at a time.
+static KEEPING: LazyLock<Keeping<StoryId>> = LazyLock::new(Keeping::new);
+
+/// The fetch itself. Looks once more first, as mail's does: this may have been
+/// decided on just as somebody else's fetch was kept.
+async fn fetch_once(
+    vault: &Arc<Vault>,
+    client: &reqwest::Client,
+    story: StoryId,
+    token: &str,
+    url: String,
+    allow_loopback: bool,
+    shared: SharedFetch,
+) -> CommandResult<Fetched> {
+    let cached = {
+        let vault = vault.clone();
+        let token = token.to_string();
+        blocking(move || {
+            let Some(body) = vault.story_body(story)? else { return Ok(None) };
+            match body.images.iter().find(|i| i.token == token).and_then(|i| i.cached_blob) {
+                Some(blob) => Ok(Some(vault.blob(blob)?)),
+                None => Ok(None),
+            }
+        })
+        .await?
+    };
+    if let Some(bytes) = cached {
+        return Ok(Fetched { bytes, keeping: false });
+    }
+    let fetched = fetch_remote_image(client, &url, allow_loopback).await?;
+    keep(vault, story, token.to_string(), fetched.clone(), shared);
+    Ok(Fetched { bytes: fetched, keeping: true })
+}
+
 /// Remember a fetched picture: into the blob store, and into the body's
 /// entry for it, in one pass over a body read afresh -- an extraction can
-/// have replaced the body while the picture was on its way.
+/// have replaced the body while the picture was on its way -- with whatever
+/// other pictures of the story arrived meanwhile, and only then let its fetch
+/// go. Behind the response, as mail's is.
 ///
 /// Best effort. A vault that cannot be written -- a read-only copy, a full
 /// disk -- should still show the picture it just fetched, and only pay for
 /// it again next time.
-async fn keep(vault: &Arc<Vault>, story: StoryId, token: &str, bytes: &[u8]) {
-    let (vault, token, bytes) = (vault.clone(), token.to_string(), bytes.to_vec());
-    let kept = blocking(move || {
-        let blob = vault.put_blob(&bytes)?;
-        let Some(mut body) = vault.story_body(story)? else { return Ok(()) };
-        if let Some(image) = body.images.iter_mut().find(|i| i.token == token) {
-            image.cached_blob = Some(blob);
+fn keep(vault: &Arc<Vault>, story: StoryId, token: String, bytes: Vec<u8>, shared: SharedFetch) {
+    let vault = vault.clone();
+    tokio::spawn(async move {
+        let kept = async {
+            let stored = vault.clone();
+            let blob = blocking(move || Ok(stored.put_blob(&bytes)?)).await?;
+            KEEPING
+                .keep(story, token.clone(), blob, move |batch| {
+                    let Some(mut body) = vault.story_body(story)? else { return Ok(()) };
+                    for (token, blob) in batch {
+                        if let Some(image) = body.images.iter_mut().find(|i| i.token == token) {
+                            image.cached_blob = Some(blob);
+                        }
+                    }
+                    Ok(vault.save_story_body(&body)?)
+                })
+                .await
         }
-        Ok(vault.save_story_body(&body)?)
-    })
-    .await;
-    if let Err(e) = kept {
-        tracing::info!(error = %e, "could not keep a story's picture");
-    }
+        .await;
+        if let Err(e) = kept {
+            tracing::info!(error = %e, "could not keep a story's picture");
+        }
+        let_go(&FETCHING, &(story, token), &shared);
+    });
 }
 
 #[cfg(test)]
@@ -1293,11 +1345,68 @@ mod tests {
         assert_eq!(server.hits(), 1);
 
         // Recorded on the body, so a second request never leaves the vault.
+        kept(id).await;
         let body = vault.story_body(id).unwrap().unwrap();
         assert!(body.images[0].cached_blob.is_some());
         let second = image_allowing_loopback_for_test(&vault, client, id, &token).await.unwrap();
         assert_eq!(second.bytes, png());
         assert_eq!(server.hits(), 1, "a cached picture must not be fetched again");
+    }
+
+    /// A story's pictures arrive together on its first view. Each is written
+    /// into a body read and saved whole, so without a turn each forgot the
+    /// others were kept, and they were fetched again on every open.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pictures_of_one_story_arriving_together_are_all_kept_and_fetched_once() {
+        let server = spawn_server(|hits| {
+            hits.fetch_add(1, Ordering::SeqCst);
+            response("image/png", &png())
+        })
+        .await;
+        let (_dir, vault) = test_vault();
+        let url = format!("http://{}/a.png", server.addr);
+        let (id, token) = seeded(&vault, true, Some("<p>x</p>"), &url);
+        let mut body = vault.story_body(id).unwrap().unwrap();
+        for n in 0..7 {
+            body.images.push(NewsImage {
+                token: format!("t{n}"),
+                url: format!("{url}?{n}"),
+                cached_blob: None,
+            });
+        }
+        vault.save_story_body(&body).unwrap();
+        let client = http::client().unwrap();
+        let tokens: Vec<String> =
+            std::iter::once(token).chain((0..7).map(|n| format!("t{n}"))).collect();
+
+        // Each asked for twice at once, as the frame and the pane measuring it do.
+        let asked = tokens
+            .iter()
+            .chain(tokens.iter())
+            .map(|t| image_allowing_loopback_for_test(&vault, client, id, t));
+        for served in futures::future::join_all(asked).await {
+            assert_eq!(served.unwrap().bytes, png());
+        }
+        assert_eq!(server.hits(), 8, "one request a picture");
+
+        kept(id).await;
+        let body = vault.story_body(id).unwrap().unwrap();
+        assert!(body.images.iter().all(|i| i.cached_blob.is_some()), "every one was kept");
+        for t in &tokens {
+            image_allowing_loopback_for_test(&vault, client, id, t).await.unwrap();
+        }
+        assert_eq!(server.hits(), 8, "and none is fetched again");
+    }
+
+    /// Until every picture of `story` that was fetched has been kept.
+    async fn kept(story: StoryId) {
+        for _ in 0..1000 {
+            if FETCHING.lock().unwrap().keys().all(|(s, _)| *s != story) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("the pictures of a story were never kept");
     }
 
     #[tokio::test]

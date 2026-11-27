@@ -19,6 +19,7 @@
 import { api } from './api'
 import type { MenuItem } from './menu'
 import { app, handle, isLocked } from './state.svelte'
+import { latest } from './store/latest'
 import type {
   DeclineReason,
   Memory,
@@ -102,12 +103,18 @@ class ProposalsState {
   busy = $state<ProposalId[]>([])
 
   #listeners = new Map<ProposalKind, Set<Listener>>()
+  /** Which load is the newest, so an older answer (or one after a lock) never lands last. */
+  #generation = latest()
+  /** The load under way, which a caller that only needs the list loaded shares. */
+  #inFlight: Promise<void> | null = null
 
   constructor() {
     app.onLock(() => this.reset())
   }
 
   reset() {
+    this.#generation.next()
+    this.#inFlight = null
     this.pending = []
     this.unseen = 0
     this.loaded = false
@@ -118,15 +125,43 @@ class ProposalsState {
     return app.supportsProposals && app.supportsAssistant
   }
 
-  /** Load the pending list and the count. Idempotent. */
-  async refresh() {
-    if (!this.enabled) return
+  /**
+   * Load the pending list and the count. Idempotent.
+   *
+   * Every app's `start` asks for this on the way in, often several at once
+   * after an unlock, so a load already under way is shared rather than
+   * repeated. `force` starts a fresh one regardless: what a change event or
+   * a refused answer wants, since the load in the air may predate the write.
+   */
+  refresh(force = false): Promise<void> {
+    if (!this.enabled) return Promise.resolve()
+    if (this.#inFlight && !force) return this.#inFlight
+    const run = this.#load()
+    this.#inFlight = run
+    void run.finally(() => {
+      if (this.#inFlight === run) this.#inFlight = null
+    })
+    return run
+  }
+
+  async #load(): Promise<void> {
+    const token = this.#generation.next()
     try {
-      this.pending = await api.proposals({ states: ['pending'] })
-      this.unseen = await api.unseenProposals()
+      // Together: two small reads, and neither needs the other.
+      const [pending, unseen] = await Promise.all([
+        api.proposals({ states: ['pending'] }),
+        api.unseenProposals(),
+      ])
+      // Superseded: whoever is waiting on this waits for the newer load instead.
+      if (!this.#generation.isCurrent(token)) {
+        await this.#inFlight
+        return
+      }
+      this.pending = pending
+      this.unseen = unseen
       this.loaded = true
     } catch (e) {
-      if (isLocked(e)) return
+      if (!this.#generation.isCurrent(token) || isLocked(e)) return
       await handle(e)
     }
   }
@@ -216,7 +251,7 @@ class ProposalsState {
     } catch (e) {
       await handle(e)
       // It may have been answered elsewhere, or no longer apply.
-      await this.refresh()
+      await this.refresh(true)
       return null
     } finally {
       this.busy = this.busy.filter((id) => id !== p.id)

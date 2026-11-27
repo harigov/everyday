@@ -77,24 +77,34 @@ impl FileEntry {
 }
 
 impl Manifest {
-    /// Sealed bytes, ready to store as `snapshot`.
-    pub fn encode(&self, keys: &BackupKeys, snapshot: &str) -> Result<Vec<u8>, String> {
+    /// Compressed JSON: everything storing a copy does to it but the sealing.
+    /// The slow part, which is why it is its own step -- see
+    /// `repo::store_manifest`, which does it on the blocking pool.
+    pub fn pack(&self) -> Result<Vec<u8>, String> {
         let json = serde_json::to_vec(self).map_err(|e| e.to_string())?;
         let mut deflate =
             flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
         deflate.write_all(&json).map_err(|e| e.to_string())?;
-        let packed = deflate.finish().map_err(|e| e.to_string())?;
-        keys.seal_manifest(snapshot, &packed).map_err(|e| e.to_string())
+        deflate.finish().map_err(|e| e.to_string())
     }
 
-    /// The manifest stored as `snapshot`. Refuses one from a newer format
-    /// rather than reading part of it.
-    pub fn decode(sealed: &[u8], keys: &BackupKeys, snapshot: &str) -> Result<Self, String> {
-        let packed = keys
-            .open_manifest(snapshot, sealed)
-            .map_err(|_| format!("the backup {snapshot} does not open with this vault's key"))?;
+    /// Sealed bytes from [`Manifest::pack`]'s, ready to store as `snapshot`.
+    pub fn seal(packed: &[u8], keys: &BackupKeys, snapshot: &str) -> Result<Vec<u8>, String> {
+        keys.seal_manifest(snapshot, packed).map_err(|e| e.to_string())
+    }
+
+    /// The compressed JSON inside what is stored as `snapshot`, for
+    /// [`Manifest::unpack`].
+    pub fn open(sealed: &[u8], keys: &BackupKeys, snapshot: &str) -> Result<Vec<u8>, String> {
+        keys.open_manifest(snapshot, sealed)
+            .map_err(|_| format!("the backup {snapshot} does not open with this vault's key"))
+    }
+
+    /// The manifest from [`Manifest::open`]'s bytes. Refuses one from a newer
+    /// format rather than reading part of it.
+    pub fn unpack(packed: &[u8], snapshot: &str) -> Result<Self, String> {
         let mut json = Vec::new();
-        flate2::read::DeflateDecoder::new(&packed[..])
+        flate2::read::DeflateDecoder::new(packed)
             .read_to_end(&mut json)
             .map_err(|e| format!("the backup {snapshot} is damaged: {e}"))?;
         let manifest: Manifest = serde_json::from_slice(&json)

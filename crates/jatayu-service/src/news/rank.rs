@@ -93,6 +93,10 @@ pub const TASK_KEY: &str = "news-ranking";
 /// How long the task sleeps with nothing to wake it. New stories and saved
 /// criteria wake it sooner ([`wake`]); this is for the ones that did not.
 const EVERY: Duration = Duration::from_secs(30 * 60);
+/// How long after an unlock the first pass waits, unless something wakes it
+/// or the Feed is opened first: see [`super::first_wait`]. Its first pass may
+/// read the whole window and load a local model.
+const FIRST: Duration = Duration::from_secs(20);
 /// How long a pass that met a failing model rests before it tries again.
 const ERROR_REST: Duration = Duration::from_secs(5 * 60);
 /// Requests a minute to a decision model: one short answer each.
@@ -1197,6 +1201,10 @@ impl Rest {
 /// The supervised loop: a pass, then sleep until something wakes it. Returns
 /// when `stop` turns `true`.
 async fn run(svc: Arc<Service>, mut stop: watch::Receiver<bool>) -> TaskResult {
+    // A wake -- new stories, saved criteria -- ends the wait as it ends a rest.
+    if super::first_wait(&svc, &mut stop, FIRST, Some(&svc.listening.ranker.wake)).await {
+        return Ok(Outcome::Done);
+    }
     loop {
         if *stop.borrow() {
             return Ok(Outcome::Done);

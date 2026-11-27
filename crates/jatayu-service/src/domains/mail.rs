@@ -37,7 +37,9 @@ use jatayu_core::mail::{
     DraftState, InviteMethod, Mailbox, MailboxRole, Message, Op, OpKind, OpState, OpTarget, Origin,
     Thread, UNDO_SEND_MAX_SECONDS, undo_send_delay,
 };
-use jatayu_core::store::mail::{CategoryCount, ThreadFilter, ThreadPage};
+use jatayu_core::store::mail::{
+    CategoryCount, ThreadFilter, ThreadPage, UnreadBadge, UnreadTarget,
+};
 use jatayu_mail::{compose, invite, mime};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -260,9 +262,39 @@ pub struct ThreadDraft {
 /// rather than an error: [`Message::has_attachments`] may already say `true`
 /// from the header pass, and a thread view should still open, just without
 /// chips to show yet.
+///
+/// A message whose [`Message::has_attachments`] says no, and whose body was
+/// read under today's rule, has none, so its body is not opened to find that
+/// out: the bodies pass sets that flag from these same chips (see
+/// [`ATTACHMENT_RULE_SINCE`]). Older mail still opens its body.
 fn attachments_for(vault: &jatayu_core::Vault, message: &Message) -> Vec<MailAttachment> {
+    if !message.has_attachments && stored_since_rule(message) {
+        return Vec::new();
+    }
     let Ok(body) = vault.body(message.id) else { return Vec::new() };
     attachments_of(&body)
+}
+
+/// Mail stored from here on had its [`Message::has_attachments`] set by the
+/// bodies pass as "a part [`crate::mail::view::is_attachment`] lists", which is
+/// what the chips are. Before a05728ea (2026-11-03) it meant only a part
+/// marked `Content-Disposition: attachment`, and nothing went back over what
+/// was stored then, so an older message with a named inline part -- Apple
+/// Mail's attachments -- says no and still has a chip. A week after the
+/// change rather than the day of it, so that no build still running the old
+/// rule could have read a message dated past it.
+const ATTACHMENT_RULE_SINCE: jiff::Timestamp = jiff::Timestamp::constant(1_794_268_800, 0);
+
+/// Whether `message` was stored on or after [`ATTACHMENT_RULE_SINCE`], and so
+/// had its body read under today's rule. Read from its id, a UUIDv7 minted
+/// when sync stored it -- not from its `Date`, which the sender writes and can
+/// put anywhere. An id that carries no time (none minted here do) counts as
+/// older, so its body is opened as before.
+fn stored_since_rule(message: &Message) -> bool {
+    message.id.as_uuid().get_timestamp().is_some_and(|stamp| {
+        let (seconds, _) = stamp.to_unix();
+        i64::try_from(seconds).is_ok_and(|s| s >= ATTACHMENT_RULE_SINCE.as_second())
+    })
 }
 
 fn attachments_of(body: &Body) -> Vec<MailAttachment> {
@@ -1992,6 +2024,23 @@ async fn category_counts(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UnreadBadgesQuery {
+    pub targets: Vec<UnreadTarget>,
+}
+
+/// Every unread badge the mail sidebar shows, in one call -- see
+/// [`jatayu_core::Vault::mail_unread_badges`].
+async fn unread_badges(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: UnreadBadgesQuery,
+) -> CommandResult<Vec<UnreadBadge>> {
+    let vault = svc.require()?;
+    blocking(move || Ok(vault.mail_unread_badges(&args.targets)?)).await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FetchAttachment {
     pub message_id: MailMessageId,
     pub index: usize,
@@ -2117,8 +2166,18 @@ async fn get_thread(svc: Arc<Service>, _ctx: Ctx, args: ThreadRef) -> CommandRes
                 mail.push(message);
             }
         }
-        let own = vault.drafts(thread.account_id)?;
-        let sending = sending_replies(&vault, &own, &mail, svc.now())?;
+        // Every draft of the account's only when a copy on the server may be
+        // one of them: a sent or discarded draft still claims its copies.
+        // Otherwise what a thread shows comes from the drafts still open and
+        // those sent in the last `SENDING_SHOWN_FOR` -- not the sent and
+        // discarded ones, which pile up for good.
+        let now = svc.now();
+        let own = if copies.is_empty() {
+            vault.live_drafts(thread.account_id, now - SENDING_SHOWN_FOR)?
+        } else {
+            vault.drafts(thread.account_id)?
+        };
+        let sending = sending_replies(&vault, &own, &mail, now)?;
         let drafts = thread_drafts(&vault, &thread, &mail, copies, &own)?;
         let messages = mail
             .into_iter()
@@ -2327,6 +2386,12 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: CategoryCountsQuery, returns: "CategoryCount[]",
         signature: &[("mailbox", "MailboxId", true)],
         run: category_counts,
+    },
+    command! {
+        name: "mail_unread_badges", scope: Mail, effect: Read,
+        args: UnreadBadgesQuery, returns: "UnreadBadge[]",
+        signature: &[("targets", "UnreadTarget[]", true)],
+        run: unread_badges,
     },
     command! {
         name: "list_threads_across", scope: Mail, effect: Read,
@@ -2791,6 +2856,94 @@ mod tests {
                 (5, Some("notes.txt".to_string())),
             ],
         );
+    }
+
+    /// [`attachments_for`] trusts a message's own flag only for mail stored a
+    /// week after the rule it records came in -- by when sync stored it (its
+    /// id), not by its `Date`: a named inline part stored before then, which
+    /// the flag never counted, still gets its chip however its sender dated
+    /// it, and a message stored after it that says it has none is not opened.
+    #[test]
+    fn attachment_chips_trust_the_flag_only_for_mail_read_under_todays_rule() {
+        use jatayu_core::packstore::PackRef;
+
+        assert_eq!(ATTACHMENT_RULE_SINCE.to_string(), "2026-11-10T00:00:00Z");
+        let (_dir, vault) = crate::mail::sync::wiring::tests::test_vault();
+        let account = AccountId::new();
+        let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+        vault.save_mailbox(&inbox).unwrap();
+        let stored = |date: &str, stored_at: &str, uid: u32| {
+            let at: jiff::Timestamp = stored_at.parse().unwrap();
+            let minted = uuid::Timestamp::from_unix(
+                uuid::NoContext,
+                u64::try_from(at.as_second()).unwrap(),
+                0,
+            );
+            let id = MailMessageId(uuid::Uuid::new_v7(minted));
+            let message = Message {
+                id,
+                account_id: account,
+                thread_id: ThreadId::new(),
+                message_id_header: format!("<{id}@chips.example>"),
+                date: date.parse().unwrap(),
+                from: Address::bare("sender@example.com"),
+                to: Vec::new(),
+                cc: Vec::new(),
+                bcc: Vec::new(),
+                reply_to: Vec::new(),
+                subject: "photo".into(),
+                snippet: String::new(),
+                flags: Default::default(),
+                labels: Vec::new(),
+                has_attachments: false,
+                size: 0,
+                category: None,
+                category_source: jatayu_core::mail::CategorySource::Rules,
+                pack: PackRef {
+                    account: account.to_string(),
+                    pack: jatayu_core::id::PackId::new(),
+                    offset: 0,
+                    len: 0,
+                },
+                gmail: None,
+                invite: None,
+                unsubscribe: None,
+            };
+            let ingest = jatayu_core::store::mail::IngestMessage {
+                message: message.clone(),
+                mailbox: inbox.id,
+                uid,
+            };
+            vault.ingest_mail(account, vec![ingest]).unwrap();
+            // Apple Mail's way with an attachment: inline, named, with a
+            // `Content-ID` nothing in the text refers to.
+            vault
+                .save_body(&Body {
+                    message_id: id,
+                    html_sanitised: String::new(),
+                    text: String::new(),
+                    quoted_ranges: Vec::new(),
+                    signature_range: None,
+                    parts: vec![PartRef {
+                        cid: Some("photo-1".into()),
+                        filename: Some("photo.jpg".into()),
+                        mime_type: "image/jpeg".into(),
+                        size: 10,
+                        blob: None,
+                        attached: false,
+                    }],
+                    remote_images: Vec::new(),
+                })
+                .unwrap();
+            message
+        };
+        let older = stored("2026-10-01T09:00:00Z", "2026-10-01T09:05:00Z", 1);
+        let newer = stored("2026-11-20T09:00:00Z", "2026-11-20T09:05:00Z", 2);
+        // Stored before the rule, dated by its sender after it.
+        let misdated = stored("2027-01-01T09:00:00Z", "2026-10-02T09:05:00Z", 3);
+        assert_eq!(attachments_for(&vault, &older).len(), 1, "read from its body");
+        assert!(attachments_for(&vault, &newer).is_empty(), "its flag is believed");
+        assert_eq!(attachments_for(&vault, &misdated).len(), 1, "a Date is not when it was read");
     }
 
     #[test]

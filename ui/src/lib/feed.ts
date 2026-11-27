@@ -552,9 +552,16 @@ function whenMs(story: Story): number {
   return Number.isNaN(t) ? 0 : t
 }
 
+/** A story with what it is sorted by, read once: see `sortStories`. */
+interface Keyed {
+  story: Story
+  at: number
+  score: number
+}
+
 /** Newest first, ties broken the way the server pages: by id, descending. */
-function byNewest(a: Story, b: Story): number {
-  return whenMs(b) - whenMs(a) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0)
+function byNewest(a: Keyed, b: Keyed): number {
+  return b.at - a.at || (a.story.id < b.story.id ? 1 : a.story.id > b.story.id ? -1 : 0)
 }
 
 /**
@@ -564,15 +571,28 @@ function byNewest(a: Story, b: Story): number {
  * as -1, so it falls below one with a score of nothing: a story from a blog
  * has not been voted on, and a Hacker News story with no votes yet has. Never
  * mutates its input; the store holds the list in the order the server paged it.
+ *
+ * Each story's date is parsed once rather than twice a comparison: five
+ * hundred stories are a few thousand comparisons.
  */
 export function sortStories(stories: Story[], sort: FeedSort): Story[] {
-  const out = [...stories]
+  const out: Keyed[] = stories.map((story) => ({
+    story,
+    at: whenMs(story),
+    score: story.score ?? -1,
+  }))
   if (sort === 'points') {
-    out.sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || byNewest(a, b))
+    out.sort((a, b) => b.score - a.score || byNewest(a, b))
   } else {
     out.sort(byNewest)
   }
-  return out
+  return out.map((k) => k.story)
+}
+
+/** A story's own words for the bar's search, lowercased: its title, its
+ *  summary and its author. See `filterStories`. */
+export function storyText(story: Story): string {
+  return [story.title, story.summary, story.author].join('\n').toLowerCase()
 }
 
 /**
@@ -583,15 +603,22 @@ export function sortStories(stories: Story[], sort: FeedSort): Story[] {
  * title says so. Every word has to be found somewhere, not all in one place,
  * which is what makes "rust async" find a story about async in a Rust blog.
  * An empty query is everything, not nothing.
+ *
+ * `texts` is each story's `storyText` worked out already, so a key typed in
+ * the bar does not lowercase every story's summary again.
  */
-export function filterStories(stories: Story[], query: string, sources: SourceSummary[]): Story[] {
+export function filterStories(
+  stories: Story[],
+  query: string,
+  sources: SourceSummary[],
+  texts?: ReadonlyMap<string, string>,
+): Story[] {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean)
   if (words.length === 0) return stories
   const names = new Map(sources.map((s) => [s.source.id, sourceLabel(s.source).toLowerCase()]))
   return stories.filter((story) => {
-    const haystack = [story.title, story.summary, story.author, names.get(story.sourceId) ?? '']
-      .join('\n')
-      .toLowerCase()
+    const own = texts?.get(story.id) ?? storyText(story)
+    const haystack = `${own}\n${names.get(story.sourceId) ?? ''}`
     return words.every((word) => haystack.includes(word))
   })
 }

@@ -15,6 +15,7 @@
 
 import { api } from './api'
 import { daysBetween, formatMinutes, friendlyDate, plural, timeOfDay } from './format'
+import { fewIds, registerApply, type ChangeWithIds } from './live-apply'
 import { app, handle, isLocked } from './state.svelte'
 import { isoDate } from './time'
 import { VaultError } from './types'
@@ -146,9 +147,21 @@ class JobsState {
 
   /** The load in flight, so `start` asked twice waits for it. */
   #starting: Promise<void> | null = null
+  /** The newest whole reload while it is in the air, for `#patch` to wait on. */
+  #reloading: Promise<void> | null = null
+  /** Whether the list has been read since the vault opened: before that only
+   *  the count on the bar is drawn. */
+  #loaded = false
+  /** The newest read asked for of each job being patched. See `#patch`. */
+  #patches = new Map<JobId, number>()
+  #patchCount = 0
 
   constructor() {
     app.onLock(() => this.reset())
+    // `live.svelte.ts`'s opt-in. A running job raises a change for every
+    // line of progress, each naming that one job, so the usual answer is the
+    // one row read again rather than the whole list.
+    registerApply('jobs', (changes) => this.#applyChanges(changes))
   }
 
   /** Whether this vault has background jobs at all. */
@@ -194,9 +207,18 @@ class JobsState {
     }
   }
 
-  /** Reload the list and the count. What a `job` change event asks for. */
-  async refresh(): Promise<void> {
-    if (!this.enabled) return
+  /** Reload the list and the count. What a `job` change wider than a few jobs asks for. */
+  refresh(): Promise<void> {
+    if (!this.enabled) return Promise.resolve()
+    const run = this.#reload()
+    this.#reloading = run
+    void run.finally(() => {
+      if (this.#reloading === run) this.#reloading = null
+    })
+    return run
+  }
+
+  async #reload(): Promise<void> {
     const token = ++this.#generation
     try {
       // Together, so the badge and the list never disagree about a job that
@@ -205,6 +227,7 @@ class JobsState {
       if (token !== this.#generation) return
       this.jobs = list
       this.unseen = unseen
+      this.#loaded = true
     } catch (e) {
       if (isLocked(e)) return
       await handle(e)
@@ -227,6 +250,61 @@ class JobsState {
       if (token === this.#generation) this.unseen = unseen
     } catch {
       /* a number that could not be read is not worth reporting */
+    }
+  }
+
+  /**
+   * What a batch of `job` changes does here. Nothing is drawn from the list
+   * until it has been read -- a thread with research in it, or "What it did"
+   * -- so until then only the count moves. After, the few jobs a batch names
+   * are read again one by one; a batch naming more asks for the list.
+   */
+  #applyChanges(changes: ChangeWithIds[]): boolean {
+    if (!this.enabled) return true
+    if (!this.#loaded) {
+      void this.refreshCount()
+      return true
+    }
+    const named = fewIds(changes)
+    if (!named) return false
+    for (const [id, op] of named) {
+      if (op !== 'deleted') {
+        void this.#patch(id)
+        continue
+      }
+      // A read of it still in the air must not put it back.
+      this.#patches.delete(id)
+      this.jobs = this.jobs.filter((j) => j.id !== id)
+    }
+    void this.refreshCount()
+    return true
+  }
+
+  /**
+   * One job read again after a change named it -- after any whole reload in
+   * the air, whose older copy of it would otherwise land on top. Its answer
+   * lands only if it is still the newest word on that job: not if another
+   * read of it, or a whole reload, was asked for since, or the vault locked.
+   */
+  async #patch(id: JobId): Promise<void> {
+    await this.#reloading
+    const generation = this.#generation
+    const read = ++this.#patchCount
+    this.#patches.set(id, read)
+    const newest = () => this.#patches.get(id) === read && generation === this.#generation
+    try {
+      const job = await api.job(id)
+      if (newest()) this.#put(job)
+    } catch (e) {
+      if (isLocked(e)) return
+      // Deleted from another window before it could be read.
+      if (e instanceof VaultError && e.code === 'not_found') {
+        if (newest()) this.jobs = this.jobs.filter((j) => j.id !== id)
+        return
+      }
+      await handle(e)
+    } finally {
+      if (this.#patches.get(id) === read) this.#patches.delete(id)
     }
   }
 
@@ -342,6 +420,9 @@ class JobsState {
   reset() {
     this.#generation++
     this.#starting = null
+    this.#reloading = null
+    this.#loaded = false
+    this.#patches.clear()
     this.jobs = []
     this.unseen = 0
     this.loading = false

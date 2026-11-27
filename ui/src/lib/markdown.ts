@@ -38,11 +38,12 @@
 //
 // # Streaming
 //
-// The panel calls this on every chunk of a reply as it arrives, so the input
-// is usually a *truncated* document: a fence that has not closed, a list
-// mid-item, half a link. Every block below therefore terminates at
-// end-of-input rather than requiring its closing marker, and the output is
-// always well-formed HTML even when the Markdown is not.
+// The panel calls this as a reply arrives -- once a frame, through
+// `MarkdownStream` -- so the input is usually a *truncated* document: a
+// fence that has not closed, a list mid-item, half a link. Every block below
+// therefore terminates at end-of-input rather than requiring its closing
+// marker, and the output is always well-formed HTML even when the Markdown is
+// not.
 
 import { parseFileLink, type FileLink } from './documents'
 
@@ -59,6 +60,63 @@ export interface RenderOptions {
 /** Turn Markdown into HTML that is safe to put in the document. */
 export function renderMarkdown(source: string, options: RenderOptions = {}): string {
   return blocks(prepare(source), options)
+}
+
+/**
+ * `renderMarkdown`, as the top-level blocks it is made of: joined, they are
+ * exactly what it returns. For a reply still streaming in, which is drawn a
+ * block at a time so the paragraphs already finished keep their nodes -- and
+ * any selection in them -- while only the last one grows.
+ */
+export function renderMarkdownBlocks(source: string, options: RenderOptions = {}): string[] {
+  return blockList(prepare(source), options)
+}
+
+/**
+ * `renderMarkdownBlocks` for one text that grows at its end, as a streaming
+ * reply does: each call reads again only from near the end of the text it was
+ * last handed, and keeps the blocks before that as they were. A text that is
+ * not the last one with more on the end -- a retry, a reply cut short -- is
+ * read whole.
+ *
+ * What makes keeping them right: the walk below is the same from any line it
+ * starts a block on, whatever came before, and decides each block by its own
+ * lines and at most one line past the last of them. So a block that starts
+ * three lines or more before the old text's last line -- the one still being
+ * written -- starts there in the longer text too, and every block before it
+ * was decided by lines the longer text has unchanged.
+ */
+export class MarkdownStream {
+  readonly #options: RenderOptions
+  #source: string | null = null
+  #lines = 0
+  /** The line each of `#blocks` starts on. */
+  #starts: number[] = []
+  #blocks: string[] = []
+
+  constructor(options: RenderOptions = {}) {
+    this.#options = options
+  }
+
+  render(source: string): string[] {
+    if (source === this.#source) return this.#blocks
+    const lines = prepare(source)
+    // The last block whose lines, and the one after them, were whole before.
+    let keep = -1
+    if (this.#source !== null && source.startsWith(this.#source)) {
+      const settled = this.#lines - 3
+      for (let k = 0; k < this.#starts.length && this.#starts[k]! <= settled; k++) keep = k
+    }
+    const from = keep < 0 ? 0 : this.#starts[keep]!
+    const kept = Math.max(0, keep)
+    const starts: number[] = []
+    const tail = blockList(from === 0 ? lines : lines.slice(from), this.#options, starts)
+    this.#blocks = [...this.#blocks.slice(0, kept), ...tail]
+    this.#starts = [...this.#starts.slice(0, kept), ...starts.map((line) => line + from)]
+    this.#source = source
+    this.#lines = lines.length
+    return this.#blocks
+  }
 }
 
 /**
@@ -142,6 +200,14 @@ function tableCells(line: string): string[] {
  * thing that nests is a list, and that recurses through `listBlock`.
  */
 function blocks(lines: string[], options: RenderOptions): string {
+  return blockList(lines, options).join('')
+}
+
+/**
+ * The walk itself, one finished block of HTML per entry -- and, into
+ * `starts` when it is given, the line each one starts on.
+ */
+function blockList(lines: string[], options: RenderOptions, starts?: number[]): string[] {
   const out: string[] = []
   let i = 0
 
@@ -152,6 +218,8 @@ function blocks(lines: string[], options: RenderOptions): string {
       i++
       continue
     }
+    // Every branch below adds exactly one block.
+    starts?.push(i)
 
     const fence = FENCE.exec(line)
     if (fence) {
@@ -234,7 +302,7 @@ function blocks(lines: string[], options: RenderOptions): string {
     out.push(`<p>${inline(body.join('\n'))}</p>`)
   }
 
-  return out.join('')
+  return out
 }
 
 /** Would this line begin a block that interrupts a paragraph? */

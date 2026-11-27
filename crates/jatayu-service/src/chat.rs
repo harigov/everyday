@@ -1020,7 +1020,7 @@ pub fn state_dir(vault: &Vault, link: ChatLinkId) -> PathBuf {
 }
 
 fn chat_root(vault: &Vault) -> PathBuf {
-    if vault.status().backend == "postgres" {
+    if vault.backend() == "postgres" {
         jatayu_vault::config_dir().join("chat").join(vault_dir_name(vault))
     } else {
         vault.store_root().join("chat")

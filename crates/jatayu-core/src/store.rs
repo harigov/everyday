@@ -1074,6 +1074,14 @@ pub trait JournalStore: Send + Sync {
 
     fn stats(&self) -> Result<StoreStats>;
 
+    /// [`JournalStore::stats`] without the attachments: the journal and
+    /// entry counts, with `blobs` and `blob_bytes` 0. What a vault's status
+    /// reads, which is asked far too often to walk a media folder each time.
+    /// A backend whose blob figures cost a walk overrides it.
+    fn counts(&self) -> Result<StoreStats> {
+        Ok(StoreStats { blobs: 0, blob_bytes: 0, ..self.stats()? })
+    }
+
     /// Force pending writes to durable storage.
     fn flush(&self) -> Result<()> {
         Ok(())

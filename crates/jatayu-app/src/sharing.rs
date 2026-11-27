@@ -147,7 +147,7 @@ impl Sharing {
         let parts = jatayu_server::prepare_with(&dir, &config, registry.clone())?;
         let broadcaster = parts.broadcaster.clone();
 
-        let name = service.get().map(|v| v.status().name).unwrap_or_else(|| "Jatayu".into());
+        let name = service.get().map(|v| v.name()).unwrap_or_else(|| "Jatayu".into());
         let running = jatayu_server::start(service, parts, &config, name).await?;
 
         config.enabled = true;

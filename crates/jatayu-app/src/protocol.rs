@@ -196,6 +196,25 @@ pub fn handle<R: Runtime>(
                 responder.respond(harden(serve_remote(&remote, &request).await));
             });
         }
+        // A picture asked for at a width (`?w=`), for a slot narrower than it
+        // is: made smaller, or the original when it is not a picture that can
+        // be -- see `jatayu_service::mail::view::scaled_blob`.
+        Some(SessionHandle::Local(service)) if asked_width(&request).is_some() => {
+            tauri::async_runtime::spawn(async move {
+                let response = match serve_scaled(&service, &request).await {
+                    Some(scaled) => scaled,
+                    None => tauri::async_runtime::spawn_blocking(move || serve(&app, &request))
+                        .await
+                        .unwrap_or_else(|_| {
+                            error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "could not read the attachment",
+                            )
+                        }),
+                };
+                responder.respond(harden(response));
+            });
+        }
         _ => {
             // Reading media decrypts chunks off disk; keep it off the UI thread.
             tauri::async_runtime::spawn_blocking(move || {
@@ -244,6 +263,14 @@ async fn serve_remote(
     let path = request.uri().path().trim_start_matches('/').to_string();
     if BlobId::parse(&path).is_err() {
         return error(StatusCode::BAD_REQUEST, "not a blob address");
+    }
+    // Made smaller on the machine holding the vault, so only the smaller copy
+    // crosses the network. Anything else -- the original answered in parts,
+    // an error -- is the ordinary path's to answer.
+    if let Some(width) = asked_width(request)
+        && let Ok(Some(bytes)) = remote.client.blob_scaled(&path, width).await
+    {
+        return respond_whole(bytes);
     }
 
     let total = match remote.client.blob_len(&path).await {
@@ -1019,6 +1046,33 @@ fn serve<R: Runtime>(app: &tauri::AppHandle<R>, request: &Request<Vec<u8>>) -> R
     respond(plan, bytes)
 }
 
+/// The width a blob address asks for its picture at (`?w=`), when it is one
+/// of those on offer; any other is the original.
+fn asked_width(request: &Request<Vec<u8>>) -> Option<u32> {
+    let w = query_param(request.uri().query()?, "w")?;
+    jatayu_service::mail::view::width_tier(&w)
+}
+
+/// A blob asked for at a width, made smaller in this vault: `None` for the
+/// original, which [`serve`] answers.
+async fn serve_scaled(
+    service: &std::sync::Arc<jatayu_service::Service>,
+    request: &Request<Vec<u8>>,
+) -> Option<Response<Vec<u8>>> {
+    let width = asked_width(request)?;
+    let id = BlobId::parse(request.uri().path().trim_start_matches('/')).ok()?;
+    let vault = service.get()?;
+    let bytes = jatayu_service::mail::view::scaled_blob(&vault, id, width).await?;
+    Some(respond_whole(bytes.to_vec()))
+}
+
+/// A smaller copy, whole. Cached as the blob is: the address names the blob,
+/// whose bytes never change, and the width, which decides the copy.
+fn respond_whole(bytes: Vec<u8>) -> Response<Vec<u8>> {
+    let len = bytes.len() as u64;
+    respond(media::ResponsePlan { start: 0, len, total: len, partial: false }, bytes)
+}
+
 /// The response both paths build, so a local vault and a remote one answer a
 /// range request identically.
 fn respond(plan: media::ResponsePlan, bytes: Vec<u8>) -> Response<Vec<u8>> {
@@ -1429,5 +1483,46 @@ mod policy_tests {
                 Some("nosniff")
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod blob_width_tests {
+    use super::*;
+
+    fn request(uri: &str) -> Request<Vec<u8>> {
+        Request::builder().uri(uri).body(Vec::new()).expect("a test URI is always well formed")
+    }
+
+    /// What `mediaUrl(blob, w)` builds, in both shapes of the address; a width
+    /// not on offer, or none, is the original.
+    #[test]
+    fn a_blob_address_asks_for_a_width_on_offer_or_for_the_original() {
+        let blob = "ab".repeat(32);
+        for (uri, want) in [
+            (format!("jatayu://localhost/{blob}?w=96"), Some(96)),
+            (format!("http://jatayu.localhost/{blob}?w=400"), Some(400)),
+            (format!("jatayu://localhost/{blob}?w=800"), None),
+            (format!("jatayu://localhost/{blob}?w="), None),
+            (format!("jatayu://localhost/{blob}"), None),
+        ] {
+            assert_eq!(asked_width(&request(&uri)), want, "{uri}");
+        }
+        // The width rides the query, so the path is still the blob's address.
+        let asked = request(&format!("jatayu://localhost/{blob}?w=200"));
+        assert!(BlobId::parse(asked.uri().path().trim_start_matches('/')).is_ok());
+    }
+
+    #[test]
+    fn a_smaller_copy_is_whole_and_kept_as_long_as_its_blob() {
+        let jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 0, 0, 0, 0].to_vec();
+        let response = respond_whole(jpeg.clone());
+        assert_eq!(response.status(), StatusCode::OK);
+        let said = |name| response.headers().get(name).and_then(|v| v.to_str().ok());
+        assert_eq!(said(header::CONTENT_TYPE), Some("image/jpeg"));
+        assert_eq!(said(header::CONTENT_LENGTH), Some("8"));
+        assert_eq!(said(header::CACHE_CONTROL), Some("private, max-age=31536000, immutable"));
+        assert!(response.headers().get(header::CONTENT_RANGE).is_none());
+        assert_eq!(response.body(), &jpeg);
     }
 }

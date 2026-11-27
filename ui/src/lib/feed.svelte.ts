@@ -18,6 +18,7 @@
 //      itself: the service's refresher does that whether or not anybody is
 //      looking, and tells this store by a change event (`live.svelte.ts`).
 
+import { untrack } from 'svelte'
 import { accounts } from './accounts.svelte'
 import { api, callCommand, isMock, isWeb } from './api'
 import {
@@ -36,6 +37,7 @@ import {
   scopeUnread,
   sortStories,
   sourceLabel,
+  storyText,
   unsubscribedNote,
   type BodyOrigin,
   type KindChoice,
@@ -85,6 +87,8 @@ import type {
 const PAGE = 100
 /** The most the service will return at once, which bounds how much a reload covers. */
 const MOST = 500
+/** How long the list read on one visit is shown as it is on the next. */
+const FRESH_MS = 60_000
 
 /** What the Feed tints the window with: the app's own colour from the theme, so it follows the palette. */
 const FEED_ACCENT = 'var(--app-feed)'
@@ -274,6 +278,11 @@ class FeedState {
   // -- what has been loaded for it --------------------------------------
   sources = $state<SourceSummary[]>([])
   stories = $state<Story[]>([])
+  /** The list in the order it is drawn, sorted when it or the order
+   *  changes rather than on every key typed in the bar's search. */
+  #sorted = $derived(sortStories(this.stories, this.sort))
+  /** Each story's searchable words, lowercased once: see `filterStories`. */
+  #texts = $derived(new Map(this.stories.map((s) => [s.id, storyText(s)])))
   /** Where the next page starts; `null` when the last page is loaded. */
   next = $state<StoryCursor | null>(null)
   loading = $state(false)
@@ -361,16 +370,25 @@ class FeedState {
   /**
    * Load the sources and the current list. Called by `FeedView` on mount.
    *
-   * Idempotent: mounting the view again -- which happens on every switch
-   * back to this app -- reloads over what is there rather than from nothing,
-   * so the list does not blank out on the way in. The sources come first
-   * because a folder is a list of them: it cannot say what it holds until
-   * they are known.
+   * Mounting the view again -- which happens on every switch back to this
+   * app -- keeps what is drawn when it was read a moment ago and nothing has
+   * changed since (see `#current`), and otherwise reloads over what is there
+   * rather than from nothing, so the list does not blank out on the way in.
+   * The sources come first when the list is narrowed to some of them -- a
+   * folder, a source or a kind cannot say what it holds until they are known
+   * -- and alongside it when it is everything.
    */
   async start(): Promise<void> {
     if (!app.supportsNews) return
-    await this.#loadSources(false)
-    await this.#load(false)
+    if (!this.#current()) {
+      this.stale = false
+      if (this.scope.kind === 'all' && this.kind === 'all') {
+        await Promise.all([this.#loadSources(false), this.#load(false)])
+      } else {
+        await this.#loadSources(false)
+        await this.#load(false)
+      }
+    }
     // Which episodes are on their way, for the buttons on a show's rows.
     if (this.podcastSources.length > 0) void upnext.refreshDownloads()
     // After the list, not before it: following reads a month of mail.
@@ -402,6 +420,36 @@ class FeedState {
     }
   }
 
+  /** Set when a change arrived while this app was not on screen and the
+   *  live router skipped the reload: the next start() reloads in full. */
+  stale = false
+
+  /** What the live router calls instead of reloading an app nobody is
+   *  looking at. */
+  markStale(): void {
+    this.stale = true
+  }
+
+  /** When the list and the sources last landed. */
+  #listedAt = 0
+  #sourcesAt = 0
+
+  /**
+   * Is what is drawn recent enough to show again as it is?
+   *
+   * Both halves read in the last minute, today, and with no change heard of
+   * since. The minute is for whatever writes without saying so.
+   */
+  #current(): boolean {
+    const read = Math.min(this.#listedAt, this.#sourcesAt)
+    return (
+      !this.stale &&
+      read > 0 &&
+      Date.now() - read < FRESH_MS &&
+      new Date(read).toDateString() === new Date().toDateString()
+    )
+  }
+
   /**
    * Drop everything. Registered with `app.onLock` in the constructor.
    *
@@ -411,6 +459,9 @@ class FeedState {
    */
   reset(): void {
     this.#queryDebounce.cancel()
+    this.#listedAt = 0
+    this.#sourcesAt = 0
+    this.stale = false
     // Nothing on its way may land after this: those rows are the decrypted
     // contents this reset exists to drop.
     this.#generation.next()
@@ -446,6 +497,14 @@ class FeedState {
     this.genres = []
     this.directoryLoading = false
     this.directoryError = null
+    // The sorted list and the search words are worked out from the stories,
+    // and Svelte keeps what each last came to until somebody reads it again
+    // -- which nobody does behind the lock screen. Read now, they come to
+    // nothing, and the last vault's stories go with them.
+    untrack(() => {
+      void this.#sorted
+      void this.#texts
+    })
   }
 
   /**
@@ -1338,7 +1397,9 @@ class FeedState {
 
   /** The list as drawn: sorted, and narrowed by the bar's query. */
   get visible(): Story[] {
-    return filterStories(sortStories(this.stories, this.sort), this.query, this.sources)
+    const sorted = this.#sorted
+    if (!this.query.trim()) return sorted
+    return filterStories(sorted, this.query, this.sources, this.#texts)
   }
 
   /** Newsletters can be offered: the backend has mail and an account. */
@@ -1552,6 +1613,7 @@ class FeedState {
       if (!this.#sourcesGeneration.isCurrent(token)) return
       this.sources = sources
       this.#pruneChecked()
+      this.#sourcesAt = Date.now()
       if (this.#scopeGone()) {
         // Unfollowed on another machine, or a folder emptied by a move.
         // Everything, rather than a list of nothing under a name that is no
@@ -1632,6 +1694,7 @@ class FeedState {
     this.stories = list
     this.next = next
     this.#detached = detached
+    this.#listedAt = Date.now()
   }
 
   /**

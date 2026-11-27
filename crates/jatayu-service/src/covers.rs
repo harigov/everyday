@@ -42,15 +42,32 @@
 //! [`limits`] -- is kept as it came, exactly as every cover was before this
 //! module existed: the alternative is no cover, which is worse in every case
 //! (see [`crate::websearch::apply_and_cover`]'s own argument).
+//!
+//! # Smaller still, for a small slot
+//!
+//! A list row draws a cover at thirty-four pixels and the Feed's sidebar a
+//! show's artwork at eighteen, and a webview decodes a picture at the size
+//! it is, not the size it is drawn: eight hundred pixels square is two and a
+//! half megabytes of memory for an icon. So a blob's address may ask for one
+//! of [`WIDTHS`] with `?w=`, and gets the picture made that wide
+//! ([`scaled_blob`]) -- made when first asked for and kept in memory only,
+//! since what comes out of the vault is plaintext and must not be written
+//! anywhere it was not sealed.
 
+use std::collections::HashMap;
 use std::io::Cursor;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 
+use image::codecs::png::{PngDecoder, PngEncoder};
+use image::codecs::webp::WebPDecoder;
 use image::imageops::FilterType;
 use image::metadata::Orientation;
-use image::{DynamicImage, ImageDecoder, ImageReader, Limits, RgbImage};
+use image::{
+    DynamicImage, ExtendedColorType, ImageDecoder, ImageEncoder, ImageReader, Limits, RgbImage,
+};
 use jatayu_core::Vault;
 use jatayu_core::id::BlobId;
+use jatayu_core::media;
 
 use crate::error::CommandResult;
 use crate::service::blocking;
@@ -195,6 +212,221 @@ pub(crate) fn jpeg(image: &RgbImage) -> Option<Vec<u8>> {
     Some(out)
 }
 
+// ---- smaller still, for a small slot ----------------------------------------
+
+/// The widths a picture is made for a slot narrower than it: an icon in a
+/// list, a cover in a grid, each at twice the density too. A blob address
+/// asks for one with `?w=`; any other width gets the original.
+pub const WIDTHS: [u32; 3] = [96, 200, 400];
+
+/// `w` as one of [`WIDTHS`], or `None` for anything else.
+pub fn width_tier(w: &str) -> Option<u32> {
+    let w: u32 = w.parse().ok()?;
+    WIDTHS.contains(&w).then_some(w)
+}
+
+/// `bytes` made `width` pixels across, its proportions kept: a JPEG, or a PNG
+/// where it is see-through, so an icon on a dark page does not grow a white
+/// box. `None` -- serve the original -- for a picture already no wider, one
+/// that moves, or anything this cannot read.
+///
+/// Synchronous and not cheap, as [`shrink`] is.
+pub fn scaled(bytes: &[u8], width: u32) -> Option<Vec<u8>> {
+    let kind = media::sniff_mime(bytes);
+    if !scalable(kind) || animated(kind, bytes) {
+        return None;
+    }
+    // From the header alone: a picture with neither side wider than asked is
+    // narrow enough whichever way up it is turned.
+    let mut reader = ImageReader::new(Cursor::new(bytes)).with_guessed_format().ok()?;
+    reader.limits(limits());
+    let (w, h) = reader.into_dimensions().ok()?;
+    if w.max(h) <= width {
+        return None;
+    }
+    let (image, _) = decoded_upright(bytes)?;
+    if image.width() <= width {
+        return None;
+    }
+    let small = narrowed(&image, width);
+    if image.color().has_alpha() {
+        let rgba = small.to_rgba8();
+        if rgba.pixels().any(|p| p.0[3] < u8::MAX) {
+            let mut out = Vec::new();
+            PngEncoder::new(&mut out)
+                .write_image(rgba.as_raw(), rgba.width(), rgba.height(), ExtendedColorType::Rgba8)
+                .ok()?;
+            return Some(out);
+        }
+    }
+    jpeg(&flattened(&small))
+}
+
+/// The kinds of picture [`scaled`] makes smaller. Not a GIF, which moves more
+/// often than not, nor anything this module cannot read (see [`limits`]).
+fn scalable(kind: &str) -> bool {
+    matches!(kind, "image/jpeg" | "image/png" | "image/webp")
+}
+
+/// An animated PNG or WebP: made smaller it would stand still, so it is left
+/// as it came. One that cannot be told is too.
+fn animated(kind: &str, bytes: &[u8]) -> bool {
+    match kind {
+        "image/png" => {
+            PngDecoder::new(Cursor::new(bytes)).and_then(|d| d.is_apng()).unwrap_or(true)
+        }
+        "image/webp" => {
+            WebPDecoder::new(Cursor::new(bytes)).map(|d| d.has_animation()).unwrap_or(true)
+        }
+        _ => false,
+    }
+}
+
+/// `image` brought to `width` across, the height in proportion -- in two steps
+/// when it is far wider, for the reason [`scaled_down`] gives.
+fn narrowed(image: &DynamicImage, width: u32) -> DynamicImage {
+    let (w, h) = (u64::from(image.width()), u64::from(image.height()));
+    let height = ((h * u64::from(width) + w / 2) / w).max(1) as u32;
+    let staged;
+    let from = if image.width() > width * 2 {
+        staged = image.thumbnail_exact(width * 2, height * 2);
+        &staged
+    } else {
+        image
+    };
+    from.resize_exact(width, height, FilterType::Lanczos3)
+}
+
+/// The largest blob [`scaled_blob`] reads to make a smaller copy of. A cover
+/// is far under it; past it, the original is served as it always was.
+const MAX_SCALED_INPUT: u64 = 32 * 1024 * 1024;
+
+/// Most bytes of smaller copies kept in memory, all of them together.
+const MADE_BYTES: usize = 32 * 1024 * 1024;
+
+/// What a remembered "serve the original" is counted as.
+const ORIGINAL_COST: usize = 64;
+
+/// Smaller copies already made, by blob and width, the least lately used
+/// going first. `None` remembers that the original is the answer, so a blob
+/// that is not a picture, or is already narrow, is not read again to find out.
+/// One remembered answer: the smaller copy (`None` for "the original"), and
+/// when it was last used.
+type MadeCopy = (Option<Arc<Vec<u8>>>, u64);
+
+#[derive(Default)]
+struct Made {
+    copies: HashMap<(BlobId, u32), MadeCopy>,
+    bytes: usize,
+    clock: u64,
+    /// How many times everything has been forgotten: a copy begun before
+    /// the last time is not kept when it is finished.
+    generation: u64,
+}
+
+fn cost(copy: &Option<Arc<Vec<u8>>>) -> usize {
+    copy.as_ref().map_or(ORIGINAL_COST, |c| c.len())
+}
+
+impl Made {
+    fn get(&mut self, key: (BlobId, u32)) -> Option<Option<Arc<Vec<u8>>>> {
+        self.clock += 1;
+        let clock = self.clock;
+        let (copy, used) = self.copies.get_mut(&key)?;
+        *used = clock;
+        Some(copy.clone())
+    }
+
+    fn put(&mut self, key: (BlobId, u32), copy: Option<Arc<Vec<u8>>>) {
+        if cost(&copy) > MADE_BYTES {
+            return;
+        }
+        self.clock += 1;
+        self.bytes += cost(&copy);
+        if let Some((gone, _)) = self.copies.insert(key, (copy, self.clock)) {
+            self.bytes -= cost(&gone);
+        }
+        while self.bytes > MADE_BYTES {
+            let oldest = self.copies.iter().min_by_key(|(_, (_, used))| *used).map(|(k, _)| *k);
+            let Some((gone, _)) = oldest.and_then(|k| self.copies.remove(&k)) else { break };
+            self.bytes -= cost(&gone);
+        }
+    }
+
+    /// Keep a copy begun at `generation`, unless everything was forgotten
+    /// while it was being made -- the vault locked or closed meanwhile.
+    fn put_from(&mut self, generation: u64, key: (BlobId, u32), copy: Option<Arc<Vec<u8>>>) {
+        if generation == self.generation {
+            self.put(key, copy);
+        }
+    }
+
+    fn clear(&mut self) {
+        self.copies.clear();
+        self.bytes = 0;
+        self.generation += 1;
+    }
+}
+
+static MADE: LazyLock<Mutex<Made>> = LazyLock::new(Mutex::default);
+
+/// A few at a time -- half the processors, two to four: making a copy is ten or
+/// twenty milliseconds of one, a grid scrolled into view asks for forty at
+/// once, and the rest of the application wants the others meanwhile.
+static MAKING: LazyLock<tokio::sync::Semaphore> = LazyLock::new(|| {
+    let processors = std::thread::available_parallelism().map_or(4, |n| n.get());
+    tokio::sync::Semaphore::new((processors / 2).clamp(2, 4))
+});
+
+/// Blob `id` made `width` across ([`scaled`]), from memory when it was made
+/// before -- or `None` to serve the original: for a vault that is locked, a
+/// blob that is not a picture or is already that narrow, and anything that
+/// could not be read (whose original then answers with the error it has).
+pub async fn scaled_blob(vault: &Arc<Vault>, id: BlobId, width: u32) -> Option<Arc<Vec<u8>>> {
+    if !vault.is_unlocked() {
+        return None;
+    }
+    let key = (id, width);
+    if let Some(known) = MADE.lock().unwrap().get(key) {
+        return known;
+    }
+    let _turn = MAKING.acquire().await.ok()?;
+    // Made by whoever had the turn before this one, asking for the same.
+    let generation = {
+        let mut made = MADE.lock().unwrap();
+        if let Some(known) = made.get(key) {
+            return known;
+        }
+        made.generation
+    };
+    let store = vault.clone();
+    let made = blocking(move || {
+        if store.with_store(|s| s.blob_len(id))? > MAX_SCALED_INPUT {
+            return Ok(None);
+        }
+        let head = store.with_store(|s| s.get_blob_range(id, 0, 16))?;
+        if !scalable(media::sniff_mime(&head)) {
+            return Ok(None);
+        }
+        let bytes = store.with_store(|s| s.get_blob(id))?;
+        Ok(scaled(&bytes, width).map(Arc::new))
+    })
+    .await
+    .ok()?;
+    // A copy finished after the vault locked goes to whoever asked for it,
+    // and is not kept: `forget_scaled` has already been and gone.
+    if vault.is_unlocked() {
+        MADE.lock().unwrap().put_from(generation, key, made.clone());
+    }
+    made
+}
+
+/// Forget every smaller copy made: pictures out of the vault, in the clear,
+/// which should not outlive its being unlocked.
+pub fn forget_scaled() {
+    MADE.lock().unwrap().clear();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,5 +552,143 @@ mod tests {
         // came rather than decoded into memory.
         let ribbon = png(&gradient(20_000, 1, |_, _| 255));
         assert_eq!(shrink(&ribbon), None);
+    }
+
+    // ---- smaller still ------------------------------------------------------
+
+    fn size(bytes: &[u8]) -> (u32, u32) {
+        let image = decoded(bytes);
+        (image.width(), image.height())
+    }
+
+    #[test]
+    fn only_the_widths_on_offer_are_asked_for() {
+        assert_eq!(width_tier("96"), Some(96));
+        assert_eq!(width_tier("200"), Some(200));
+        assert_eq!(width_tier("400"), Some(400));
+        for other in ["800", "0", "97", "-96", "abc", ""] {
+            assert_eq!(width_tier(other), None, "{other}");
+        }
+    }
+
+    #[test]
+    fn a_cover_is_made_as_wide_as_asked_in_its_own_proportions() {
+        let cover = jpeg_at(&gradient(533, 800, |_, _| 255), 90);
+        let small = scaled(&cover, 400).expect("wider than asked");
+        assert_eq!(jatayu_core::media::sniff_mime(&small), "image/jpeg");
+        assert_eq!(size(&small), (400, 600));
+
+        let icon = scaled(&cover, 96).unwrap();
+        assert_eq!(size(&icon), (96, 144));
+    }
+
+    #[test]
+    fn a_picture_no_wider_than_asked_and_what_cannot_be_read_are_the_original() {
+        let narrow = jpeg_at(&gradient(300, 450, |_, _| 255), 90);
+        assert_eq!(scaled(&narrow, 400), None);
+        // Tall and narrow: only the width counts.
+        let tall = jpeg_at(&gradient(380, 1200, |_, _| 255), 90);
+        assert_eq!(scaled(&tall, 400), None);
+        assert_eq!(scaled(b"<svg xmlns='http://www.w3.org/2000/svg'/>", 96), None);
+        assert_eq!(scaled(b"not a picture at all", 96), None);
+        assert_eq!(scaled(&[], 96), None);
+    }
+
+    #[test]
+    fn a_gif_is_left_moving() {
+        let mut gif = Vec::new();
+        let frame = gradient(500, 500, |_, _| 255);
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut gif);
+            encoder.encode(frame.as_raw(), 500, 500, image::ExtendedColorType::Rgba8).unwrap();
+        }
+        assert_eq!(jatayu_core::media::sniff_mime(&gif), "image/gif");
+        assert_eq!(scaled(&gif, 96), None);
+    }
+
+    #[test]
+    fn a_see_through_icon_stays_see_through_and_an_opaque_one_is_a_jpeg() {
+        let logo = png(&gradient(800, 800, |x, _| if x < 400 { 0 } else { 255 }));
+        let small = scaled(&logo, 96).unwrap();
+        assert_eq!(jatayu_core::media::sniff_mime(&small), "image/png");
+        let back = decoded(&small).to_rgba8();
+        assert_eq!(back.dimensions(), (96, 96));
+        assert_eq!(back.get_pixel(5, 50).0[3], 0, "the clear half is still clear");
+        assert_eq!(back.get_pixel(90, 50).0[3], 255);
+
+        // An alpha channel with nothing see-through in it is a JPEG.
+        let opaque = png(&gradient(800, 800, |_, _| 255));
+        let small = scaled(&opaque, 96).unwrap();
+        assert_eq!(jatayu_core::media::sniff_mime(&small), "image/jpeg");
+    }
+
+    #[test]
+    fn copies_made_stay_within_their_budget_and_the_least_used_goes_first() {
+        let mut made = Made::default();
+        let copy = |n: usize| Some(Arc::new(vec![0u8; n]));
+        let (a, b, c) = (BlobId::of(b"a"), BlobId::of(b"b"), BlobId::of(b"c"));
+        made.put((a, 96), copy(MADE_BYTES / 2));
+        made.put((b, 96), copy(MADE_BYTES / 3));
+        // `a` is asked for again, so `b` is now the least lately used.
+        assert!(made.get((a, 96)).is_some());
+        made.put((c, 96), copy(MADE_BYTES / 3));
+        assert!(made.bytes <= MADE_BYTES, "{} held", made.bytes);
+        assert!(made.get((b, 96)).is_none(), "the least lately used went");
+        assert!(made.get((a, 96)).is_some() && made.get((c, 96)).is_some());
+
+        // "Serve the original" is remembered too, and costs next to nothing.
+        made.put((b, 200), None);
+        assert_eq!(made.get((b, 200)), Some(None));
+        // Something larger than the whole budget is not kept at all.
+        made.put((b, 400), copy(MADE_BYTES + 1));
+        assert!(made.get((b, 400)).is_none());
+
+        made.clear();
+        assert!(made.get((a, 96)).is_none());
+        assert_eq!(made.bytes, 0);
+    }
+
+    /// A copy that was still being made when the vault locked is handed to
+    /// whoever asked, and not kept after the lock forgot the rest.
+    #[test]
+    fn a_copy_finished_after_everything_was_forgotten_is_not_kept() {
+        let mut made = Made::default();
+        let copy = Some(Arc::new(vec![0u8; 16]));
+        let (a, b) = (BlobId::of(b"a"), BlobId::of(b"b"));
+        let begun = made.generation;
+        made.put_from(begun, (a, 96), copy.clone());
+        assert!(made.get((a, 96)).is_some(), "nothing forgotten meanwhile");
+
+        let begun = made.generation;
+        made.clear();
+        made.put_from(begun, (b, 96), copy.clone());
+        assert!(made.get((b, 96)).is_none(), "begun before the lock");
+        assert_eq!(made.bytes, 0);
+        made.put_from(made.generation, (b, 96), copy);
+        assert!(made.get((b, 96)).is_some(), "begun after it");
+    }
+
+    #[tokio::test]
+    async fn a_blob_is_made_smaller_when_it_is_a_picture_and_never_while_locked() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = jatayu_core::VaultConfig {
+            password: Some("correct horse battery".into()),
+            kdf: jatayu_core::crypto::KdfParams::insecure_fast(),
+            ..Default::default()
+        };
+        let vault = Arc::new(jatayu_vault::create(dir.path(), cfg).unwrap());
+        let cover =
+            vault.put_blob(&jpeg_at(&gradient(600, 900, |x, y| (x ^ y) as u8), 90)).unwrap();
+        let text = vault.put_blob(b"a note, not a picture").unwrap();
+
+        let small = scaled_blob(&vault, cover, 200).await.expect("a picture wider than asked");
+        assert_eq!(size(&small), (200, 300));
+        // The second time is the same copy, from memory.
+        let again = scaled_blob(&vault, cover, 200).await.unwrap();
+        assert!(Arc::ptr_eq(&small, &again));
+        assert!(scaled_blob(&vault, text, 200).await.is_none());
+
+        vault.lock();
+        assert!(scaled_blob(&vault, cover, 200).await.is_none(), "a locked vault serves nothing");
     }
 }

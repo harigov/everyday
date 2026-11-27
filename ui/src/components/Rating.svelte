@@ -8,6 +8,7 @@
     shownScore,
     starFill,
   } from '../lib/rating'
+  import { STAR_PATH } from '../lib/icons'
   import Icon from './Icon.svelte'
 
   let {
@@ -91,17 +92,29 @@
   function starsOf(score: number): number {
     return score / 20
   }
+
+  /** The stars, one to five. */
+  const STARS = Array.from({ length: MAX_STARS }, (_, i) => i + 1)
+  /** The space between two stars, as the editable row's flex gap has it. */
+  const GAP = 1
+  /** The read-only row's width: five stars and the gaps between them. */
+  const rowWidth = $derived(MAX_STARS * size + (MAX_STARS - 1) * GAP)
 </script>
 
-<!-- Two wrappers around one drawing.
+<!-- Two wrappers, and two drawings of the same five stars.
      A read-only row is an image of a score and an editable one is a slider,
      and those are different elements to a screen reader and to the a11y
      linter alike -- a `role` switched by a prop is an element that is
      sometimes focusable and sometimes not, which is exactly the thing the
-     rule about non-interactive tab stops exists to catch. The stars
-     themselves are a snippet, so there is still only one of them. -->
+     rule about non-interactive tab stops exists to catch.
+
+     The slider draws each star as boxes it can hover and clip. A read-only
+     row is drawn once per card on a shelf of hundreds, so it is one `<svg>`
+     with the same geometry instead: each star where the slider puts it, its
+     outline at the same faint opacity, and a half star cut at its middle by
+     a nested `<svg>`'s own edge, as the slider's clip cuts it. -->
 {#snippet row()}
-  {#each Array.from({ length: MAX_STARS }, (_, i) => i + 1) as star (star)}
+  {#each STARS as star (star)}
     {@const fill = starFill(shown, star)}
     <span
       class="star"
@@ -130,7 +143,31 @@
     aria-label={ratingTitle(value)}
     title={ratingTitle(value)}
   >
-    {@render row()}
+    <svg
+      class="stars"
+      width={rowWidth}
+      height={size}
+      viewBox="0 0 {rowWidth} {size}"
+      aria-hidden="true"
+      focusable="false"
+    >
+      {#each STARS as star (star)}
+        {@const x = (star - 1) * (size + GAP)}
+        {@const fill = starFill(shown, star)}
+        {@const place = `translate(${x} 0) scale(${size / 24})`}
+        <path class="outline" d={STAR_PATH} transform={place} stroke-width={36 / size} />
+        {#if fill >= 1}
+          <path class="solid" d={STAR_PATH} transform={place} />
+        {:else if fill > 0}
+          <svg {x} width={size * fill} height={size} viewBox="0 0 {24 * fill} 24">
+            <path class="solid" d={STAR_PATH} />
+          </svg>
+        {/if}
+      {/each}
+    </svg>
+    {#if showNumber && value !== null}
+      <span class="number">{ratingLabel(value)}</span>
+    {/if}
   </div>
 {:else}
   <div
@@ -205,6 +242,29 @@
   }
   .rating.on .star:hover .back {
     opacity: 0.7;
+  }
+
+  /* The read-only row: the slider's stars in one drawing. The outline is
+     what `Icon` draws for a star at this size (a 1.5px stroke, round caps
+     and joins) at the `.back` opacity above, and the fill is `.front`'s. */
+  .stars {
+    display: block;
+    flex: none;
+    overflow: visible;
+  }
+  .outline {
+    fill: none;
+    stroke: var(--fg-faint);
+    stroke-opacity: 0.55;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .rating.muted .outline {
+    stroke-opacity: 0.4;
+  }
+  .solid {
+    fill: currentColor;
+    stroke: none;
   }
 
   .number {

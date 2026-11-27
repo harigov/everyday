@@ -259,6 +259,29 @@ async fn a_brief_is_written_from_its_digest_and_kept_on_its_run() {
     }
 }
 
+#[tokio::test]
+async fn a_slim_list_of_runs_leaves_the_brief_off_and_nothing_else() {
+    let _serial = SERIAL.lock().await;
+    let model = fake_model(says(ANSWER)).await;
+    let (svc, _dir) = service(&model.endpoint);
+    let queued = queue_morning(&svc);
+    jatayu_service::scheduler::tick(&svc).await;
+
+    let call = |name: &'static str, args: serde_json::Value| {
+        let svc = svc.clone();
+        async move { svc.call(jatayu_service::ctx::Ctx::local(), name, args).await.unwrap() }
+    };
+    let full = call("list_runs", serde_json::json!({})).await;
+    assert!(full[0].get("brief").is_some(), "unasked, a run carries its brief");
+    let slim = call("list_runs", serde_json::json!({ "slim": true })).await;
+    let mut without = full[0].clone();
+    without.as_object_mut().unwrap().remove("brief");
+    assert_eq!(slim[0], without);
+    // The one run still has it, for the brief's own page.
+    let one = call("get_run", serde_json::json!({ "id": queued.id.to_string() })).await;
+    assert!(one.get("brief").is_some());
+}
+
 /// The first user message of the first request, whichever shape the content
 /// came in.
 fn first_user_message(model: &FakeModel) -> String {

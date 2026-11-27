@@ -113,7 +113,7 @@ impl Vault {
         let removed = self.write(|u| {
             let mut removed = Vec::new();
             for e in u.store.list_entries(&EntryQuery::in_journal(id))? {
-                u.index.remove(e.id);
+                u.index.remove_entry(e.id);
                 removed.push(e.id);
             }
             // Readings survive, and are detached rather than deleted.
@@ -170,9 +170,11 @@ impl Vault {
     pub fn save_entry(&self, entry: &Entry, expect: Option<Timestamp>) -> Result<()> {
         self.writable()?;
         entry.body.validate()?;
-        self.write(|u| {
+        // The store and the index change together under the writing gate, so
+        // two saves land in the index in the order they landed in the store.
+        self.write_in(&self.gates.text, |u| {
             u.store.put_entry_if(entry, expect)?;
-            u.index.insert(entry);
+            u.index.put_entry(entry);
             Ok(())
         })?;
         self.track_file_refs(RefOwner::new(RefKind::Entry, entry.id), entry.body.file_refs());
@@ -189,9 +191,9 @@ impl Vault {
     pub fn overwrite_entry(&self, entry: &Entry) -> Result<()> {
         self.writable()?;
         entry.body.validate()?;
-        self.write(|u| {
+        self.write_in(&self.gates.text, |u| {
             u.store.put_entry(entry)?;
-            u.index.insert(entry);
+            u.index.put_entry(entry);
             Ok(())
         })?;
         self.track_file_refs(RefOwner::new(RefKind::Entry, entry.id), entry.body.file_refs());
@@ -201,9 +203,9 @@ impl Vault {
 
     pub fn delete_entry(&self, id: EntryId) -> Result<()> {
         self.writable()?;
-        self.write(|u| {
+        self.write_in(&self.gates.text, |u| {
             u.store.delete_entry(id)?;
-            u.index.remove(id);
+            u.index.remove_entry(id);
             Ok(())
         })?;
         self.drop_file_refs(RefOwner::new(RefKind::Entry, id));

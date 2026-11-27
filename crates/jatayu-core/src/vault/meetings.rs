@@ -318,7 +318,7 @@ impl Vault {
     pub fn save_transcript(&self, transcript: &Transcript) -> Result<()> {
         self.writable()?;
         let note_id = transcript.note_id;
-        self.write(|u| {
+        self.write_in(&self.gates.text, |u| {
             let meetings = u.meetings()?;
             meetings.put_transcript(transcript)?;
             reindex_note(u, note_id);
@@ -331,7 +331,7 @@ impl Vault {
     /// Delete a transcript, and drop its words back out of search.
     pub fn delete_transcript(&self, id: TranscriptId) -> Result<()> {
         self.writable()?;
-        self.write(|u| {
+        self.write_in(&self.gates.text, |u| {
             let meetings = u.meetings()?;
             // Read first: once the row is gone there is no way to ask which
             // note it belonged to.
@@ -398,8 +398,8 @@ impl Vault {
 ///
 /// Looked up fresh rather than handed the transcript that was just saved or
 /// deleted, so [`Vault::save_transcript`] and [`Vault::delete_transcript`]
-/// can share it, and so [`rebuild_meeting_index`] -- the unlock and
-/// `Vault::reindex` path -- can call the same function a single save does.
+/// can share it -- the unlock and `Vault::reindex` file every note with its
+/// transcript the same way, through [`transcript_texts`].
 /// [`Vault::save_note`] and `overwrite_note` share it too: a
 /// note is a document that autosaves and gets its body rewritten (by
 /// `name_speaker`, among others), and every one of those paths has to fold
@@ -409,7 +409,7 @@ impl Vault {
 /// the index respectively; neither is an error, because a search index that
 /// cannot be rebuilt for a stale id would be worse than one that is briefly
 /// behind.
-pub(super) fn reindex_note(u: &mut Unlocked, note_id: NoteId) {
+pub(super) fn reindex_note(u: &Unlocked, note_id: NoteId) {
     let Some(notes) = u.store.notes() else { return };
     let note = match notes.get_note(note_id) {
         Ok(note) => note,
@@ -424,34 +424,38 @@ pub(super) fn reindex_note(u: &mut Unlocked, note_id: NoteId) {
         .meetings()
         .and_then(|m| m.transcript_for_note(note_id).ok().flatten())
         .map(|t| t.searchable_text());
-    match extra {
-        Some(text) => u.index.insert_note_with_extra(&note, &text),
-        None => u.index.insert_note(&note),
-    }
+    u.index.put_note(&note, extra.as_deref().unwrap_or(""));
 }
 
-/// Fold every meeting note's transcript into an already-built search index.
+/// Each meeting note's transcript words, by note, for filing with the note
+/// when the whole index is built ([`crate::search::SearchIndex::build_with_extras`]).
 ///
-/// Called after [`crate::search::SearchIndex::build`], which only knows
-/// entries and notes: a transcript lives in its own table, reached through
-/// [`Recording::note_id`], so the notes it belongs to have to be found and
-/// re-indexed as a second pass. Recordings, not notes, are what is walked --
-/// there are as many of these as there have been meetings, which in every
-/// vault is far fewer than the notes it holds, and only a recording that
-/// reached `Done` carries a `note_id` at all.
-pub(super) fn rebuild_meeting_index(
+/// The search index only knows entries and notes: a transcript lives in its
+/// own table, reached through [`Recording::note_id`]. Recordings, not notes,
+/// are what is walked -- there are as many of these as there have been
+/// meetings, which in every vault is far fewer than the notes it holds, and
+/// only a recording that reached `Done` carries a `note_id` at all. Only a
+/// note in `notes` -- one that is still there -- has its transcript read.
+pub(super) fn transcript_texts(
     store: &dyn crate::store::JournalStore,
-    index: &mut crate::search::SearchIndex,
-) -> Result<()> {
-    let (Some(meetings), Some(notes)) = (store.meetings(), store.notes()) else { return Ok(()) };
+    notes: &[crate::note::Note],
+) -> Result<std::collections::HashMap<NoteId, String>> {
+    let mut texts = std::collections::HashMap::new();
+    let Some(meetings) = store.meetings() else { return Ok(texts) };
+    if store.notes().is_none() {
+        return Ok(texts);
+    }
+    let held: std::collections::HashSet<NoteId> = notes.iter().map(|n| n.id).collect();
     for recording in meetings.list_recordings(&RecordingQuery::default())? {
         let Some(note_id) = recording.note_id else { continue };
-        let Ok(note) = notes.get_note(note_id) else { continue };
+        if !held.contains(&note_id) || texts.contains_key(&note_id) {
+            continue;
+        }
         if let Some(t) = meetings.transcript_for_note(note_id)? {
-            index.insert_note_with_extra(&note, &t.searchable_text());
+            texts.insert(note_id, t.searchable_text());
         }
     }
-    Ok(())
+    Ok(texts)
 }
 
 /// What `Vault::delete_note` reaches for after taking the note itself: the
@@ -469,7 +473,7 @@ pub(super) fn rebuild_meeting_index(
 /// finished calls is small enough that this costs nothing a person would
 /// notice, and it is the same shape `list_recordings` itself is built to
 /// finish its own filters in.
-pub(super) fn detach_note_from_meetings(u: &mut Unlocked, note_id: NoteId) -> Result<()> {
+pub(super) fn detach_note_from_meetings(u: &Unlocked, note_id: NoteId) -> Result<()> {
     let Some(meetings) = u.store.meetings() else { return Ok(()) };
 
     if let Some(transcript) = meetings.transcript_for_note(note_id)? {

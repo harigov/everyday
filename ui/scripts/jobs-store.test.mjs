@@ -37,7 +37,7 @@ stubBrowser({
 })
 
 const {
-  modules: [jobsModule, stateModule, apiModule, mockJobs, formatModule, timeModule],
+  modules: [jobsModule, stateModule, apiModule, mockJobs, formatModule, timeModule, liveApply],
   close,
 } = await load(
   [
@@ -47,6 +47,7 @@ const {
     '/src/lib/mock-jobs.ts',
     '/src/lib/format.ts',
     '/src/lib/time.ts',
+    '/src/lib/live-apply.ts',
   ],
   { svelte: true },
 )
@@ -500,6 +501,76 @@ assert.equal(again.id, 'job-1')
 
 assert.equal(await jobs.load('job-2'), null, 'one that is gone is null')
 assert.equal(app.error, null, 'and nothing worth a banner')
+
+// ── a change from elsewhere ──────────────────────────────────────────
+//
+// What the live router does with a `job` change: the store's own `apply`
+// reads the job it names again rather than the whole list, and a batch
+// naming more than a few asks for the list instead.
+
+{
+  const apply = liveApply.applierFor('jobs')
+  assert.ok(apply, 'the jobs store registers an apply')
+  const calls = { jobs: 0, job: [], unseen: 0 }
+  const real = { jobs: api.jobs, job: api.job, unseenJobs: api.unseenJobs }
+  api.jobs = (...args) => (calls.jobs++, real.jobs(...args))
+  api.job = (id) => (calls.job.push(id), real.job(id))
+  api.unseenJobs = () => (calls.unseen++, real.unseenJobs())
+  const job = (op, id, extra = {}) => ({ kind: 'job', op, id, origin: 'remote', ...extra })
+
+  await jobs.refresh()
+  calls.jobs = 0
+  // Twice in one window, as a running job's status and progress line are.
+  assert.equal(apply([job('updated', 'job-1'), job('updated', 'job-1')]), true)
+  await sleep(20)
+  assert.deepEqual(calls.job, ['job-1'], 'the one job is read again, once')
+  assert.equal(calls.jobs, 0, 'and not the list')
+  assert.ok(calls.unseen > 0, 'the count moves with it')
+
+  const before = jobs.jobs.length
+  assert.equal(apply([job('deleted', 'job-5')]), true)
+  assert.equal(jobs.byId('job-5'), undefined, 'a job deleted elsewhere leaves the list')
+  assert.equal(jobs.jobs.length, before - 1)
+
+  // Two reads of one job in the air, answered out of order: the older
+  // answer, landing last, is not drawn over the newer -- a card that ticked
+  // backwards.
+  {
+    const pending = []
+    api.job = (id) =>
+      new Promise((resolve) => {
+        pending.push((marker) => real.job(id).then((j) => resolve({ ...j, marker })))
+      })
+    apply([job('updated', 'job-1')])
+    await sleep(5)
+    apply([job('updated', 'job-1')])
+    await sleep(5)
+    assert.equal(pending.length, 2)
+    pending[1]('newer')
+    await sleep(150)
+    pending[0]('older')
+    await sleep(150)
+    assert.equal(jobs.byId('job-1').marker, 'newer', 'the newer read is the one drawn')
+    api.job = (id) => (calls.job.push(id), real.job(id))
+  }
+
+  const wide = job('updated', null, { ids: ['job-1', 'job-2'] })
+  assert.equal(apply([wide]), false, 'a batch write asks for the list')
+  const many = ['job-1', 'job-2', 'job-3', 'job-4'].map((id) => job('updated', id))
+  assert.equal(apply(many), false, 'so do more than a few jobs')
+
+  // Before anything has read the list, only the count on the bar is drawn.
+  jobs.reset()
+  calls.job = []
+  calls.unseen = 0
+  assert.equal(apply([wide]), true, 'nothing to reload before the list is read')
+  await sleep(20)
+  assert.deepEqual(calls.job, [])
+  assert.equal(calls.jobs, 0)
+  assert.equal(calls.unseen, 1, 'only the count')
+
+  Object.assign(api, real)
+}
 
 // ── a vault without jobs ─────────────────────────────────────────────
 

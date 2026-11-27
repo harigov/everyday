@@ -96,7 +96,9 @@ export default ts.config(
     languageOptions: { globals: { ...globals.node } },
   },
 
-  { ignores: ['dist/', 'node_modules/'] },
+  // `public/` is copied as is: boot.js is a plain browser script run before
+  // the bundle, outside the typed project.
+  { ignores: ['dist/', 'node_modules/', 'public/'] },
 
   // Last, so it wins: no rule here may have an opinion about layout.
   prettier,

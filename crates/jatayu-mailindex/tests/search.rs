@@ -491,6 +491,139 @@ fn paging_across_tied_dates_visits_every_document_exactly_once_in_order() {
     }
 }
 
+/// The same promise as the test above, across several segments: within a
+/// segment the collector compares `message_key` by term ordinal, and those
+/// ordinals mean nothing from one segment to the next, so the pages have to
+/// come out in true byte order once the segments' picks are merged.
+#[test]
+fn paging_across_tied_dates_in_several_segments_keeps_the_order() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mi = open(tmp.path());
+
+    let dates = [date_ts(2024, 1, 1), date_ts(2024, 1, 2)];
+    // Three commits, so three segments, each holding keys that interleave
+    // with the others' in byte order.
+    for segment in 0..3 {
+        let docs: Vec<MailDoc> = (0..12)
+            .map(|i| {
+                let key = format!("m{:04}", i * 3 + segment);
+                Doc::new(Box::leak(key.into_boxed_str()), dates[i % 2]).build()
+            })
+            .collect();
+        index_and_commit(&mi, docs);
+    }
+
+    let mut seen: Vec<(Timestamp, String)> = Vec::new();
+    let mut cursor: Option<SearchCursor> = None;
+    loop {
+        let page = mi.search(&MailQuery::parse("hello"), 5, cursor.clone()).unwrap();
+        seen.extend(page.hits.iter().map(|h| (h.date, h.message_key.clone())));
+        match page.next {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    let mut expected = seen.clone();
+    expected.sort_by(|a, b| b.cmp(a));
+    expected.dedup();
+    assert_eq!(seen.len(), 36, "every document exactly once");
+    assert_eq!(seen, expected, "page order must be (date desc, message_key desc)");
+}
+
+/// A [`Cipher`] that writes down which sealed files it was asked to open,
+/// so a test can see what a commit actually decrypted.
+#[derive(Debug)]
+struct CountingCipher {
+    inner: AeadCipher,
+    opened: std::sync::Mutex<Vec<String>>,
+}
+
+impl CountingCipher {
+    fn new() -> Self {
+        Self {
+            inner: AeadCipher::new(&SecretKey::from_bytes([5u8; 32])),
+            opened: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// The segment files opened since the last call. `meta.json` and
+    /// `.managed.json` are left out: they are read whole on every commit by
+    /// design, and are tiny.
+    fn take_segment_files(&self) -> Vec<String> {
+        std::mem::take(&mut *self.opened.lock().unwrap())
+            .into_iter()
+            .filter(|path| !path.ends_with(".json"))
+            .collect()
+    }
+}
+
+impl Cipher for CountingCipher {
+    fn id(&self) -> &'static str {
+        self.inner.id()
+    }
+
+    fn seal(&self, aad: &[u8], plaintext: &[u8]) -> jatayu_core::error::Result<Vec<u8>> {
+        self.inner.seal(aad, plaintext)
+    }
+
+    fn open(&self, aad: &[u8], sealed: &[u8]) -> jatayu_core::error::Result<Vec<u8>> {
+        self.opened.lock().unwrap().push(String::from_utf8_lossy(aad).into_owned());
+        self.inner.open(aad, sealed)
+    }
+
+    fn derive_subkey(&self, label: &str) -> SecretKey {
+        self.inner.derive_subkey(label)
+    }
+}
+
+/// A sync pass commits at its end whether or not it found anything. Such a
+/// commit must write nothing and reopen nothing, and a commit that does
+/// have something new must decrypt only the files that are new, not every
+/// segment the reader already holds.
+#[test]
+fn a_commit_decrypts_only_what_is_new_and_an_empty_one_does_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cipher = Arc::new(CountingCipher::new());
+    // No room in the LRU at all, so whatever is not decrypted again was
+    // found through the reader that still holds it.
+    let mi = MailIndex::open(tmp.path(), cipher.clone(), 0).unwrap();
+
+    index_and_commit(
+        &mi,
+        vec![
+            Doc::new("m1", date_ts(2024, 1, 1)).build(),
+            Doc::new("m2", date_ts(2024, 1, 2)).build(),
+        ],
+    );
+    let first = cipher.take_segment_files();
+    assert!(!first.is_empty(), "the reload after a real commit opens the new segment");
+
+    let meta = std::fs::read(tmp.path().join("meta.json")).unwrap();
+    mi.commit().unwrap();
+    assert!(cipher.take_segment_files().is_empty(), "an empty commit decrypts nothing");
+    assert_eq!(
+        std::fs::read(tmp.path().join("meta.json")).unwrap(),
+        meta,
+        "an empty commit must not rewrite meta.json (each seal has a fresh nonce)"
+    );
+
+    index_and_commit(&mi, vec![Doc::new("m3", date_ts(2024, 1, 3)).build()]);
+    let third = cipher.take_segment_files();
+    assert!(!third.is_empty(), "the new segment is opened");
+    assert!(
+        third.iter().all(|path| !first.contains(path)),
+        "a segment the reader already holds must not be decrypted again: {third:?}"
+    );
+    let hits = mi.search(&MailQuery::parse("hello"), 10, None).unwrap();
+    assert_eq!(keys(&hits), ["m3", "m2", "m1"]);
+
+    // A delete is a change too.
+    mi.delete(&["m1".to_string()]).unwrap();
+    mi.commit().unwrap();
+    let hits = mi.search(&MailQuery::parse("hello"), 10, None).unwrap();
+    assert_eq!(keys(&hits), ["m3", "m2"]);
+}
+
 #[test]
 fn reopening_after_commit_finds_what_was_indexed() {
     let tmp = tempfile::tempdir().unwrap();

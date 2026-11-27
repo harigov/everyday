@@ -24,7 +24,10 @@ import type {
   AccountId,
   AttachmentPreview,
   CategoryCount,
+  UnreadBadge,
+  UnreadTarget,
   Draft,
+  Thread,
   DraftCheckReport,
   DraftId,
   FollowUpList,
@@ -84,6 +87,41 @@ export const getThread = (id: ThreadId): Promise<ThreadDetail> => api.thread(id)
  *  tabs show beside their names. */
 export const categoryCounts = (mailbox: MailboxId): Promise<CategoryCount[]> =>
   api.categoryCounts(mailbox)
+/** Every unread badge the sidebar shows, one per target, in one call --
+ *  computed by the store from clear columns, nothing decrypted. */
+export const unreadBadges = (targets: UnreadTarget[]): Promise<UnreadBadge[]> =>
+  api.mailUnreadBadges(targets)
+
+/** What `unreadBadges` answers, worked out here the way the sidebar always
+ *  did before the server could: the newest 200 threads each member mailbox
+ *  lists (filtered by `snoozed`), a thread in two members counted once, their
+ *  `unreadCount`s added up. For a server from before `mail_unread_badges`,
+ *  which a client of a newer build may still be paired with. */
+export async function unreadBadgesListed(targets: UnreadTarget[]): Promise<UnreadBadge[]> {
+  const pages = new Map<string, Promise<Thread[]>>()
+  const listed = (mailbox: MailboxId, snoozed: boolean): Promise<Thread[]> => {
+    const key = `${snoozed ? 'snoozed' : 'shown'}:${mailbox}`
+    let page = pages.get(key)
+    if (!page) {
+      page = listThreads(mailbox, { snoozed }, null, 200).then((p) => p.threads)
+      pages.set(key, page)
+    }
+    return page
+  }
+  return Promise.all(
+    targets.map(async (target) => {
+      const lists = await Promise.all(target.mailboxes.map((id) => listed(id, target.snoozed)))
+      const seen = new Set<ThreadId>()
+      let unread = 0
+      for (const thread of lists.flat()) {
+        if (seen.has(thread.id)) continue
+        seen.add(thread.id)
+        unread += thread.unreadCount
+      }
+      return { key: target.key, unread }
+    }),
+  )
+}
 /** The follow-ups for the top of an Inbox: `account`'s, or every mail
  *  account's for "All inboxes" (`null`). Reply ones first, newest first. */
 export const followUps = (account: AccountId | null): Promise<FollowUpList> =>

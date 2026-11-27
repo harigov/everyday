@@ -60,7 +60,7 @@ pub(crate) fn view(vault: &Vault) -> jatayu_core::Result<BackupView> {
     Ok(BackupView {
         has_keys: vault.has_backup_s3_keys().unwrap_or(false),
         supported: vault.supports_backup(),
-        encrypted: vault.status().encrypted,
+        encrypted: vault.is_encrypted(),
         config_dir: jatayu_vault::config_dir().display().to_string(),
         running: backup::progress(),
         next_due,

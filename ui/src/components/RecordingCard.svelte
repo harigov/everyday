@@ -120,7 +120,12 @@
     border-radius: 50%;
     border: 1.5px solid var(--fg-faint);
     border-top-color: var(--accent);
-    animation: ky-spin 0.8s linear infinite;
+    /* Smooth for the first ten seconds, then a slower stepped turn: the
+       notes can take minutes, and a ring that is still turning says they are
+       still being made without being redrawn every frame to say it. */
+    animation:
+      ky-spin 0.8s linear 12,
+      ky-spin 1.2s steps(8) 9.6s infinite;
   }
   @media (prefers-reduced-motion: reduce) {
     .spinner {

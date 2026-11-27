@@ -34,6 +34,7 @@ import {
   isUnifiedMailbox,
   keepLingering,
   listTarget,
+  mailAccountKey,
   mailboxDisplayName,
   mailboxHasTabs,
   matchesOnly,
@@ -47,7 +48,9 @@ import {
   refreshLimit,
   removeRow,
   restoreRow,
+  reuseRows,
   revertRow,
+  sameJson,
   serializeOnlyPref,
   snoozeChoices,
   stepCategoryTab,
@@ -58,6 +61,7 @@ import {
   threadRange,
   unifiedMailboxId,
   unifiedMailboxes as buildUnifiedMailboxes,
+  unreadTargets,
   visibleThreadList,
   withOnly,
   type FollowUpRows,
@@ -74,6 +78,8 @@ import { VaultError } from './types'
 import type {
   AccountId,
   CategoryCount,
+  UnreadBadge,
+  UnreadTarget,
   Draft,
   DraftId,
   Mailbox,
@@ -104,8 +110,59 @@ const UNREAD_DEBOUNCE_MS = 500
 /** How long a live thread change waits before the follow-up `refresh()`
  *  Bug 4 needs -- see `#applyChanges`'s own note on why `#patchOne` alone
  *  is not enough. Debounced so a batch of changes from one sync tick costs
- *  one reload of the page, not one per thread. */
+ *  one reload of the page, not one per thread. A live round (`#scheduleRound`)
+ *  runs at once when none has for this long, and at most once in it after. */
 const LIVE_REFRESH_DEBOUNCE_MS = 600
+
+/** How many threads read ahead are kept for `j`/`k` to open at once. */
+const DETAILS_KEPT = 8
+
+/** What a live round asks the backend again: the list (and with it, or not,
+ *  the follow-ups over an Inbox), the badges, the Outbox, and the mailboxes
+ *  themselves -- a folder or label a sync pass met for the first time. */
+interface Round {
+  list: boolean
+  followUps: boolean
+  counts: boolean
+  outbox: boolean
+  mailboxes: boolean
+}
+const NO_ROUND: Readonly<Round> = {
+  list: false,
+  followUps: false,
+  counts: false,
+  outbox: false,
+  mailboxes: false,
+}
+/** What a pass that changed something asks for. Not the mailboxes: a pass
+ *  that met a new one says so with a change of its own (`mailboxesChanged`). */
+const WHOLE_ROUND: Readonly<Round> = {
+  list: true,
+  followUps: true,
+  counts: true,
+  outbox: true,
+  mailboxes: false,
+}
+
+function joinRounds(a: Readonly<Round>, b: Partial<Round>): Round {
+  return {
+    list: a.list || !!b.list,
+    followUps: a.followUps || !!b.followUps,
+    counts: a.counts || !!b.counts,
+    outbox: a.outbox || !!b.outbox,
+    mailboxes: a.mailboxes || !!b.mailboxes,
+  }
+}
+
+function anyRound(r: Readonly<Round>): boolean {
+  return r.list || r.followUps || r.counts || r.outbox || r.mailboxes
+}
+
+/** What a list row says of a thread that a copy read ahead must still say:
+ *  a message more, or the row moved by one, and the copy is out of date. */
+function detailKey(row: Pick<Thread, 'messageCount' | 'lastDate'>): string {
+  return `${row.messageCount}|${row.lastDate}`
+}
 
 /** How many threads a page loads at once. */
 const PAGE = 50
@@ -246,7 +303,8 @@ class MailState {
    */
   sendsView = $state<{ list: 'scheduled' | 'outbox'; account: AccountId | null } | null>(null)
   searchQuery = $state('')
-  searchResults = $state<Thread[]>([])
+  /** Replaced whole on every change, never edited in place. */
+  searchResults = $state.raw<Thread[]>([])
   /** Where each search result is filed -- see `searchPlace`. */
   searchPlaces = $state.raw<Record<ThreadId, MailboxRole[]>>({})
   searchCursor = $state<string | null>(null)
@@ -305,6 +363,10 @@ class MailState {
    *  -- see `SYNC_SETTLE_MS` -- so the button answers the press at once,
    *  before any account's own phase has had time to move. */
   syncRequested = $state(false)
+  /** Accounts a "Sync now" started a pass for that status has not yet seen
+   *  finish -- what keeps the button turning after `syncRequested` settles.
+   *  Only these: a routine pass in the background is no reason to spin it. */
+  userSyncing = $state.raw<ReadonlySet<AccountId>>(new Set())
   /** Every account's drafts still queued to send later, soonest first --
    *  what `MailNav`'s own Scheduled row counts and `MailScheduled.svelte`
    *  lists. Unscoped by `selectedAccount`: the nav draws one row per
@@ -346,6 +408,8 @@ class MailState {
   }
 
   reset() {
+    // Asked again after a lock: the server may have been updated since.
+    this.#listedBadges = false
     this.#generation += 1
     this.selectedAccount = null
     this.selectedMailbox = null
@@ -374,12 +438,19 @@ class MailState {
     this.sendingUndo = null
     if (this.#unreadRefreshTimer) clearTimeout(this.#unreadRefreshTimer)
     this.#unreadRefreshTimer = null
-    if (this.#liveRefreshTimer) clearTimeout(this.#liveRefreshTimer)
-    this.#liveRefreshTimer = null
     if (this.#openReloadTimer) clearTimeout(this.#openReloadTimer)
     this.#openReloadTimer = null
     if (this.#outboxRefreshTimer) clearTimeout(this.#outboxRefreshTimer)
     this.#outboxRefreshTimer = null
+    if (this.#roundTimer) clearTimeout(this.#roundTimer)
+    this.#roundTimer = null
+    this.#pending = { ...NO_ROUND }
+    this.#stale = { ...NO_ROUND }
+    this.#roundAt = -Infinity
+    this.#forgetDetails()
+    this.#unreadGeneration += 1
+    this.#categoryGeneration += 1
+    this.#accountKey = null
     this.#unseenIn = null
     this.mailboxes = []
     this.unifiedMailboxes = []
@@ -393,6 +464,7 @@ class MailState {
     this.categoryCounts = []
     this.syncStatus = []
     this.syncRequested = false
+    this.userSyncing = new Set()
     this.scheduled = []
     this.outbox = []
     this.#sent.clear()
@@ -405,12 +477,51 @@ class MailState {
     if (!app.supportsMail || this.#loaded) return
     this.#loaded = true
     // See `todo.start` for why this is idempotent and safe to ask twice.
-    if (!proposals.loaded) await proposals.refresh()
-    await this.refreshMailboxes()
+    // Alongside the first list rather than ahead of it: what proposals draw
+    // here (a draft waiting in Drafts) is drawn reactively whenever it lands.
+    await Promise.all([proposals.loaded ? null : proposals.refresh(), this.refreshMailboxes()])
     await this.refreshSyncStatus()
   }
 
-  async refreshMailboxes() {
+  /** The read of the mailboxes under way, and whether another was asked for
+   *  while it was -- see `refreshMailboxes`. */
+  #mailboxesRun: Promise<void> | null = null
+  #mailboxesAgain = false
+  /** `mailAccountKey` of the accounts the mailboxes were last read for. */
+  #accountKey: string | null = null
+
+  /** What the mailbox list was last read for -- see `mailAccountKey`. `null`
+   *  until the first read has asked which accounts there are. */
+  get accountKey(): string | null {
+    return this.#accountKey
+  }
+
+  /**
+   * Read every account's mailboxes again, and the counts beside them.
+   *
+   * One at a time: asked while a read is under way, the answer is one more
+   * read after it -- which sees whatever changed meanwhile, an account added
+   * or the scope switched -- and every caller's promise settles once that
+   * one has. Mail's first visit asks from three places at once.
+   */
+  refreshMailboxes(): Promise<void> {
+    if (this.#mailboxesRun) {
+      this.#mailboxesAgain = true
+      return this.#mailboxesRun
+    }
+    const run = (async () => {
+      do {
+        this.#mailboxesAgain = false
+        await this.#readMailboxes()
+      } while (this.#mailboxesAgain)
+    })().finally(() => {
+      this.#mailboxesRun = null
+    })
+    this.#mailboxesRun = run
+    return run
+  }
+
+  async #readMailboxes() {
     try {
       const accountIds = await this.#accountIds()
       const lists = await Promise.all(accountIds.map((id) => mailApi.listMailboxes(id)))
@@ -441,19 +552,32 @@ class MailState {
           uidnext: 0,
           highestModseq: 0,
         }))
-      this.mailboxes = [...real, ...synthetic]
-      this.unifiedMailboxes = buildUnifiedMailboxes(this.mailboxes, accountIds)
+      // The same mailboxes as before, as they nearly always are, stay the ones
+      // drawn: everything reading `mailbox` would otherwise work itself out
+      // again for nothing.
+      const boxes = [...real, ...synthetic]
+      const unified = buildUnifiedMailboxes(boxes, accountIds)
+      if (!sameJson(boxes, $state.snapshot(this.mailboxes))) this.mailboxes = boxes
+      if (!sameJson(unified, $state.snapshot(this.unifiedMailboxes))) {
+        this.unifiedMailboxes = unified
+      }
       // Nothing open yet -- or what was open is gone, the unified Inbox of
       // an account set that has since dropped to one. With two or more
       // accounts, Mail opens on every inbox at once rather than whichever
       // account happens to come first.
+      let selected = false
       if (!this.selectedMailbox || !this.#findMailbox(this.selectedMailbox)) {
         const inbox =
           this.unifiedMailboxes.find((m) => m.id === unifiedMailboxId('inbox')) ??
           this.mailboxes.find((m) => m.role === 'inbox')
-        if (inbox) await this.selectMailbox(inbox.id)
+        if (inbox) {
+          selected = true
+          await this.selectMailbox(inbox.id)
+        }
       }
       void this.refreshUnreadCounts()
+      // Opening a mailbox counts its tabs already.
+      if (!selected) void this.refreshCategoryCounts()
       void this.refreshScheduled()
       void this.refreshOutbox()
     } catch (e) {
@@ -468,70 +592,77 @@ class MailState {
   }
 
   async #accountIds(): Promise<AccountId[]> {
-    if (this.selectedAccount) return [this.selectedAccount]
+    if (this.selectedAccount) {
+      // One account's mailboxes say nothing about the others, so whatever the
+      // account list is now has been answered.
+      if (accounts.list.length > 0) this.#accountKey = mailAccountKey(accounts.list)
+      return [this.selectedAccount]
+    }
     const list = await mailApi.listAccounts()
+    this.#accountKey = mailAccountKey(list)
     return list.filter((a) => a.services.mail).map((a) => a.id)
   }
 
-  /** Approximate unread counts for every mailbox currently listed. See the
-   *  module doc for why this is "good enough", not exact at scale.
+  /** Which unread recount is current, so a slow one cannot land after a
+   *  newer one. */
+  #unreadGeneration = 0
+
+  /** Unread counts for every mailbox currently listed, in one call --
+   *  `mail_unread_badges`, which adds up what the newest 200 threads of each
+   *  row's mailboxes say, as this used to by reading each of them.
    *
    *  Filtered by `snoozed` the same way `refresh`/`loadMore` are (Bug 3): an
    *  ordinary mailbox's badge must not count a thread hidden from its own
    *  list because it is currently snoozed, and the Snoozed pseudo-mailbox's
    *  badge is exactly the reverse -- only threads that are.
    *
-   *  A unified row's badge is its members' added up, each member read once
-   *  however many rows want it -- the unified Inbox and each account's own
-   *  Inbox ask the very same question -- and a thread filed in two of them
-   *  (a Gmail label) counted once rather than twice. */
+   *  A unified row's badge is its members' added up, and a thread filed in
+   *  two of them (a Gmail label) counted once rather than twice -- see
+   *  `unreadTargets` for what each row asks. */
   async refreshUnreadCounts() {
-    void this.refreshCategoryCounts()
+    const generation = ++this.#unreadGeneration
+    const targets = unreadTargets([...this.mailboxes, ...this.unifiedMailboxes], this.mailboxes)
     try {
-      const pages = new Map<string, Promise<Thread[]>>()
-      const threadsIn = (mailboxId: MailboxId, snoozed: boolean): Promise<Thread[]> => {
-        const key = `${snoozed ? 'snoozed' : 'shown'}:${mailboxId}`
-        let page = pages.get(key)
-        if (!page) {
-          const filter: ThreadFilter = { snoozed }
-          page = mailApi.listThreads(mailboxId, filter, null, 200).then((p) => p.threads)
-          pages.set(key, page)
-        }
-        return page
-      }
-      const counts = new Map<MailboxId, number>()
-      await Promise.all(
-        [...this.mailboxes, ...this.unifiedMailboxes].map(async (mailbox) => {
-          const target = listTarget(mailbox, this.mailboxes)
-          if (!target) return
-          const lists = await Promise.all(
-            target.mailboxIds.map((id) => threadsIn(id, target.snoozed)),
-          )
-          const seenIds = new Set<ThreadId>()
-          let unread = 0
-          for (const thread of lists.flat()) {
-            if (seenIds.has(thread.id)) continue
-            seenIds.add(thread.id)
-            unread += thread.unreadCount
-          }
-          counts.set(mailbox.id, unread)
-        }),
-      )
-      this.unreadCounts = counts
+      const badges = targets.length > 0 ? await this.#unreadBadges(targets) : []
+      if (generation !== this.#unreadGeneration) return
+      const counts = new Map(badges.map((b): [MailboxId, number] => [b.key, b.unread]))
+      if (!sameJson([...counts], [...this.unreadCounts])) this.unreadCounts = counts
     } catch (e) {
       await quietly(e)
     }
   }
 
+  /** Set once a server has answered that it does not know
+   *  `mail_unread_badges` -- one from before it, which a client of this build
+   *  may be paired with -- so the badges are worked out the old way from
+   *  then on, rather than left blank. */
+  #listedBadges = false
+
+  async #unreadBadges(targets: UnreadTarget[]): Promise<UnreadBadge[]> {
+    if (!this.#listedBadges) {
+      try {
+        return await mailApi.unreadBadges(targets)
+      } catch (e) {
+        if (!(e instanceof VaultError && e.code === 'unknown_command')) throw e
+        this.#listedBadges = true
+      }
+    }
+    return mailApi.unreadBadgesListed(targets)
+  }
+
+  #categoryGeneration = 0
+
   /** The tabs' badges, for the mailbox on screen -- nothing to count for
    *  one without tabs. Quiet on failure: a badge that does not update is not
-   *  worth a toast. Rides along with every unread recount, so an archive or
-   *  a live change moves the numbers the same moment it moves the nav's. */
+   *  worth a toast. Asked beside every unread recount an action or a live
+   *  round makes, so an archive or a live change moves the numbers the same
+   *  moment it moves the nav's. */
   async refreshCategoryCounts() {
+    const generation = ++this.#categoryGeneration
     const box = this.mailbox
     const target = mailboxHasTabs(box) ? listTarget(box, this.mailboxes) : null
     if (!target) {
-      this.categoryCounts = []
+      if (this.categoryCounts.length > 0) this.categoryCounts = []
       return
     }
     try {
@@ -540,7 +671,8 @@ class MailState {
       // accounts' inboxes to be counted twice.
       const lists = await Promise.all(target.mailboxIds.map((id) => mailApi.categoryCounts(id)))
       const counts = sumCategoryCounts(lists)
-      if (this.mailbox?.id === box?.id) this.categoryCounts = counts
+      if (generation !== this.#categoryGeneration || this.mailbox?.id !== box?.id) return
+      if (!sameJson(counts, $state.snapshot(this.categoryCounts))) this.categoryCounts = counts
     } catch (e) {
       await quietly(e)
     }
@@ -555,25 +687,59 @@ class MailState {
    */
   #unreadRefreshTimer: ReturnType<typeof setTimeout> | null = null
   #scheduleUnreadRefresh() {
+    // Nobody can see the badges: counted once they can (`setOnScreen`).
+    if (!this.#isLive()) {
+      this.#stale = joinRounds(this.#stale, { counts: true })
+      return
+    }
     if (this.#unreadRefreshTimer) clearTimeout(this.#unreadRefreshTimer)
     this.#unreadRefreshTimer = setTimeout(() => {
       this.#unreadRefreshTimer = null
       void this.refreshUnreadCounts()
+      void this.refreshCategoryCounts()
     }, UNREAD_DEBOUNCE_MS)
   }
 
   async refreshSyncStatus() {
     try {
-      this.syncStatus = await mailApi.syncStatus()
+      const status = await mailApi.syncStatus()
+      // Kept as it was when it reads the same, unless a pass is on: `MailNav`
+      // arms its next two-second read only when this is assigned, and a phase
+      // that holds still -- `connecting` through a slow sign-in, one large
+      // body downloading -- reads the same twice and would stop that poll.
+      if (status.some(syncInProgress) || !sameJson(status, $state.snapshot(this.syncStatus))) {
+        this.syncStatus = status
+      }
+      // A pass somebody asked for is over once status says it is.
+      if (this.userSyncing.size > 0) {
+        const still = [...this.userSyncing].filter((id) =>
+          status.some((s) => s.accountId === id && syncInProgress(s)),
+        )
+        if (still.length !== this.userSyncing.size) this.userSyncing = new Set(still)
+      }
     } catch (e) {
       await quietly(e)
     }
+  }
+
+  /** After a "Sync now" has woken `ids`' tasks: wait for their passes to have
+   *  begun, read status, and keep the button turning for those still going
+   *  (`userSyncing`). Answers whether any are. */
+  async #followSync(ids: readonly AccountId[]): Promise<boolean> {
+    await new Promise((resolve) => setTimeout(resolve, SYNC_SETTLE_MS))
+    await this.refreshSyncStatus()
+    const busy = ids.filter((id) =>
+      this.syncStatus.some((s) => s.accountId === id && syncInProgress(s)),
+    )
+    if (busy.length > 0) this.userSyncing = new Set([...this.userSyncing, ...busy])
+    return busy.length > 0
   }
 
   async syncNow(accountId: AccountId) {
     try {
       await mailApi.syncAccount(accountId)
       await this.refreshSyncStatus()
+      void this.#followSync([accountId]).catch(() => {})
     } catch (e) {
       await handle(e)
     }
@@ -585,8 +751,9 @@ class MailState {
    *
    * `MailNav`'s two-second poll takes over from here for as long as any
    * account is mid-pass, and reloads the mailboxes and their counts on the
-   * way back to idle; the list hears from the pass itself, as it does from
-   * any pass that changed something (`#applyChanges`). A pass that was over
+   * way back to idle; the button keeps turning until then (`userSyncing`).
+   * The list hears from the pass itself, as it does from any pass that
+   * changed something (`#applyChanges`). A pass that was over
    * before status was even read back -- nothing new on the server, or the
    * mock, whose `sync_account` resolves only once its pretend pass is done
    * -- never gives that poll a falling edge to see, so this reloads the list
@@ -602,10 +769,7 @@ class MailState {
       const ids = accountIds ?? (await this.#mailAccountIds())
       if (ids.length === 0) return
       await Promise.all(ids.map((id) => mailApi.syncAccount(id)))
-      await new Promise((resolve) => setTimeout(resolve, SYNC_SETTLE_MS))
-      await this.refreshSyncStatus()
-      const still = this.syncStatus.some((s) => ids.includes(s.accountId) && syncInProgress(s))
-      if (!still) {
+      if (!(await this.#followSync(ids))) {
         void this.refresh()
         this.#scheduleUnreadRefresh()
       }
@@ -667,7 +831,9 @@ class MailState {
     this.#putBack.clear()
     this.clearChecked()
     this.#listPicked = true
-    void this.refresh()
+    // The follow-ups are the Inbox's, whichever tab is on: drawn from what
+    // is already here (`followUpRows`), not asked for again on every Tab.
+    void this.refresh({ followUps: false })
   }
 
   /** The toggles on for the mailbox on screen. */
@@ -687,7 +853,7 @@ class MailState {
     onlyPref.set(byMailbox)
     this.#holdOnlyTheOpenThread()
     this.clearChecked()
-    void this.refresh()
+    void this.refresh({ followUps: false })
   }
 
   toggleOnly(key: MailOnly) {
@@ -761,11 +927,17 @@ class MailState {
    *
    * A tab somebody has just picked is the exception (`#listPicked`): there
    * the open thread goes if the new list does not have it, as it always has.
+   *
+   * `followUps: false` keeps the follow-ups already here when they are still
+   * this list's -- a tab or a toggle changes which of them are drawn, never
+   * which there are.
    */
-  async refresh() {
+  async refresh(opts: { followUps?: boolean } = {}) {
     // The top of an Inbox comes along with every reload of it -- opening it,
     // Sync now, a live change -- and goes as another list is opened.
-    void this.refreshFollowUps()
+    const scope = followUpScope(this.mailbox)
+    const owner = scope ? (scope.account ?? '') : null
+    if (opts.followUps !== false || owner !== this.#followUpsFor) void this.refreshFollowUps()
     // `listTarget` is where the mailbox ids actually meant for the backend
     // come from -- the mailbox itself, ordinarily, except for the synthetic
     // Snoozed row `refreshMailboxes` stands in for an account whose own
@@ -815,7 +987,11 @@ class MailState {
           reading && !this.threads.some((t) => t.id === reading.id)
             ? [...this.threads, reading]
             : this.threads
-        this.threads = keepLingering(rows, shown, held)
+        // The rows that came back as they were stay the rows drawn, and the
+        // list itself when none moved: a pass that changed nothing here
+        // redraws nothing.
+        const next = reuseRows(keepLingering(rows, shown, held), this.threads)
+        if (next !== this.threads) this.threads = next
         this.#putBack = new Set(this.threads.map((t) => t.id).filter((id) => !served.has(id)))
         this.nextCursor = page.nextCursor ?? null
         // A follow-up drawn over the page is a row on screen as much as one
@@ -939,7 +1115,8 @@ class MailState {
     try {
       const { threads } = await mailApi.followUps(scope.account)
       if (generation !== this.#followUpGeneration) return
-      this.#followUps = threads
+      const next = reuseRows(threads, this.#followUps)
+      if (next !== this.#followUps) this.#followUps = next
     } catch (e) {
       await quietly(e)
     }
@@ -1006,29 +1183,62 @@ class MailState {
     // Opening one thread is leaving the many behind -- see `checked`.
     this.clearChecked()
     this.#anchor = id
+    // Read ahead, as the thread beside the last one opened: drawn now.
+    const ready = this.#takeDetail(id)
+    if (ready) {
+      this.#showAhead(ready)
+      return
+    }
     try {
+      // Still being read ahead -- `j` pressed again before the next row's
+      // read is back: that read, rather than a second one beside it.
+      const early = this.#prefetching.get(id)
+      if (early) {
+        await early
+        if (this.selectedThread !== id) return
+        const ahead = this.#takeDetail(id)
+        if (ahead) {
+          this.#showAhead(ahead)
+          return
+        }
+      }
       const detail = await mailApi.getThread(id)
       // Moved on while this was loading: a later open owns the pane now, and
       // this thread must not be shown, marked read or prefetched around.
       if (this.selectedThread !== id) return
-      this.openThread = detail
-      // The newest message starts expanded, and so does every one not yet
-      // read -- read before this open marks them so -- lest one in the
-      // middle hide in a collapsed summary line; the rest collapse.
-      this.expanded = openOnArrival(detail.messages)
-      if (detail.thread.unreadCount > 0) void this.markRead(id)
-      void this.#prefetchNeighbours(id)
-      // Nothing but a draft, as a thread opened from Drafts often is: open it
-      // to write, as clicking a draft does in any mail program.
-      const only = detail.drafts.length === 1 ? detail.drafts[0] : null
-      if (detail.messages.length === 0 && only?.draft && !this.composing) {
-        this.openInlineDraft(only.draft)
-        return
-      }
-      void this.#openAutoDraftIfAny(detail)
+      void this.#showOpened(detail)
     } catch (e) {
       await handle(e)
     }
+  }
+
+  /** A thread read ahead, opened: drawn at once, and read again behind it --
+   *  after it is marked read, so the fresh copy says so too -- in case
+   *  anything moved since that a change has not yet said. */
+  #showAhead(detail: ThreadDetail) {
+    void this.#showOpened(detail).then(() => this.#reloadOpenThread())
+  }
+
+  /** Put a thread just opened in the pane, `selectedThread` already being
+   *  it. Answers once it has been marked read, if it needed to be. */
+  #showOpened(detail: ThreadDetail): Promise<void> {
+    const id = detail.thread.id
+    this.openThread = detail
+    // The newest message starts expanded, and so does every one not yet
+    // read -- read before this open marks them so -- lest one in the
+    // middle hide in a collapsed summary line; the rest collapse.
+    this.expanded = openOnArrival(detail.messages)
+    const reading = detail.thread.unreadCount > 0 ? this.markRead(id) : Promise.resolve()
+    void this.#prefetchNeighbours(id)
+    // Nothing but a draft, as a thread opened from Drafts often is: open it
+    // to write, as clicking a draft does in any mail program.
+    const only = detail.drafts.length === 1 ? detail.drafts[0] : null
+    if (detail.messages.length === 0 && only?.draft && !this.composing) {
+      this.openInlineDraft(only.draft)
+    } else {
+      this.#openAutoDraftIfAny(detail)
+    }
+    return reading
   }
 
   /**
@@ -1053,31 +1263,28 @@ class MailState {
    * labelled 'Drafted by the assistant'," per `docs/plans/mail.md`'s
    * Superhuman layer. An auto-draft is an ordinary `Draft` whose
    * `origin.type === 'assistant'` and `inReplyTo` names a message in this
-   * thread; there is no dedicated lookup for it, so this is the one place
-   * `list_drafts` is read for something other than the Drafts mailbox.
+   * thread. `get_thread` already cards every draft still being written that
+   * answers one of the thread's messages, so it is looked for there -- the
+   * account's own only, as reading its drafts used to find it, rather than
+   * one moved to another account to be sent from there.
    */
-  async #openAutoDraftIfAny(detail: ThreadDetail) {
+  #openAutoDraftIfAny(detail: ThreadDetail) {
     if (this.composing) return
-    try {
-      const drafts = await mailApi.listDrafts(detail.thread.accountId)
-      const ids = new Set(detail.messages.map((m) => m.id))
-      const auto = drafts.find(
-        (d) =>
+    const ids = new Set(detail.messages.map((m) => m.id))
+    const auto = detail.drafts
+      .map((card) => card.draft)
+      .find(
+        (d): d is Draft =>
+          !!d &&
+          d.accountId === detail.thread.accountId &&
           d.origin.type === 'assistant' &&
           d.state.type === 'editing' &&
-          d.inReplyTo &&
+          !!d.inReplyTo &&
           ids.has(d.inReplyTo),
       )
-      // A reply into the thread that is still open -- the same inline
-      // treatment `reply()`/`forward()` give one started by hand -- unless
-      // something else began being written while the drafts were loading,
-      // which is the person's own and stays where it is.
-      if (auto && this.selectedThread === detail.thread.id && !this.composing) {
-        this.openInlineDraft(auto)
-      }
-    } catch (e) {
-      await quietly(e)
-    }
+    // A reply into the thread that is still open -- the same inline
+    // treatment `reply()`/`forward()` give one started by hand.
+    if (auto && this.selectedThread === detail.thread.id) this.openInlineDraft(auto)
   }
 
   toggleExpanded(messageId: string) {
@@ -1229,24 +1436,73 @@ class MailState {
   }
 
   /**
-   * Prefetch the next and previous thread's detail, per "The speed budget".
+   * Prefetch the next and previous thread's detail, per "The speed budget",
+   * and keep it (`#details`) for `openThreadById` to draw at once.
    * Best-effort and silent: a prefetch that fails is simply not there yet
    * when the reader arrives, which is exactly what would have happened
    * without it.
    */
-  #prefetching = new Set<ThreadId>()
+  #prefetching = new Map<ThreadId, Promise<void>>()
   async #prefetchNeighbours(around: ThreadId) {
     const list = this.shownThreads
     const at = list.findIndex((t) => t.id === around)
     if (at < 0) return
     for (const t of [list[at - 1], list[at + 1]]) {
       if (!t || this.#prefetching.has(t.id)) continue
-      this.#prefetching.add(t.id)
-      mailApi
+      const key = detailKey(t)
+      if (this.#details.get(t.id)?.key === key) continue
+      const generation = this.#detailsGeneration
+      const read = mailApi
         .getThread(t.id)
+        .then((detail) => {
+          if (generation === this.#detailsGeneration) this.#keepDetail(t.id, detail, key)
+        })
         .catch(() => {})
         .finally(() => this.#prefetching.delete(t.id))
+      this.#prefetching.set(t.id, read)
     }
+  }
+
+  /**
+   * Threads read ahead, oldest first, each with the `detailKey` of the row it
+   * was read for. A row that has since gained a message, or been moved in
+   * the list by one, no longer matches its key and is read afresh; anything
+   * done to a thread here or reported from elsewhere forgets it
+   * (`#forgetDetails`). At most `DETAILS_KEPT`, and none past a lock.
+   */
+  #details = new Map<ThreadId, { detail: ThreadDetail; key: string }>()
+  /** Bumped whenever what was read ahead may be out of date, so a read still
+   *  on its way when that happened is not kept. */
+  #detailsGeneration = 0
+
+  #keepDetail(id: ThreadId, detail: ThreadDetail, key: string) {
+    this.#details.delete(id)
+    this.#details.set(id, { detail, key })
+    for (const old of this.#details.keys()) {
+      if (this.#details.size <= DETAILS_KEPT) break
+      this.#details.delete(old)
+    }
+  }
+
+  /** The thread read ahead for `id`, taken out of `#details`, if it still
+   *  matches the row on screen -- one with no row is not trusted either. */
+  #takeDetail(id: ThreadId): ThreadDetail | null {
+    const kept = this.#details.get(id)
+    if (!kept) return null
+    this.#details.delete(id)
+    const row = this.shownThreads.find((t) => t.id === id)
+    return row && detailKey(row) === kept.key ? kept.detail : null
+  }
+
+  /** Forget what was read ahead of `ids`, or of every thread. */
+  #forgetDetails(ids?: readonly ThreadId[]) {
+    if (!ids) {
+      this.#details.clear()
+      this.#detailsGeneration++
+      return
+    }
+    for (const id of ids) this.#details.delete(id)
+    if (ids.some((id) => this.#prefetching.has(id))) this.#detailsGeneration++
   }
 
   /**
@@ -1302,6 +1558,7 @@ class MailState {
     call: (ids: ThreadId[]) => Promise<unknown>,
   ): Promise<void> {
     if (ids.length === 0) return
+    this.#forgetDetails(ids)
     const befores: Thread[] = []
     const searchBefores: Thread[] = []
     // The top of the Inbox too: its rows are copies of their own, and a nudge
@@ -1379,6 +1636,7 @@ class MailState {
     call: (ids: ThreadId[]) => Promise<unknown>,
   ): Promise<boolean> {
     if (ids.length === 0) return false
+    this.#forgetDetails(ids)
     const leaving = new Set(ids)
     // Finding 5: move on to the neighbour rather than simply closing the
     // pane -- `#advanceIfOpen` must run before the row disappears below, so
@@ -1527,6 +1785,7 @@ class MailState {
     if (!target) return 0
     const filter: ThreadFilter = { unread: true, snoozed: target.snoozed }
     let done = 0
+    this.#forgetDetails()
     try {
       for (const mailboxId of target.mailboxIds) {
         let cursor: string | null = null
@@ -1651,6 +1910,7 @@ class MailState {
     const target = emptiableRole(box) ? listTarget(box, this.mailboxes) : null
     if (!target) return null
     const emptied = new Set(target.mailboxIds)
+    this.#forgetDetails()
     const shown = this.emptiableRole ? listTarget(this.mailbox, this.mailboxes) : null
     const all = !!shown && shown.mailboxIds.every((id) => emptied.has(id))
     const some = !!shown && !all && shown.mailboxIds.some((id) => emptied.has(id))
@@ -1703,6 +1963,7 @@ class MailState {
   ): Promise<boolean> {
     const unique = [...new Set(ids)]
     if (unique.length === 0) return true
+    this.#forgetDetails(unique)
     const gone = new Set(unique)
     this.#advanceIfOpen(gone)
     if ([...this.checked].some((id) => gone.has(id))) {
@@ -2181,7 +2442,8 @@ class MailState {
    *  undo/cancel/reschedule, and whenever mailboxes refresh. */
   async refreshScheduled() {
     try {
-      this.scheduled = await mailApi.scheduledSends()
+      const scheduled = await mailApi.scheduledSends()
+      if (!sameJson(scheduled, $state.snapshot(this.scheduled))) this.scheduled = scheduled
     } catch (e) {
       await quietly(e)
     }
@@ -2240,7 +2502,8 @@ class MailState {
 
   async refreshOutbox() {
     try {
-      this.outbox = await mailApi.outbox()
+      const outbox = await mailApi.outbox()
+      if (!sameJson(outbox, $state.snapshot(this.outbox))) this.outbox = outbox
     } catch (e) {
       await quietly(e)
     }
@@ -2353,24 +2616,28 @@ class MailState {
   // ── live-apply ───────────────────────────────────────────────────
 
   #applyChanges(changes: ChangeWithIds[]): boolean {
+    // Nothing read yet, so nothing to bring up to date: `start` reads it all.
+    if (!this.#loaded) return true
     // A background sync pass that changed something says so with one thread
     // change naming no thread at all -- it may have touched hundreds, in any
     // mailbox. Declining it would send `live` to `RELOAD.mail`, which reloads
     // the list alone: new mail would appear while the sidebar's unread
     // counts and the "last synced" line went on describing the pass before.
-    // So the list, the counts and the status are all asked again, the first
-    // two debounced so a burst of passes costs one of each.
+    // So the list, the counts and the status are all asked again -- one
+    // round for a burst of passes, and none while nobody can see Mail.
     if (changes.some((c) => c.kind === 'thread' && !c.id && !c.ids?.length)) {
+      this.#forgetDetails()
       // A pass is also when sends sent elsewhere, or before this window
       // opened, have been tried.
-      this.#scheduleOutboxRefresh()
-      this.#scheduleLiveRefresh()
-      this.#scheduleUnreadRefresh()
+      this.#scheduleRound(WHOLE_ROUND)
+      // Not held back while Mail is out of sight: what arrived in the open
+      // thread is there, unread, for when they come back, and the status
+      // line is one cheap read.
       this.#scheduleOpenThreadReload()
       void this.refreshSyncStatus()
       return true
     }
-    return applySingleChange(changes, {
+    const applied = applySingleChange(changes, {
       // Nothing in the visible thread list or the sync-status line reads a
       // draft directly today -- the compose sheet owns its own working copy
       // and autosaves it, so another window's edit to the *same* draft is
@@ -2379,6 +2646,8 @@ class MailState {
       // would otherwise reload the thread list for every autosave tick.
       skip: (change) => {
         if (change.kind !== 'draft') return false
+        // A thread read ahead may have this draft's card, or lack it.
+        this.#forgetDetails()
         // A draft put down, sent or thrown away elsewhere changes the open
         // thread's draft cards. Not one still being written here: that is
         // every autosave.
@@ -2396,6 +2665,7 @@ class MailState {
         return true
       },
       onDeleted: (id) => {
+        this.#forgetDetails([id])
         // Finding 5: a thread deleted from another window or by the
         // assistant must not stay open here just because nothing removed it
         // from `openThread` -- `#advanceIfOpen` does what archiving already
@@ -2407,6 +2677,14 @@ class MailState {
         this.#followUps = this.#followUps.filter((t) => t.id !== id)
       },
       onUpserted: (id) => {
+        this.#forgetDetails([id])
+        // Out of sight, only the open thread is read again, as for a pass;
+        // the list and its counts wait to be seen.
+        if (!this.#isLive()) {
+          if (this.openThread?.thread.id === id) this.#scheduleOpenThreadReload()
+          this.#stale = joinRounds(this.#stale, { list: true, followUps: true, counts: true })
+          return
+        }
         void this.#patchOne(id)
         // Bug 4: every backend command that can move a thread out of a
         // mailbox from elsewhere -- archive, trash, snooze, an assistant or
@@ -2416,29 +2694,112 @@ class MailState {
         // is right as far as it goes -- the subject, the snippet, the flags
         // are current -- but the row stays in a list it may no longer belong
         // to until something re-asks the backend which threads are actually
-        // still here. A short, debounced refresh is that ask: harmless if
-        // the row still belongs (the page comes back the same), and what
-        // actually drops it if it does not, same as opening the mailbox
-        // fresh would. Debounced so a batch of changes from one sync tick
-        // costs one reload, and `refresh()`'s own generation guard still
-        // applies, so a slow one cannot land after a newer list has
-        // replaced it.
+        // still here. A round is that ask: harmless if the row still belongs
+        // (the page comes back the same), and what actually drops it -- or
+        // brings in one that has just moved here -- if it does not, same as
+        // opening the mailbox fresh would. `refresh()`'s own generation guard
+        // still applies, so a slow one cannot land after a newer list has
+        // replaced it. The badges come along: it may have been read.
         //
         // The real fix is a mailbox-scoped change event from the backend --
         // out of scope for this pass.
-        this.#scheduleLiveRefresh()
+        this.#scheduleRound({ list: true, followUps: true, counts: true })
       },
     })
+    if (applied) return true
+    // Wider than one record -- several threads at once, or a thread and a
+    // draft together. `live` reloads the list for that while Mail can be
+    // seen; while it cannot, it waits to be.
+    this.#forgetDetails()
+    if (this.#isLive()) return false
+    this.#stale = joinRounds(this.#stale, { list: true, followUps: true, counts: true })
+    return true
   }
 
-  #liveRefreshTimer: ReturnType<typeof setTimeout> | null = null
-  #scheduleLiveRefresh() {
-    if (this.#liveRefreshTimer) clearTimeout(this.#liveRefreshTimer)
-    this.#liveRefreshTimer = setTimeout(() => {
-      this.#liveRefreshTimer = null
-      void this.refresh()
+  /** What the next live round asks again, and what was asked for while
+   *  nobody could see Mail -- see `#scheduleRound`. */
+  #pending: Round = { ...NO_ROUND }
+  #stale: Round = { ...NO_ROUND }
+  #roundTimer: ReturnType<typeof setTimeout> | null = null
+  /** When the last round began, by `performance.now()`: a clock that never
+   *  steps back, as the wall clock does when it is corrected after a resume.
+   *  Timed off `Date.now()`, a clock set back an hour held the next round,
+   *  and every change after it, for that hour. */
+  #roundAt = -Infinity
+
+  /**
+   * A sync pass met a folder or label for the first time -- the service's
+   * `mailbox` change, which `live.svelte.ts` routes here. The mailboxes are
+   * read again, with their counts, in the next round while Mail can be seen,
+   * and once it can otherwise. Nothing before Mail's first visit: `start`
+   * reads them all.
+   */
+  mailboxesChanged() {
+    if (!this.#loaded) return
+    this.#scheduleRound({ mailboxes: true })
+  }
+
+  /**
+   * Ask again what a change made elsewhere may have moved: at once when no
+   * round has run for `LIVE_REFRESH_DEBOUNCE_MS`, otherwise once that much
+   * has passed, with everything asked for meanwhile. So new mail is on the
+   * list the moment its change arrives, and a burst of changes -- one mail
+   * often brings two or three, the pass, its sorting, its follow-up -- costs
+   * two rounds rather than one each. While nobody can see Mail, only noted,
+   * and asked for the moment somebody can (`setOnScreen`, `windowShown`):
+   * nothing outside Mail draws any of it.
+   */
+  #scheduleRound(want: Partial<Round>) {
+    if (!this.#isLive()) {
+      this.#stale = joinRounds(this.#stale, want)
+      return
+    }
+    this.#pending = joinRounds(this.#pending, want)
+    if (this.#roundTimer) return
+    const wait = this.#roundAt + LIVE_REFRESH_DEBOUNCE_MS - performance.now()
+    if (wait <= 0) {
+      this.#runRound()
+      return
+    }
+    this.#roundTimer = setTimeout(() => {
+      this.#roundTimer = null
+      if (this.#isLive()) {
+        this.#runRound()
+        return
+      }
+      this.#stale = joinRounds(this.#stale, this.#pending)
+      this.#pending = { ...NO_ROUND }
+    }, wait)
+  }
+
+  #runRound() {
+    const want = this.#pending
+    this.#pending = { ...NO_ROUND }
+    if (!anyRound(want)) return
+    this.#roundAt = performance.now()
+    // The list first: it is where new mail is looked for.
+    if (want.list) void this.refresh({ followUps: want.followUps })
+    else if (want.followUps) void this.refreshFollowUps()
+    // A read of the mailboxes counts them and asks for the Outbox itself.
+    if (want.mailboxes) {
+      void this.refreshMailboxes()
+      return
+    }
+    if (want.counts) {
+      void this.refreshUnreadCounts()
       void this.refreshCategoryCounts()
-    }, LIVE_REFRESH_DEBOUNCE_MS)
+    }
+    if (want.outbox) void this.refreshOutbox()
+  }
+
+  /** Everything that waited while nobody could see Mail, at once. */
+  #catchUp() {
+    if (!anyRound(this.#stale)) return
+    this.#pending = joinRounds(this.#pending, this.#stale)
+    this.#stale = { ...NO_ROUND }
+    if (this.#roundTimer) clearTimeout(this.#roundTimer)
+    this.#roundTimer = null
+    this.#runRound()
   }
 
   /**
@@ -2450,9 +2811,18 @@ class MailState {
    * which is what actually reaches the lock screen, through its own
    * `handle`. Routing it through the helper would skip that call on a lock
    * and change what happens, not merely how it is spelled.
+   *
+   * Only for a thread drawn here -- a row, a follow-up, the open thread. One
+   * that is not, a new thread or one that has just moved into this mailbox,
+   * is the round `#applyChanges` asks for to place: where it belongs depends
+   * on the mailbox, the category and the sort, which only the backend knows.
    */
   async #patchOne(id: ThreadId) {
-    const version = this.selectedThread === id ? ++this.#openVersion : this.#openVersion
+    const open = this.openThread?.thread.id === id
+    const drawn =
+      open || this.threads.some((t) => t.id === id) || this.#followUps.some((t) => t.id === id)
+    if (!drawn) return
+    const version = open ? ++this.#openVersion : this.#openVersion
     try {
       const detail = await mailApi.getThread(id)
       // At the top as well, or instead: answered meanwhile, its follow-up is
@@ -2461,18 +2831,12 @@ class MailState {
         this.#followUps = this.#followUps.map((t) => (t.id === id ? detail.thread : t))
       }
       const at = this.threads.findIndex((t) => t.id === id)
-      if (at >= 0) {
+      if (at >= 0 && !sameJson(this.threads[at], detail.thread)) {
         this.threads = this.threads.map((t, i) => (i === at ? detail.thread : t))
-      } else {
-        // Not in the list: a new thread, or one that has just moved into this
-        // mailbox. Where it belongs depends on the mailbox, the category and
-        // the sort, which only the backend knows, so the page is asked for
-        // again rather than the row guessed into place. Not with a toggle on,
-        // when most threads are not listed and most changes are to one of
-        // those: `#applyChanges` has asked for a debounced refresh already.
-        if (this.only.size === 0) await this.refresh()
       }
-      if (this.selectedThread === id && version === this.#openVersion) this.#showNewer(detail)
+      if (this.openThread?.thread.id === id && version === this.#openVersion) {
+        this.#showNewer(detail)
+      }
     } catch {
       await this.refresh()
     }
@@ -2489,6 +2853,11 @@ class MailState {
 
   #outboxRefreshTimer: ReturnType<typeof setTimeout> | null = null
   #scheduleOutboxRefresh() {
+    // Only Mail's own sidebar and list draw the Outbox.
+    if (!this.#isLive()) {
+      this.#stale = joinRounds(this.#stale, { outbox: true })
+      return
+    }
     if (this.#outboxRefreshTimer) clearTimeout(this.#outboxRefreshTimer)
     this.#outboxRefreshTimer = setTimeout(() => {
       this.#outboxRefreshTimer = null
@@ -2505,10 +2874,14 @@ class MailState {
    * read -- the reply just sent, most of all, which only ever arrives this
    * way. The list has heard already; without this the pane went on showing
    * the thread as it was until somebody left it and came back.
+   *
+   * Only the thread in the pane. After an archive the cursor rests on the
+   * next row with the pane closed, and reading that row here would open it
+   * by itself a moment later, unmarked and folded.
    */
   async #reloadOpenThread() {
-    const id = this.selectedThread
-    if (!id) return
+    const id = this.openThread?.thread.id
+    if (!id || id !== this.selectedThread) return
     const version = ++this.#openVersion
     try {
       const detail = await mailApi.getThread(id)
@@ -2534,14 +2907,15 @@ class MailState {
    * A fresh copy of the open thread. What somebody has opened and closed stays
    * as it is, and what has arrived since opens, as the newest message does when
    * a thread is opened. Drafts are never among `messages`: each autosave's copy
-   * is in `drafts`, drawn as the one card it is.
+   * is in `drafts`, drawn as the one card it is. Nothing is opened by it: a
+   * copy of a thread no longer in the pane is dropped.
    */
   #showNewer(detail: ThreadDetail) {
     const had = this.openThread?.thread.id === detail.thread.id ? this.openThread : null
-    if (!had) {
-      this.openThread = detail
-      return
-    }
+    if (!had) return
+    // Read again and found as it was -- a pass that brought other threads
+    // mail, a thread read ahead checked behind itself -- nothing is redrawn.
+    if (sameJson(detail, $state.snapshot(had))) return
     const known = new Set(had.messages.map((m) => m.id))
     const messages = detail.messages
     this.openThread = detail
@@ -2563,10 +2937,33 @@ class MailState {
    *  as it was while standing in its place. */
   #onScreen = false
 
-  /** `MailView` coming and going. */
+  /** Can anybody see Mail: `MailView` drawn, in a window that is not hidden
+   *  -- minimised, in the tray, or behind another desktop. */
+  #isLive(): boolean {
+    return (
+      this.#onScreen && (typeof document === 'undefined' || document.visibilityState !== 'hidden')
+    )
+  }
+
+  /** `MailView` coming and going. Coming back, the badges are counted again
+   *  whatever was heard meanwhile: this window's own writes from outside
+   *  Mail -- an archive from the Overview's inbox card -- never come back to
+   *  it as changes, and every visit used to recount them. One call. */
   setOnScreen(onScreen: boolean) {
     this.#onScreen = onScreen
-    if (onScreen) this.seeOpenThread()
+    if (!onScreen) return
+    this.#stale = joinRounds(this.#stale, { counts: true })
+    if (this.#isLive()) this.#catchUp()
+    this.seeOpenThread()
+  }
+
+  /** The window shown, hidden or brought to the front, as `MailView` hears
+   *  it: what waited for it is asked for now, and what arrived in the open
+   *  thread may be read. Focus as well as visibility, in case a webview
+   *  coming back from the tray says nothing of the one. */
+  windowShown() {
+    if (this.#isLive()) this.#catchUp()
+    this.seeOpenThread()
   }
 
   /**

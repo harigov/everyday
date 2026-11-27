@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte'
-  import { api, mobileShell, onSaveAndClose } from './lib/api'
+  import { api, isWeb, mobileShell, onSaveAndClose } from './lib/api'
   import { closesOnBack, details, phone } from './lib/phone.svelte'
   import { appleKeyboard } from './lib/platform'
   import { keysLabel } from './lib/keys'
@@ -44,25 +44,21 @@
   import { sidebar } from './lib/sidebar.svelte'
   import { tray } from './lib/tray.svelte'
   import { badge } from './lib/badge.svelte'
+  // And the stores that only a view reaches. The views are loaded when first
+  // shown (`lib/views.svelte.ts`); their stores are constructed here all the
+  // same, for the reason above.
+  import './lib/backup.svelte'
+  import './lib/chat.svelte'
+  import './lib/connections.svelte'
+  import './lib/dictation.svelte'
+  import './lib/transfer.svelte'
   import { hearWheelWhen } from './lib/wheel'
+  import { reloadForNewBuild, views, type ViewKey } from './lib/views.svelte'
   import AppBar from './components/AppBar.svelte'
   import BottomBar from './components/BottomBar.svelte'
   import Sidebar from './components/Sidebar.svelte'
-  import EntryList from './components/EntryList.svelte'
-  import Editor from './components/Editor.svelte'
-  import NotesView from './components/NotesView.svelte'
-  import TodoView from './components/TodoView.svelte'
-  import CalendarView from './components/CalendarView.svelte'
-  import LibraryView from './components/LibraryView.svelte'
-  import MailView from './components/MailView.svelte'
-  import FeedView from './components/FeedView.svelte'
-  import MoneyView from './components/MoneyView.svelte'
-  import ScreenTimeView from './components/ScreenTimeView.svelte'
-  import FilesView from './components/FilesView.svelte'
-  import HealthView from './components/HealthView.svelte'
-  import OverviewView from './components/OverviewView.svelte'
-  import ReaderView from './components/ReaderView.svelte'
-  import AssistantView from './components/AssistantView.svelte'
+  // Each app's view, Settings and the shortcut sheet are not imported here:
+  // they are loaded when first shown. See `lib/views.svelte.ts`.
   import LockScreen from './components/LockScreen.svelte'
   import Setup from './components/Setup.svelte'
   import ErrorScreen from './components/ErrorScreen.svelte'
@@ -76,12 +72,15 @@
   import Symbol from './components/Symbol.svelte'
   import MeetingOfferBanner from './components/MeetingOfferBanner.svelte'
   import PlayerHost from './components/PlayerHost.svelte'
-  import SettingsView from './components/SettingsView.svelte'
-  import ShortcutsHelp from './components/ShortcutsHelp.svelte'
   import TopBar from './components/TopBar.svelte'
   import WindowControls from './components/WindowControls.svelte'
 
   void app.start()
+  // The app it opens on, fetched while the vault is still being opened.
+  // `start` has chosen it already: that part of it runs before its first
+  // await.
+  views.stage = app.section
+  void views.ensure(app.section)
   // Let the Rust shell speak. Its background work -- refreshing subscribed
   // calendars on a timer -- previously had nowhere to report to but the log.
   //
@@ -156,6 +155,83 @@
     if (section === shownSection) return
     shownSection = section
     if (phone.on && untrack(() => agent.open)) void agent.toggle()
+  })
+
+  // What the sidebar and the stage draw: the app chosen, once its view has
+  // loaded, with the one being left kept on screen until then -- a moment at
+  // most, see `views.follow`. The app bar and the title follow `app.section`
+  // itself, at once.
+  $effect.pre(() => {
+    const section = app.section
+    return untrack(() => views.follow(section))
+  })
+  const stage = $derived(views.stage)
+
+  /**
+   * On web access, reload to pick up the build the server now has; false
+   * when this is not web access, or a reload has been tried for this build
+   * already. See `reloadForNewBuild`.
+   */
+  function reloadStale(): boolean {
+    return isWeb && reloadForNewBuild(() => app.flushAll())
+  }
+
+  /** What the button under a view that could not be loaded does. Asking for
+   *  the same chunk again cannot help a page older than the build serving
+   *  it, and a browser may answer from the failure it remembers anyway. */
+  function retryView(key: ViewKey) {
+    if (isWeb) void app.flushAll().then(() => location.reload())
+    else views.retry(key)
+  }
+
+  // A document being read, Settings and the shortcut sheet are loaded the
+  // first time they are asked for, like the apps.
+  $effect(() => {
+    if (!reader.open) return
+    void views.ensure('reader').then(() => {
+      if (!reader.open || views.view('reader')) return
+      // The reader could not be loaded. Its close buttons are in the part
+      // that did not arrive, so it is closed here, or the app it was opened
+      // from would stay hidden behind it until the vault locked.
+      reader.close()
+      if (reloadStale()) return
+      notify.error(
+        'The reader could not be loaded',
+        isWeb ? { action: { label: 'Reload', run: () => retryView('reader') } } : {},
+      )
+    })
+  })
+  $effect(() => {
+    if (panels.settings !== null) void views.ensure('settings')
+  })
+  $effect(() => {
+    if (panels.shortcuts) void views.ensure('shortcuts')
+  })
+  const viewKey = $derived<ViewKey>(reader.open && stage === reader.host ? 'reader' : stage)
+  // Until the reader has loaded, the app it was opened from goes on showing
+  // -- and if it cannot be, until the reader has been closed.
+  const View = $derived(
+    views.view(viewKey) ?? (viewKey === 'reader' ? views.view(stage) : undefined),
+  )
+  const Settings = $derived(panels.settings !== null ? views.view('settings') : undefined)
+  const Shortcuts = $derived(panels.shortcuts ? views.view('shortcuts') : undefined)
+
+  // A tab on web access can outlive the build that served it, and then
+  // cannot load the apps it had not opened yet: it reloads, once, for what
+  // is in front of somebody -- not for an app fetched ahead (`views.warm`).
+  const unloaded = $derived(
+    (!View && views.failed(viewKey)) ||
+      (panels.settings !== null && views.failed('settings')) ||
+      (panels.shortcuts && views.failed('shortcuts')),
+  )
+  $effect(() => {
+    if (unloaded) untrack(reloadStale)
+  })
+
+  // Once the first app has drawn, the ones used most lately are fetched in
+  // the window's idle moments, so switching to them waits on nothing.
+  $effect(() => {
+    if (app.screen === 'main' && views.view(stage)) untrack(() => views.warm(stage))
   })
 
   // Something opened from an app's list, over it: back shows the list.
@@ -241,7 +317,7 @@
   // Settings over it) puts one away.
   // Always, on a phone: there the sidebar is a drawer, out over the app when
   // the top bar's button opens it. See `Sidebar.svelte`.
-  const folded = $derived(app.section !== 'overview' && (phone.on || sidebar.folded(app.section)))
+  const folded = $derived(stage !== 'overview' && (phone.on || sidebar.folded(stage)))
   $effect(() => {
     void app.section
     void panels.settings
@@ -389,6 +465,20 @@
   onbeforeunload={onBeforeUnload}
 />
 
+<!-- An app's view, or Settings, that could not be loaded. On web access that
+     is most likely a page older than the build now serving it. -->
+{#snippet unloadedView(label: string, key: ViewKey)}
+  <div class="failed" role="alert">
+    <p>Something went wrong showing {label}.</p>
+    {#if isWeb}
+      <p>Jatayu may have been updated since this page was opened.</p>
+    {/if}
+    <button class="btn" onclick={() => retryView(key)}>
+      {isWeb ? 'Reload the page' : 'Try again'}
+    </button>
+  </div>
+{/snippet}
+
 <!-- Outside the screen switch on purpose: a notification is a fact about
      the application, so it has to arrive on the lock screen and the error
      screen too. Those are the moments something has gone wrong. -->
@@ -505,7 +595,7 @@
       <div
         class="panes"
         class:pinned
-        style:--app={panels.settings === null ? `var(--app-${app.section})` : undefined}
+        style:--app={panels.settings === null ? `var(--app-${stage})` : undefined}
       >
         <!-- A window of one app has nothing to switch between. A phone
              switches from the bar along the bottom, below. -->
@@ -519,14 +609,18 @@
              underneath, and `app.section` is left exactly as it was: closing
              Settings (the X, Escape, or choosing a different app) returns to
              whatever was open before. -->
-        {#if panels.settings !== null}
-          <SettingsView />
+        {#if Settings}
+          <Settings />
+        {:else if panels.settings !== null && views.failed('settings')}
+          <div class="shell-stage">
+            {@render unloadedView('Settings', 'settings')}
+          </div>
         {:else}
           <!-- The Overview has no sidebar. Its half used to be the widget
                catalogue, a column spent on every visit on a list somebody
                reads when rearranging; that is the Add button's dialog now,
                and the page gets the width. -->
-          {#if app.section !== 'overview'}
+          {#if stage !== 'overview'}
             <!-- Folded, the sidebar is out of the row and a strip along the
                  app's left edge stands in for it: resting the pointer there
                  draws it over the app for a quick choice. The fold button in
@@ -556,51 +650,22 @@
             <!-- One view failing to draw is that view's trouble, not the
                  window's: without this a single thrown error in a render
                  blanks the whole app with nothing to press. -->
-            {#key app.section}
+            {#key stage}
               <svelte:boundary
-                onerror={(e) => console.error(`${APPS[app.section].label} failed to draw`, e)}
+                onerror={(e) => console.error(`${APPS[stage].label} failed to draw`, e)}
               >
-                {#if reader.open && app.section === reader.host}
-                  <ReaderView />
-                {:else if app.section === 'assistant'}
-                  <AssistantView />
-                {:else if app.section === 'notes'}
-                  <NotesView />
-                {:else if app.section === 'todo'}
-                  <TodoView />
-                {:else if app.section === 'calendar'}
-                  <CalendarView />
-                {:else if app.section === 'library'}
-                  <LibraryView />
-                {:else if app.section === 'mail'}
-                  <MailView />
-                {:else if app.section === 'feed'}
-                  <FeedView />
-                {:else if app.section === 'money'}
-                  <MoneyView />
-                {:else if app.section === 'screentime'}
-                  <ScreenTimeView />
-                {:else if app.section === 'files'}
-                  <FilesView />
-                {:else if app.section === 'health'}
-                  <HealthView />
-                {:else if app.section === 'overview'}
-                  <OverviewView />
-                {:else if phone.on}
-                  <!-- A phone has room for the list or the entry: see
-                     `details` in `phone.svelte.ts`. -->
-                  {#if details.isOpen('journal')}
-                    <main class="main"><Editor /></main>
-                  {:else}
-                    <EntryList />
-                  {/if}
+                {#if View}
+                  <View />
+                {:else if views.failed(viewKey)}
+                  {@render unloadedView(APPS[stage].label, viewKey)}
                 {:else}
-                  <EntryList />
-                  <main class="main"><Editor /></main>
+                  <!-- Its view has not loaded yet, past the moment the last
+                       app was kept on screen for it. -->
+                  <div class="stage-loading" aria-hidden="true"></div>
                 {/if}
                 {#snippet failed(_error, reset)}
                   <div class="failed" role="alert">
-                    <p>Something went wrong showing {APPS[app.section].label}.</p>
+                    <p>Something went wrong showing {APPS[stage].label}.</p>
                     <button class="btn" onclick={reset}>Try again</button>
                   </div>
                 {/snippet}
@@ -660,8 +725,8 @@
          the window's, not any one app's. Settings used to be drawn here
          too, the same way, when it was a dialog; it is one of the panes
          now, with `AppBar` beside it, so it is up inside `.panes` above. -->
-    {#if panels.shortcuts}
-      <ShortcutsHelp />
+    {#if Shortcuts}
+      <Shortcuts />
     {/if}
 
     <!-- What has been pressed, while a sequence is half finished. Small, in
@@ -742,12 +807,9 @@
   .scrim.drawer {
     z-index: 63;
   }
-  .main {
-    /* As tall as the stage by a stated height, not stretched: see
-       `.shell-stage` in app.css. */
+  .stage-loading {
     height: 100%;
     flex: 1;
-    min-width: 0;
   }
 
   /* Above the panes and clear of the window's edge. `fixed` rather than
