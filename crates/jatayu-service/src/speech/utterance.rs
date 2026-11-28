@@ -199,7 +199,7 @@ impl LocalUtterances {
         let (text, prompt) = crate::service::blocking(move || {
             let expected = expecting.current();
             let text =
-                recogniser.transcribe_expecting(&heard, language.as_deref(), &expected)?.text;
+                recogniser.transcribe_utterance(&heard, language.as_deref(), &expected)?.text;
             Ok((text, expected.prompt.clone()))
         })
         .await?;

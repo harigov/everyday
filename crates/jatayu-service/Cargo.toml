@@ -13,7 +13,15 @@ authors.workspace = true
 # computer through Phonon's own pure-Rust runtime. On in the desktop app and
 # the server; off for the CLI and a plain `cargo test`. See
 # docs/plans/meeting-notes.md and docs/plans/voice.md.
-speech = ["dep:sherpa-onnx", "dep:ptts", "dep:xn", "dep:loqui-g2p", "dep:opus", "dep:ogg"]
+speech = [
+    "dep:sherpa-onnx",
+    "dep:ptts",
+    "dep:xn",
+    "dep:loqui-g2p",
+    "dep:opus",
+    "dep:ogg",
+    "dep:matrixmultiply",
+]
 # Local decision models: a downloaded GGUF run through llama.cpp, for sorting
 # mail on this computer instead of at a provider. With `speech` as well, also
 # the Qwen3-ASR recognisers, which llama.cpp runs too. Links a native library
@@ -24,6 +32,10 @@ decisions = ["dep:llama-cpp-sys-2"]
 
 [dependencies]
 jatayu-core.workspace = true
+# The wake word's network (`speech::spotter`, with `speech`): its matrix
+# products, in pure Rust with the processor's vector instructions (AVX/FMA,
+# NEON) picked at run time, so the name is heard as cheaply on a Mac as here.
+matrixmultiply = { version = "0.3", optional = true }
 jatayu-vault.workspace = true
 jatayu-transfer.workspace = true
 # The OAuth protocol and the loopback redirect -- `signin.rs` wires them to

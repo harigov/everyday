@@ -410,6 +410,9 @@ enum Engine {
         /// Whether it takes words to expect: Parakeet, when its vocabulary
         /// could be written. See `speech::hotwords`.
         boosts: bool,
+        /// Whether it is a transducer (Parakeet) rather than Whisper: see
+        /// [`Recogniser::transcribe_utterance`].
+        transducer: bool,
     },
     #[cfg(feature = "decisions")]
     Qwen(crate::speech::qwen::Qwen),
@@ -438,6 +441,7 @@ impl Recogniser {
         config.model_config.num_threads = threads;
         config.model_config.provider = Some("cpu".to_string());
         let mut boosts = false;
+        let transducer = matches!(paths, RecogniserPaths::Transducer { .. });
         match paths {
             RecogniserPaths::Transducer { encoder, decoder, joiner, tokens } => {
                 config.model_config.transducer = sherpa_onnx::OfflineTransducerModelConfig {
@@ -525,7 +529,8 @@ impl Recogniser {
         let recognizer = recognizer.ok_or_else(|| {
             CommandError::new(codes::INTERNAL, format!("could not load {}", model.as_str()))
         })?;
-        Ok(Self { model, engine: Engine::Sherpa { recognizer: Mutex::new(recognizer), boosts } })
+        let recognizer = Mutex::new(recognizer);
+        Ok(Self { model, engine: Engine::Sherpa { recognizer, boosts, transducer } })
     }
 
     pub fn model(&self) -> LocalModel {
@@ -573,17 +578,45 @@ impl Recogniser {
     /// Qwen reads its prompt, Parakeet boosts its words, and Whisper, which
     /// sherpa-onnx gives no prompt, takes neither. Fails only for Qwen, whose
     /// llama.cpp can run out of room. Blocking.
-    // A build without `decisions` has only the one engine to match.
-    #[allow(clippy::infallible_destructuring_match)]
     pub fn transcribe_expecting(
         &self,
         samples: &[i16],
         language: Option<&str>,
         expected: &Expected,
     ) -> CommandResult<Transcription> {
+        self.transcribe_with(samples, language, expected, false)
+    }
+
+    /// [`Self::transcribe_expecting`], for one utterance somebody said to the
+    /// app -- voice mode, voice typing, the wake word -- cut by the voice
+    /// detector. Parakeet wrote nothing at all for some of those cut exactly
+    /// at their speech (a clean recording's "add milk to my shopping list")
+    /// and heard them whole with a quarter of a second of silence after, so
+    /// when it writes nothing it hears the utterance again so. Only then:
+    /// silence around everything changed words it had heard right ("Friday"
+    /// became "Frida", and silence before as well cost "Please send the
+    /// report"). Whisper and Qwen are heard once.
+    pub fn transcribe_utterance(
+        &self,
+        samples: &[i16],
+        language: Option<&str>,
+        expected: &Expected,
+    ) -> CommandResult<Transcription> {
+        self.transcribe_with(samples, language, expected, true)
+    }
+
+    // A build without `decisions` has only the one engine to match.
+    #[allow(clippy::infallible_destructuring_match)]
+    fn transcribe_with(
+        &self,
+        samples: &[i16],
+        language: Option<&str>,
+        expected: &Expected,
+        again_padded: bool,
+    ) -> CommandResult<Transcription> {
         let f32_samples = to_f32(samples);
-        let (recognizer, boosts) = match &self.engine {
-            Engine::Sherpa { recognizer, boosts } => (recognizer, *boosts),
+        let (recognizer, boosts, transducer) = match &self.engine {
+            Engine::Sherpa { recognizer, boosts, transducer } => (recognizer, *boosts, *transducer),
             #[cfg(feature = "decisions")]
             Engine::Qwen(qwen) => {
                 let text = qwen.transcribe(&f32_samples, language, &expected.prompt)?;
@@ -592,19 +625,33 @@ impl Recogniser {
         };
         let words = if boosts { hotwords::text(&expected.boosted) } else { String::new() };
         let recognizer = recognizer.lock().unwrap();
-        let stream = if words.is_empty() {
-            recognizer.create_stream()
-        } else {
-            recognizer.create_stream_with_hotwords(&words)
+        let decode = |audio: &[f32]| {
+            let stream = if words.is_empty() {
+                recognizer.create_stream()
+            } else {
+                recognizer.create_stream_with_hotwords(&words)
+            };
+            if let Some(lang) = language
+                && stream.has_option("language")
+            {
+                stream.set_option("language", lang);
+            }
+            stream.accept_waveform(SAMPLE_RATE as i32, audio);
+            recognizer.decode(&stream);
+            stream.get_result()
         };
-        if let Some(lang) = language
-            && stream.has_option("language")
+        let mut result = decode(&f32_samples);
+        // See `transcribe_utterance`.
+        if again_padded
+            && transducer
+            && result.as_ref().is_none_or(|r| r.text.trim().is_empty())
+            && samples.len() >= SAMPLE_RATE as usize / 2
         {
-            stream.set_option("language", lang);
+            let mut padded = f32_samples.clone();
+            padded.resize(padded.len() + PAD_SAMPLES, 0.0);
+            result = decode(&padded);
         }
-        stream.accept_waveform(SAMPLE_RATE as i32, &f32_samples);
-        recognizer.decode(&stream);
-        let Some(result) = stream.get_result() else {
+        let Some(result) = result else {
             return Ok(Transcription { text: String::new(), token_timestamps_ms: None });
         };
         let token_timestamps_ms = result
@@ -613,6 +660,10 @@ impl Recogniser {
         Ok(Transcription { text: result.text, token_timestamps_ms })
     }
 }
+
+/// The silence put after an utterance Parakeet wrote nothing for, to hear it
+/// again: see [`Recogniser::transcribe_utterance`].
+const PAD_SAMPLES: usize = SAMPLE_RATE as usize / 4;
 
 static RECOGNISERS: Resident<LocalModel, Recogniser> = Resident::new("speech recogniser");
 

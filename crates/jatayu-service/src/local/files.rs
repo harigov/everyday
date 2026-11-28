@@ -1034,19 +1034,30 @@ fn marker_path(dir: &Path) -> PathBuf {
     dir.join(".installed.json")
 }
 
-/// Files their publisher has since replaced in place, by `dest` and the
-/// size of the copy published before: a copy downloaded and verified then
-/// is still a good copy, and is still installed. Without this, sherpa-onnx
-/// re-publishing the speaker-embedding model one byte larger (Nov 2026)
-/// made every speech kit downloaded before it "not installed" -- and with
-/// it meeting notes, voice typing and voice mode, all refused until the kit
-/// was fetched again.
-const EARLIER_RELEASES: &[(&str, u64)] = &[("speaker-embedding.onnx", 26_485_263)];
+/// Files their publisher has since replaced in place, by the model's id,
+/// `dest` and the size of the copy published before: a copy downloaded and
+/// verified then is still a good copy, and is still installed. Without
+/// this, sherpa-onnx re-publishing its files (Nov 2026: the
+/// speaker-embedding model one byte larger, Parakeet's archive with a new
+/// encoder and decoder) made every copy downloaded before it "not
+/// installed" -- and with it meeting notes, voice typing, voice mode and the
+/// wake word, all refused until the model was fetched again.
+///
+/// A pin moved in [`CATALOGUE`] must leave its old size here, or everybody
+/// who downloaded the model before loses it.
+const EARLIER_RELEASES: &[(&str, &str, u64)] = &[
+    ("speechKit", "speaker-embedding.onnx", 26_485_263),
+    ("parakeetV3", "encoder.int8.onnx", 652_184_281),
+    ("parakeetV3", "decoder.int8.onnx", 11_845_275),
+];
 
-/// Whether a file of `bytes` is `file` as published now, or as published
-/// before (see [`EARLIER_RELEASES`]).
-fn published_size(file: &ModelFile, bytes: u64) -> bool {
-    bytes == file.bytes || EARLIER_RELEASES.iter().any(|&(dest, b)| dest == file.dest && b == bytes)
+/// Whether a file of `bytes` is model `id`'s `file` as published now, or as
+/// published before (see [`EARLIER_RELEASES`]).
+fn published_size(id: &str, file: &ModelFile, bytes: u64) -> bool {
+    bytes == file.bytes
+        || EARLIER_RELEASES
+            .iter()
+            .any(|&(model, dest, b)| model == id && dest == file.dest && b == bytes)
 }
 
 fn is_installed(spec: &ModelSpec) -> bool {
@@ -1066,7 +1077,7 @@ fn installed_in(spec: &ModelSpec, dir: &Path) -> bool {
     expected.iter().all(|file| {
         marker.files.iter().any(|(dest, bytes)| {
             dest == file.dest
-                && published_size(file, *bytes)
+                && published_size(spec.id, file, *bytes)
                 && std::fs::metadata(dir.join(file.dest)).is_ok_and(|m| m.len() == *bytes)
         })
     })
@@ -1905,7 +1916,7 @@ mod tests {
     fn a_copy_of_a_file_since_republished_is_still_installed() {
         let dir = tempfile::tempdir().unwrap();
         let spec = ModelSpec {
-            id: "test-kit",
+            id: "speechKit",
             kind: ModelKind::Speech,
             name: "Test",
             description: "",
@@ -1928,6 +1939,45 @@ mod tests {
         let marker = Marker { files: vec![("speaker-embedding.onnx".to_string(), old - 1)] };
         std::fs::write(marker_path(dir.path()), serde_json::to_string(&marker).unwrap()).unwrap();
         assert!(!is_installed_at(&spec, dir.path()));
+
+        // Nor is the old size another model's file of the same name.
+        file.set_len(old).unwrap();
+        let marker = Marker { files: vec![("speaker-embedding.onnx".to_string(), old)] };
+        std::fs::write(marker_path(dir.path()), serde_json::to_string(&marker).unwrap()).unwrap();
+        let other = ModelSpec { id: "otherKit", ..spec };
+        assert!(!is_installed_at(&other, dir.path()));
+    }
+
+    /// Parakeet as downloaded before sherpa-onnx re-published its archive
+    /// (Nov 2026), marker and all, as it sits on computers that fetched it
+    /// then: still installed.
+    #[test]
+    fn parakeet_downloaded_before_its_archive_was_republished_is_still_installed() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = spec("parakeetV3").unwrap();
+        let before = [
+            ("encoder.int8.onnx", 652_184_281u64),
+            ("decoder.int8.onnx", 11_845_275),
+            ("joiner.int8.onnx", 6_355_277),
+            ("tokens.txt", 93_939),
+        ];
+        for (dest, bytes) in before {
+            std::fs::File::create(dir.path().join(dest)).unwrap().set_len(bytes).unwrap();
+        }
+        let files = before.iter().map(|(d, b)| (d.to_string(), *b)).collect();
+        std::fs::write(marker_path(dir.path()), serde_json::to_string(&Marker { files }).unwrap())
+            .unwrap();
+        assert!(is_installed_at(spec, dir.path()));
+    }
+
+    #[test]
+    fn every_earlier_release_names_a_file_of_a_model_at_another_size() {
+        for &(id, dest, bytes) in EARLIER_RELEASES {
+            let spec = spec(id).unwrap_or_else(|| panic!("{id} is not in the catalogue"));
+            let file = spec.files().into_iter().find(|f| f.dest == dest);
+            let file = file.unwrap_or_else(|| panic!("{id} has no file {dest}"));
+            assert_ne!(file.bytes, bytes, "{id}/{dest}: the earlier size is the current one");
+        }
     }
 
     /// A [`Download`] in the shape [`extract_members_blocking`] and

@@ -75,6 +75,8 @@ Reproduced below in full:
   66. loqui-g2p — © 2026 Awakened Labs Inc., https://github.com/Awakened-Labs/loqui, with misaki's lexicons (© hexgrad, https://github.com/hexgrad/misaki), Peter Reid's grapheme-to-phoneme models (https://huggingface.co/PeterReid/graphemes_to_phonemes_en_us) and spaCy's English tokenizer rules (© ExplosionAI GmbH, https://github.com/explosion/spaCy)
   67. pdf-extract and lopdf — © Jeff Muizelaar, https://github.com/jrmuizel/pdf-extract, and © 2016 Junfeng Liu, https://github.com/J-F-Liu/lopdf
   68. FiveFilters site rules (ftr-site-config) — FiveFilters.org and contributors, https://github.com/fivefilters/ftr-site-config
+  69. openWakeWord's feature models and Google's speech embedding — © David Scripka, https://github.com/dscripka/openWakeWord, and © Google LLC, https://www.kaggle.com/models/google/speech-embedding
+  70. matrixmultiply — © 2016 bluss, https://github.com/bluss/matrixmultiply
 
 The interface icons in `ui/src/lib/icons.ts` are drawn for this project, but
 follow the geometry conventions of Lucide (https://lucide.dev), which is ISC
@@ -4194,3 +4196,37 @@ contributors, bundled in `crates/jatayu-service/src/news/site_rules.txt` by
 `scripts/site-rules.mjs` (see `news/rules.rs`). The rules are released to the
 public domain under CC0-1.0. No notice is required; this entry says where they
 came from.
+
+---
+
+## 69. openWakeWord's feature models and Google's speech embedding
+
+The wake word's own model for Jatayu (`speech::spotter`, bundled as
+`crates/jatayu-service/assets/wakeword/jatayu.jww`) begins with openWakeWord's
+front end (https://github.com/dscripka/openWakeWord, release v0.5.1's
+`melspectrogram.onnx` and `embedding_model.onnx`): a mel spectrogram, and
+Google's speech embedding (https://www.kaggle.com/models/google/speech-embedding,
+first published on TensorFlow Hub as `google/speech_embedding/1`), which
+openWakeWord re-implemented layer for layer around Google's weights. Both are
+Apache-2.0 licensed; see entry 32 above for the licence text. Their weights
+are copied into the `.jww` file unchanged by `scripts/wakeword/export.py`
+and run in pure Rust; none of openWakeWord's own trained wake-word models
+(CC BY-NC-SA 4.0) is used.
+
+The head after them is this project's own, trained by `scripts/wakeword`.
+What it was trained on is not shipped: synthetic speech from Piper's
+multi-speaker voices (https://github.com/rhasspy/piper; LibriTTS-R and VCTK,
+CC BY 4.0; CMU ARCTIC; L2-ARCTIC, CC BY-NC 4.0) and Kokoro (entry 65), and as
+examples of what is not the name, LibriSpeech (CC BY 4.0), People's Speech
+(MLCommons; CC BY and CC BY-SA) and podcast audio. A build for wide release
+can leave out L2-ARCTIC's voice and the podcasts and train again: the scripts
+take any set.
+
+---
+
+## 70. matrixmultiply
+
+The wake word's network (`speech::spotter`) does its matrix products with
+`matrixmultiply` (https://github.com/bluss/matrixmultiply), © 2016 bluss,
+dual MIT/Apache-2.0 licensed; see entry 32 above for the Apache-2.0 text.
+
