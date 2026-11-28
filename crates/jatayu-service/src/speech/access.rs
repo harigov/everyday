@@ -15,7 +15,7 @@
 //! and a local voice getting its speaker ready. Whatever needs either before
 //! it is done waits for it.
 
-use super::detect::{Tuning, build_detector};
+use super::detect::{SpeechDetector, Tuning, build_detector};
 use super::expect::Occasion;
 use super::live::LiveTranscription;
 use super::synth::{Synthesiser, build_synthesiser_with};
@@ -147,13 +147,7 @@ impl Service {
         from: HeardFrom,
         wrap: impl FnOnce(Arc<dyn UtteranceTranscriber>) -> Arc<dyn UtteranceTranscriber>,
     ) -> CommandResult<LiveTranscription> {
-        self.require_unlocked()?;
-        if let Some(refusal) = missing_kit(crate::local::files::speech_kit_installed()) {
-            return Err(CommandError::new(codes::INVALID, refusal));
-        }
-        let transcriber = wrap(self.utterance_transcriber(occasion).await?);
-        let transcriber = self.checked(transcriber, from).await;
-        let detector = blocking(move || build_detector(tuning)).await?;
+        let (detector, transcriber) = self.listening_parts(tuning, occasion, from, wrap).await?;
         // Loading a recogniser on this computer takes seconds -- 2.4 on a
         // quiet 12-core desktop, 6.7 on a busy one -- and used to begin with
         // the first thing heard, so voice mode's first reply and voice
@@ -162,6 +156,28 @@ impl Service {
         // talking, and the first utterance waits only for what is left.
         transcriber.warm();
         Ok(LiveTranscription::start(detector, transcriber))
+    }
+
+    /// What [`Self::live_transcription_with`] listens with, apart: the
+    /// detector tuned for `tuning`, and the recogniser behind `wrap` and the
+    /// owner's voice check. Refuses as it does. The recogniser is not warmed:
+    /// a caller that may never need it -- the wake word with a model of its
+    /// own ([`super::wake`]) -- warms it when it does.
+    pub(crate) async fn listening_parts(
+        self: &Arc<Self>,
+        tuning: Tuning,
+        occasion: Occasion,
+        from: HeardFrom,
+        wrap: impl FnOnce(Arc<dyn UtteranceTranscriber>) -> Arc<dyn UtteranceTranscriber>,
+    ) -> CommandResult<(Box<dyn SpeechDetector>, Arc<dyn UtteranceTranscriber>)> {
+        self.require_unlocked()?;
+        if let Some(refusal) = missing_kit(crate::local::files::speech_kit_installed()) {
+            return Err(CommandError::new(codes::INVALID, refusal));
+        }
+        let transcriber = wrap(self.utterance_transcriber(occasion).await?);
+        let transcriber = self.checked(transcriber, from).await;
+        let detector = blocking(move || build_detector(tuning)).await?;
+        Ok((detector, transcriber))
     }
 
     /// `transcriber`, behind the owner's voice check, when what it hears

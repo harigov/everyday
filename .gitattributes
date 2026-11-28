@@ -1,0 +1,3 @@
+# Raw float32 test fixtures and the wake word model: bytes, never text.
+*.f32 binary
+*.jww binary

@@ -47,6 +47,8 @@ pub mod ready;
 pub mod render;
 pub mod resample;
 pub mod script;
+#[cfg(feature = "speech")]
+pub mod spotter;
 pub mod synth;
 pub mod tempo;
 pub mod text;

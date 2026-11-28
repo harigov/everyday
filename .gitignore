@@ -10,3 +10,5 @@
 /crates/jatayu-app/gen/schemas
 *.log
 .DS_Store
+# Python's compiled caches, from `scripts/wakeword`.
+__pycache__/

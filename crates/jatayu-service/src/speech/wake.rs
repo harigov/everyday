@@ -6,13 +6,22 @@
 //! what they said after it as its first words, as if they had pressed the talk
 //! key and said them. See `docs/plans/wake-word.md`.
 //!
-//! There is no separate wake-word model: the voice detector and the
-//! recogniser voice mode already has ([`LiveTranscription`]) hear each
-//! utterance, and [`heard`] looks for the name at its start. So any name
-//! works, spelled any way, the request can come in the same breath, and
-//! nothing runs while nobody is talking but the detector. What somebody said
-//! without the name never leaves this module: it is matched and dropped, not
-//! sent anywhere, shown or kept.
+//! Two ways of hearing the name:
+//!
+//! - **A model of its own**, for a name one was trained for -- Jatayu's is
+//!   built in (`spotter::Model::jatayu`, in a build with `speech`). A
+//!   spotter listens to every 80 ms for under a millisecond of one core, and
+//!   only an utterance it heard the name in early on is written down at all,
+//!   for what came after the name. See `spotted`.
+//! - **The recogniser**, for any other name: the voice detector and the
+//!   recogniser voice mode already has ([`LiveTranscription`]) hear each
+//!   utterance, and [`heard`] looks for the name at its start. So any name
+//!   works, spelled any way, at the price of writing down whatever the
+//!   microphone hears ([`NameFirst`] keeps that to the first few seconds).
+//!
+//! Either way the request can come in the same breath, and what somebody
+//! said without the name never leaves this module: it is matched and
+//! dropped, not sent anywhere, shown or kept.
 
 use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
@@ -26,6 +35,11 @@ use crate::speech::transcribe::BoxFuture;
 use crate::speech::utterance::UtteranceTranscriber;
 use std::sync::Arc;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+
+#[cfg(feature = "speech")]
+mod spotted;
+#[cfg(feature = "speech")]
+pub use spotted::{Refusing, spawn_spotted};
 
 /// Somebody said the assistant's name at the start of what they said.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -331,7 +345,9 @@ impl Service {
     /// listening is not set up, or when the chosen model is not on this
     /// computer: almost everything the microphone hears was not meant for the
     /// assistant, and none of it goes to a server to find the few words that
-    /// were. Holds the recogniser for as long as it runs.
+    /// were. The recogniser is loaded as listening starts; for a name with a
+    /// model of its own it hears only the utterances that model heard the
+    /// name in, and is let go when it sits idle.
     pub async fn wake_open(self: &Arc<Self>, names: Vec<String>) -> CommandResult<WakeLink> {
         let vault = self.require_unlocked()?;
         let speech = blocking(move || Ok(vault.speech_access()?)).await?;
@@ -345,6 +361,14 @@ impl Service {
         // Every recogniser is told to expect these names from now on. This
         // one is told only them and the person's: see `Occasion::Wake`.
         self.remember_wake_names(&names);
+        // Every name one the built-in model hears: that model listens, and
+        // the recogniser only hears what follows the name.
+        #[cfg(feature = "speech")]
+        {
+            if let Some(link) = self.wake_spotted(&names).await? {
+                return Ok(link);
+            }
+        }
         let listening_for = names.clone();
         let live = self
             .live_transcription_with(

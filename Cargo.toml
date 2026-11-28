@@ -121,6 +121,10 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.pulp]
 opt-level = 3
+# The wake word's matrix products (`speech::spotter`), for the same reason: a
+# debug app hears every 80 ms of the microphone through them.
+[profile.dev.package.matrixmultiply]
+opt-level = 3
 # Kokoro's phonemes come from a small neural network written out by hand in
 # `loqui-g2p`, for the words its lexicons lack; unoptimised, it would take
 # longer over a name than the model takes over the sentence.
